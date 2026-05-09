@@ -1425,7 +1425,35 @@ export function Room() {
                   <div className="flex items-center justify-between sm:justify-start gap-2 shrink-0">
                     <div className="flex items-center gap-1.5">
                       <VoiceButton
-                        onTranscript={(t) => setText(prev => prev.trim() ? `${prev.trim()} ${t}` : t)}
+                        // Plan B: speak, stop, and the transcript is sent at once (any
+                        // pending typed draft is merged in front of it).
+                        onTranscript={async (spoken) => {
+                          if (ended || !spoken.trim()) return;
+                          const merged = text.trim() ? `${text.trim()} ${spoken.trim()}` : spoken.trim();
+                          const msg: Message = {
+                            id: Date.now(),
+                            type: 'msg',
+                            name: me.name,
+                            role: me.role,
+                            initials: initialsFor(me.name),
+                            color: colorForName(me.name),
+                            client: 'web',
+                            text: merged,
+                            time: Date.now(),
+                          };
+                          setText('');
+                          try {
+                            await sendMessage(msg);
+                            if (isHost && replyMode === 'deliver') {
+                              void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, merged)
+                                .then(() => taskBoard.reload())
+                                .catch(() => { /* best-effort */ });
+                            }
+                          } catch (e) {
+                            showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+                            setText(merged); // restore draft so the user can retry
+                          }
+                        }}
                         disabled={ended}
                       />
                       <input
