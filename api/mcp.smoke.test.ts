@@ -331,6 +331,9 @@ describe('hosted MCP endpoint', () => {
 
     await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Follow-up Agent' } });
     await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Other Agent' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Verifier' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer 2' } });
 
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
@@ -472,6 +475,8 @@ describe('hosted MCP endpoint', () => {
     }));
     expect(joined.assignedName).toBe('Alex (2)');
 
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer' } });
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
       arguments: {
@@ -518,6 +523,12 @@ describe('hosted MCP endpoint', () => {
       name: 'room_create', arguments: { topic: 'rejection reason validation', name: 'Host' },
     }));
     const code = created.code as string;
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer' } });
+    // Task roles must be seated agents; their join greetings precede the checks below.
+    const baseCursor = (parsed(await mcp.callTool({
+      name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
+    })).cursor as number);
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
       arguments: {
@@ -560,10 +571,10 @@ describe('hosted MCP endpoint', () => {
       expect(pending.state).toBe('awaiting_review');
       expect(pending.verdict).toBeUndefined();
       const listen = parsed(await mcp.callTool({
-        name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
+        name: 'room_listen', arguments: { code, since: baseCursor, timeoutMs: 0 },
       }));
       expect(listen.messages, label).toEqual([]);
-      expect(listen.cursor, label).toBe(0);
+      expect(listen.cursor, label).toBe(baseCursor);
     }
 
     const boundaryReason = 'x'.repeat(600);
@@ -576,11 +587,11 @@ describe('hosted MCP endpoint', () => {
     expect(verified).toMatchObject({ verified: true, notificationSent: true, nextAction: 'no_duplicate_report' });
     expect((verified.task as { verdict: { note: string } }).verdict.note).toBe(boundaryReason);
     const notices = parsed(await mcp.callTool({
-      name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
+      name: 'room_listen', arguments: { code, since: baseCursor, timeoutMs: 0 },
     }));
     expect(notices.messages as { type: string; text: string }[]).toHaveLength(1);
     expect((notices.messages as { type: string; text: string }[])[0]!.text).toContain(`原因：${boundaryReason}`);
-    expect(notices.cursor).toBe(1);
+    expect(notices.cursor).toBe(baseCursor + 1);
   }, 20_000);
 
   it('holds an identified weak client to its safe listen window', async () => {

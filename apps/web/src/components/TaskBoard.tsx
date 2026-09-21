@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import type { ClientKind, Participant, RoomArtifact, Task, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
+import type { ClientKind, Participant, Room, RoomArtifact, Task, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
+import { artifactLabel } from '@agent-room/shared';
 import {
   blockTask,
   cancelTask,
+  createRoomTask,
   createTask,
   reassignTaskRoles,
   updateTask,
@@ -14,6 +16,8 @@ import type { MessageKey } from '../i18n/messages.js';
 
 interface Props {
   code: string;
+  /** The room, so a task created here follows its mode (deliver: roles + plan). */
+  room?: Room;
   me: { name: string };
   isHost: boolean;
   ended: boolean;
@@ -85,7 +89,7 @@ export function canRuleOn(task: Task, viewer: { name: string; client: ClientKind
 const CTRL = 'min-h-10 sm:min-h-8 rounded-lg px-2.5 text-[13px] sm:text-xs font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed';
 const FIELD = 'w-full min-h-10 rounded-lg border border-border bg-white px-3 text-[15px] sm:text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60';
 
-export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExport, reportBusy, onExportReport, onMention, taskBoard }: Props) {
+export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, canExport, reportBusy, onExportReport, onMention, taskBoard }: Props) {
   const { t } = useLocale();
   const { board, loaded, busy, run } = taskBoard;
   const [composing, setComposing] = useState(false);
@@ -131,7 +135,9 @@ export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExpor
             onCancel={() => setComposing(false)}
             onSubmit={async (input) => {
               const ok = await run(
-                c => createTask(c, code, { ...input, createdBy: me.name }),
+                c => (room
+                  ? createRoomTask(c, code, room, { ...input, createdBy: me.name })
+                  : createTask(c, code, { ...input, createdBy: me.name })),
                 t('task.createFailed'),
               );
               if (ok) setComposing(false);

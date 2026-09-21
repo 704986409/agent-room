@@ -44,12 +44,9 @@ import {
   NotYourTurnError,
   RoomNotFoundError,
   getTaskBoard,
-  createTask,
   claimTask,
   submitTask,
-  verifyTask,
   reassignTaskRoles,
-  cancelTask,
   registerRoomWebhook,
   listRoomWebhooks,
   unregisterRoomWebhook,
@@ -62,6 +59,14 @@ import {
   setTurnState,
   addHostDirected,
   skipQueueHead,
+  cancelRoomTask,
+  onDeliverHostMessage,
+  createRoomTask,
+  deliverClaimProblem,
+  DeliverRuleError,
+  reopenTask,
+  verifyRoomTask,
+  VerifyNoteRequiredError,
 } from '@agent-room/upstash-client';
 import type { UpstashClient } from '@agent-room/upstash-client';
 import { dispatchRoomWebhooks, validateWebhookUrl } from './_webhookDispatch.js';
@@ -119,7 +124,9 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
       case 'taskBoard':
         return { board: (await getTaskBoard(store, code)) ?? { code, tasks: [], version: 0 } };
       case 'taskCreate':
-        return await createTask(store, code, {
+        // Deliver rooms check the roles and file the task under the lead's
+        // plan (announcing a newly opened one); other modes create as before.
+        return await createRoomTask(store, code, await storeGetRoom(store, code), {
           title: str(p.title),
           createdBy: str(p.requesterName),
           ...(p.id ? { id: str(p.id) } : {}),
@@ -127,20 +134,26 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           ...(p.verifier ? { verifier: str(p.verifier), verifierClient: 'cc' as const } : {}),
           ...(p.dod ? { dod: str(p.dod) } : {}),
         });
-      case 'taskClaim':
+      case 'taskClaim': {
+        const room = await storeGetRoom(store, code);
+        if (room.replyMode === 'deliver') {
+          const problem = deliverClaimProblem(await getTaskBoard(store, code), str(p.id));
+          if (problem) throw new RemoteRoomApiError(problem, 409, 'plan_not_started');
+        }
         return await claimTask(store, code, str(p.id), agent(p.name));
+      }
       case 'taskSubmit':
         return await submitTask(
           store, code, str(p.id), agent(p.name),
           p.evidence as Parameters<typeof submitTask>[4],
         );
       case 'taskVerify':
-        return await verifyTask(
-          store, code, str(p.id), agent(p.name),
+        return await verifyRoomTask(
+          store, code, await storeGetRoom(store, code), str(p.id), agent(p.name),
           p.verdict === 'done' ? 'done' : 'rejected',
           typeof p.note === 'string' ? p.note : undefined,
           Date.now(),
-          p.followUp as Parameters<typeof verifyTask>[7],
+          p.followUp as Parameters<typeof verifyRoomTask>[7],
         );
       case 'taskReassign':
         return await reassignTaskRoles(store, code, str(p.id), {
@@ -148,10 +161,14 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           ...(p.verifier ? { verifier: str(p.verifier), verifierClient: 'cc' as const } : {}),
         }, agent(p.requesterName));
       case 'taskCancel':
-        return await cancelTask(
-          store, code, str(p.id), agent(p.requesterName),
+        return await cancelRoomTask(
+          store, code, await storeGetRoom(store, code), str(p.id), agent(p.requesterName),
           typeof p.reason === 'string' ? p.reason : undefined,
         );
+      case 'taskReopen': {
+        const state = p.state === 'in_progress' || p.state === 'awaiting_review' || p.state === 'blocked' ? p.state : 'todo';
+        return await reopenTask(store, code, str(p.id), state);
+      }
 
       // ── resident webhooks ───────────────────────────────────────────────
       case 'webhookSet': {
@@ -271,6 +288,8 @@ async function assertHostFor(
  */
 function translate(e: unknown): never {
   if (e instanceof RemoteRoomApiError) throw e;
+  if (e instanceof DeliverRuleError) throw new RemoteRoomApiError(e.message, 400, 'bad_request');
+  if (e instanceof VerifyNoteRequiredError) throw new RemoteRoomApiError(e.message, 400, 'VerifyNoteRequiredError');
   if (e instanceof MutedError) throw new RemoteRoomApiError(e.message, 403, 'MutedError');
   if (e instanceof NotYourTurnError) throw new RemoteRoomApiError(e.message, 409, 'NotYourTurnError');
   if (e instanceof NotHostError) throw new RemoteRoomApiError(e.message, 403, 'NotHostError');
@@ -390,6 +409,12 @@ export async function appendMessage(
     const room = await storeGetRoom(client.store, code);
     const cursor = (result as { cursor?: number } | null)?.cursor ?? null;
     await dispatchRoomWebhooks(client.store, room, message, cursor);
+    // Deliver: the host's message is either the go for a waiting plan or a
+    // goal the lead should plan for. The web client does the same after its
+    // own sends; this covers a host speaking through MCP.
+    if (room.replyMode === 'deliver' && message.name === room.createdBy) {
+      await onDeliverHostMessage(client.store, code, room, message.text ?? '');
+    }
   } catch { /* delivery is not the sender's problem */ }
   return result;
 }
