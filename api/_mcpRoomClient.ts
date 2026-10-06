@@ -30,6 +30,9 @@ import {
   getRoom as storeGetRoom,
   joinRoom as storeJoinRoom,
   listMessages as storeListMessages,
+  appendSystemMessage as storeAppendSystemMessage,
+  getMessageTotalCount,
+  sweepTimeouts,
   appendMessage as storeAppendMessage,
   reactivateRoom as storeReactivateRoom,
   removeParticipant as storeRemoveParticipant,
@@ -283,29 +286,33 @@ export async function getRoom(client: RemoteRoomClient, code: string): Promise<R
   return guarded(() => storeGetRoom(client.store, code));
 }
 
-/**
- * Refresh what the room knows about who is present.
- *
- * The hosted server has a dedicated `sweep` action that also expires stale
- * seats. Here the same read is a `getRoom`, which already normalises the
- * stored record; presence expiry is the caller's business via
- * `isParticipantStale`, not a stored mutation.
- */
 export async function sweepRoom(client: RemoteRoomClient, code: string): Promise<Room> {
-  return guarded(() => storeGetRoom(client.store, code));
+  return guarded(async () => {
+    const room = await storeGetRoom(client.store, code);
+
+    // Advance timeout/fallback state without emitting timeout system messages.
+    await sweepTimeouts(client.store, code, room);
+
+    return storeGetRoom(client.store, code);
+  });
 }
 
 export async function joinRoom(
   client: RemoteRoomClient,
   code: string,
   participant: Participant,
-  options: { hostKey?: string; seatKey?: string } = {},
+  options: {
+    hostKey?: string;
+    seatKey?: string;
+    priorIdentity?: { name: string; client: 'web' | 'cc' };
+  } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
   return guarded(async () => {
     const result = await storeJoinRoom(client.store, code, participant, {
       ...(options.hostKey ? { hostKey: options.hostKey } : {}),
       ...(options.seatKey ? { seatKey: options.seatKey } : {}),
-      priorIdentity: { name: participant.name, client: 'cc' as const },
+      priorIdentity:
+        options.priorIdentity ?? { name: participant.name, client: 'cc' as const },
     });
     return result as Room & { participant: Participant; seatKey?: string };
   });
@@ -313,6 +320,25 @@ export async function joinRoom(
 
 export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<Message[]> {
   return guarded(() => storeListMessages(client.store, code, since));
+}
+
+export async function getMessagesWithTotal(
+  client: RemoteRoomClient,
+  code: string,
+  since: number,
+): Promise<{ messages: Message[]; total: number | null }> {
+  return guarded(async () => {
+    const messages = await storeListMessages(client.store, code, since);
+    const total = await getMessageTotalCount(client.store, code);
+    return { messages, total };
+  });
+}
+
+export async function getCurrentTurnState(
+  client: RemoteRoomClient,
+  code: string,
+) {
+  return guarded(() => getTurnState(client.store, code));
 }
 
 export async function appendMessage(
@@ -337,6 +363,19 @@ export async function appendMessage(
   return result;
 }
 
+export async function appendSystemMessage(
+  client: RemoteRoomClient,
+  code: string,
+  requesterName: string,
+  hostKey: string | undefined,
+  message: Message,
+): Promise<void> {
+  await guarded(async () => {
+    await assertHost(client, code, requesterName, hostKey);
+    await storeAppendSystemMessage(client.store, code, message);
+  });
+}
+
 export async function setListenUntil(
   client: RemoteRoomClient,
   code: string,
@@ -354,9 +393,11 @@ export async function removeParticipant(
   code: string,
   requesterName: string,
   targetName: string,
+  targetClient: 'web' | 'cc' = 'cc',
 ): Promise<Room> {
-  // MCP agents are always 'cc' seats; the web seats leave through the UI.
-  return guarded(() => storeRemoveParticipant(client.store, code, requesterName, targetName, 'cc'));
+  return guarded(() =>
+    storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient),
+  );
 }
 
 /**
