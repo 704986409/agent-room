@@ -308,6 +308,11 @@ export async function joinRoom(
   } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
   return guarded(async () => {
+    const current = await storeGetRoom(client.store, code);
+    if (participant.name.trim().toLowerCase() === current.createdBy.trim().toLowerCase()) {
+      await verifyHostKey(client.store, code, options.hostKey);
+    }
+
     const result = await storeJoinRoom(client.store, code, participant, {
       ...(options.hostKey ? { hostKey: options.hostKey } : {}),
       ...(options.seatKey ? { seatKey: options.seatKey } : {}),

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message, Participant, Room } from '@agent-room/shared';
+import { HostNameTakenError } from '@agent-room/upstash-client';
 import type { RemoteRoomClient } from './_mcpRoomClient.js';
 
 const storeMocks = vi.hoisted(() => ({
@@ -121,6 +122,39 @@ describe('_mcpRoomClient HTTP helpers', () => {
       seatKey: 'seat-key',
       priorIdentity,
     });
+  });
+
+  it('rejects a host-name claim when hostKey verification fails before storage join', async () => {
+    const hostParticipant = { ...participant, name: 'alice', client: 'web' as const };
+    const error = new HostNameTakenError(room.createdBy);
+    storeMocks.verifyHostKey.mockRejectedValueOnce(error);
+
+    await expect(
+      joinRoom(client, room.code, hostParticipant, { hostKey: 'wrong-host-key' }),
+    ).rejects.toMatchObject({ status: 409, code: 'HostNameTakenError' });
+
+    expect(storeMocks.verifyHostKey).toHaveBeenCalledWith(
+      client.store, room.code, 'wrong-host-key',
+    );
+    expect(storeMocks.joinRoom).not.toHaveBeenCalled();
+  });
+
+  it('verifies the host key before joining under the creator name', async () => {
+    const order: string[] = [];
+    storeMocks.verifyHostKey.mockImplementationOnce(async () => { order.push('verifyHostKey'); });
+    storeMocks.joinRoom.mockImplementationOnce(async () => {
+      order.push('joinRoom');
+      return { ...room, participant: { ...participant, name: room.createdBy, client: 'web' } };
+    });
+
+    await joinRoom(client, room.code, { ...participant, name: room.createdBy, client: 'web' }, {
+      hostKey: 'host-key',
+    });
+
+    expect(order).toEqual(['verifyHostKey', 'joinRoom']);
+    expect(storeMocks.verifyHostKey).toHaveBeenCalledWith(
+      client.store, room.code, 'host-key',
+    );
   });
 
   it('passes a web targetClient through to storage removal', async () => {
