@@ -183,7 +183,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
 
       // ── host / moderator controls ───────────────────────────────────────
       case 'setReplyMode': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const room = await setReplyMode(
           store, code, str(p.requesterName),
           p.mode as Parameters<typeof setReplyMode>[3],
@@ -192,7 +192,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
         return { room };
       }
       case 'directInvoke': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const target = p.target as { name?: string } | undefined;
         const source = p.source === 'moderator' ? 'moderator' : 'host';
         const state = await getTurnState(store, code);
@@ -201,7 +201,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
         return { added: true };
       }
       case 'skipCurrent': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const state = await getTurnState(store, code);
         if (!state) return { skipped: null };
         const next = skipQueueHead(state);
@@ -223,21 +223,42 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
   }
 }
 
-/** Shared by the admin actions; see assertHost below for why this exists. */
-async function assertHostFor(
-  store: UpstashClient,
-  code: string,
-  requesterName: string,
-  hostKey: string | undefined,
-): Promise<void> {
-  const room = await storeGetRoom(store, code);
-  if (hostKey && await verifyHostKey(store, code, hostKey)) return;
-  if (requesterName === room.createdBy) return;
-  throw new RemoteRoomApiError(
+function notHostError(room: Room): RemoteRoomApiError {
+  return new RemoteRoomApiError(
     `Only the host (${room.createdBy}) can do this. Pass the hostKey you got from room_create.`,
     403,
     'NotHostError',
   );
+}
+
+async function requireHostKey(
+  store: UpstashClient,
+  code: string,
+  hostKey: string | undefined,
+): Promise<void> {
+  const room = await storeGetRoom(store, code);
+
+  if (!hostKey) {
+    throw notHostError(room);
+  }
+
+  try {
+    await verifyHostKey(store, code, hostKey);
+  } catch (error) {
+    if (error instanceof HostNameTakenError) {
+      throw notHostError(room);
+    }
+    throw error;
+  }
+}
+
+/** Shared by the admin actions; requesterName is display data, not auth. */
+async function assertHostFor(
+  store: UpstashClient,
+  code: string,
+  hostKey: string | undefined,
+): Promise<void> {
+  await requireHostKey(store, code, hostKey);
 }
 
 /**
@@ -376,7 +397,7 @@ export async function appendSystemMessage(
   message: Message,
 ): Promise<void> {
   await guarded(async () => {
-    await assertHost(client, code, requesterName, hostKey);
+    await assertHost(client, code, hostKey);
     await storeAppendSystemMessage(client.store, code, message);
   });
 }
@@ -399,10 +420,17 @@ export async function removeParticipant(
   requesterName: string,
   targetName: string,
   targetClient: 'web' | 'cc' = 'cc',
+  hostKey?: string,
 ): Promise<Room> {
-  return guarded(() =>
-    storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient),
-  );
+  return guarded(async () => {
+    const isSelfRemoval = requesterName === targetName;
+
+    if (!isSelfRemoval) {
+      await requireHostKey(client.store, code, hostKey);
+    }
+
+    return storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient);
+  });
 }
 
 /**
@@ -418,17 +446,9 @@ export async function removeParticipant(
 async function assertHost(
   client: RemoteRoomClient,
   code: string,
-  requesterName: string,
   hostKey: string | undefined,
 ): Promise<void> {
-  const room = await storeGetRoom(client.store, code);
-  if (hostKey && await verifyHostKey(client.store, code, hostKey)) return;
-  if (requesterName === room.createdBy) return;
-  throw new RemoteRoomApiError(
-    `Only the host (${room.createdBy}) can do this. Pass the hostKey you got from room_create.`,
-    403,
-    'NotHostError',
-  );
+  await requireHostKey(client.store, code, hostKey);
 }
 
 export async function endRoom(
@@ -438,7 +458,7 @@ export async function endRoom(
   hostKey: string | undefined,
 ): Promise<Room> {
   return guarded(async () => {
-    await assertHost(client, code, requesterName, hostKey);
+    await assertHost(client, code, hostKey);
     return storeEndRoom(client.store, code);
   });
 }
@@ -450,7 +470,7 @@ export async function reactivateRoom(
   hostKey: string | undefined,
 ): Promise<Room> {
   return guarded(async () => {
-    await assertHost(client, code, requesterName, hostKey);
+    await assertHost(client, code, hostKey);
     return storeReactivateRoom(client.store, code);
   });
 }

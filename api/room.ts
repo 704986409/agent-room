@@ -225,6 +225,7 @@ async function dispatchRoomHttpAction(
           str(p.requesterName),
           str(p.targetName),
           targetClient,
+          typeof p.hostKey === 'string' ? p.hostKey : undefined,
         ),
       };
     }

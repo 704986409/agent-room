@@ -244,12 +244,24 @@ describe('POST /api/room', () => {
 
     const removeRes = await callHandler('POST', {
       action: 'removeParticipant', code: room.code,
-      requesterName: 'Alice', targetName: 'Guest', targetClient: 'web',
+      requesterName: 'Alice', targetName: 'Guest', targetClient: 'web', hostKey: 'hk',
     });
     expect(mocks.removeParticipant).toHaveBeenCalledWith(
-      mocks.client, room.code, 'Alice', 'Guest', 'web',
+      mocks.client, room.code, 'Alice', 'Guest', 'web', 'hk',
     );
     expect(removeRes.body).toEqual({ room });
+  });
+
+  it('forwards a missing hostKey to the participant-removal helper as undefined', async () => {
+    const res = await callHandler('POST', {
+      action: 'removeParticipant', code: room.code,
+      requesterName: 'Alice', targetName: 'Guest', targetClient: 'cc',
+    });
+
+    expect(mocks.removeParticipant).toHaveBeenCalledWith(
+      mocks.client, room.code, 'Alice', 'Guest', 'cc', undefined,
+    );
+    expect(res.body).toEqual({ room });
   });
 
   it('routes end, reactivate, and createReport to the existing client helpers', async () => {
