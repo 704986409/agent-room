@@ -14,6 +14,7 @@ param(
     [string]$TestRoot
 )
 
+$script:McpVersionWasExplicit = $PSBoundParameters.ContainsKey('McpVersion')
 $ErrorActionPreference = 'Stop'
 $script:DefaultBaseUrl = ''
 $script:McpPackageName = 'agent-room-mcp'
@@ -23,6 +24,35 @@ $script:LogPath = $null
 $script:ManagedRuleBegin = '<!-- BEGIN agent-room rules'
 $script:ManagedRuleEnd = '<!-- END agent-room rules -->'
 $script:HookEvents = @('Stop', 'UserPromptSubmit', 'SessionStart')
+
+function Resolve-AgentRoomEffectiveMcpVersion {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'repair', 'status')]
+        [string]$Mode,
+
+        [AllowNull()]
+        [object]$State
+    )
+
+    if ($Mode -eq 'install') { return $McpVersion }
+
+    $stored = if ($null -eq $State) { '' } else { [string](Get-ObjectValue $State 'mcpVersion') }
+    if ($Mode -eq 'repair') {
+        if ($script:McpVersionWasExplicit) { return $McpVersion }
+        if (-not [string]::IsNullOrWhiteSpace($stored)) { return $stored }
+        return $McpVersion
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($stored)) { return $stored }
+    return $null
+}
+
+function Test-AgentRoomMcpVersion {
+    param([AllowNull()][string]$Version)
+    return (-not [string]::IsNullOrWhiteSpace($Version)) -and
+        ($Version -match '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$')
+}
 
 function Resolve-AgentRoomPaths {
     $userHome = $env:USERPROFILE
@@ -192,6 +222,31 @@ function Test-AgentRoomHookCommand {
     param([AllowNull()][object]$Command)
     if ($Command -isnot [string]) { return $false }
     return [regex]::IsMatch($Command, '(?i)\bagent-room-mcp(?:@[^\s"'']+)?\s+hook\b')
+}
+
+function Test-AgentRoomPinnedHookCommand {
+    param(
+        [AllowNull()]
+        [object]$Command,
+
+        [AllowNull()]
+        [string]$ExpectedMcpVersion
+    )
+
+    if ($Command -isnot [string] -or -not (Test-AgentRoomMcpVersion $ExpectedMcpVersion)) { return $false }
+    $expected = "npx -y $script:McpPackageName@$ExpectedMcpVersion hook"
+    return $Command.Trim() -ceq $expected
+}
+
+function Get-AgentRoomManagedEnvKeys {
+    param([Parameter(Mandatory = $true)][string]$Client)
+
+    switch ($Client) {
+        'claude' { return @('CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT') }
+        'gemini' { return @('ANTIGRAVITY_CLI') }
+        { $_ -in @('vscode', 'copilot') } { return @('GITHUB_COPILOT') }
+        default { return @() }
+    }
 }
 
 function Test-NodeVersionString {
@@ -520,7 +575,8 @@ function Get-AgentRoomExistingMcpEntries {
 function Invoke-AgentRoomUpstreamInit {
     param(
         [Parameter(Mandatory = $true)][string]$Target,
-        [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl
+        [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl,
+        [Parameter(Mandatory = $true)][string]$EffectiveMcpVersion
     )
 
     # Prefer the cmd shim on Windows. Invoking npx.ps1 through a computed
@@ -553,8 +609,8 @@ function Invoke-AgentRoomUpstreamInit {
                 Move-Item -LiteralPath $cursorMcpPath -Destination $preservedCursorMcpPath
             }
         }
-        Write-Host "Running upstream init target '$Target' with $script:McpPackageName@$McpVersion"
-        $packageSpec = $script:McpPackageName + '@' + $McpVersion
+        Write-Host "Running upstream init target '$Target' with $script:McpPackageName@$EffectiveMcpVersion"
+        $packageSpec = $script:McpPackageName + '@' + $EffectiveMcpVersion
         $output = & $npxCommand.Source -y $packageSpec init $Target 2>&1
         $exitCode = $LASTEXITCODE
         foreach ($line in $output) { Write-Host $line }
@@ -574,7 +630,8 @@ function Invoke-AgentRoomUpstreamInit {
 function Merge-AgentRoomEntry {
     param(
         [AllowNull()][object]$Current,
-        [AllowNull()][object]$Existing
+        [AllowNull()][object]$Existing,
+        [Parameter(Mandatory = $true)][string]$Client
     )
 
     $merged = [ordered]@{}
@@ -592,15 +649,18 @@ function Merge-AgentRoomEntry {
     $oldEnvironment = Get-ObjectValue $Existing 'env'
     $newEnvironment = Get-ObjectValue $Current 'env'
     if ($oldEnvironment -is [System.Collections.IDictionary]) {
-        foreach ($key in $oldEnvironment.Keys) { $environment[[string]$key] = $oldEnvironment[$key] }
+        foreach ($key in $oldEnvironment.Keys) { Set-ObjectValue $environment ([string]$key) $oldEnvironment[$key] }
     }
+    $managedKeys = @(Get-AgentRoomManagedEnvKeys -Client $Client)
     if ($newEnvironment -is [System.Collections.IDictionary]) {
         foreach ($key in $newEnvironment.Keys) {
             $exists = $false
             foreach ($existingKey in $environment.Keys) {
                 if ([string]$existingKey -ieq [string]$key) { $exists = $true; break }
             }
-            if (-not $exists) { $environment[[string]$key] = $newEnvironment[$key] }
+            if (($managedKeys -contains [string]$key) -or -not $exists) {
+                Set-ObjectValue $environment ([string]$key) $newEnvironment[$key]
+            }
         }
     }
     Set-ObjectValue $merged 'env' $environment
@@ -612,11 +672,12 @@ function Normalize-AgentRoomPackageSpec {
         [AllowNull()][object]$Entry,
         [AllowNull()][object]$ExistingEntry,
         [Parameter(Mandatory = $true)][string]$Client,
-        [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl
+        [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl,
+        [Parameter(Mandatory = $true)][string]$EffectiveMcpVersion
     )
 
-    $normalized = Merge-AgentRoomEntry -Current $Entry -Existing $ExistingEntry
-    $spec = $script:McpPackageName + '@' + $McpVersion
+    $normalized = Merge-AgentRoomEntry -Current $Entry -Existing $ExistingEntry -Client $Client
+    $spec = $script:McpPackageName + '@' + $EffectiveMcpVersion
     if ($Client -eq 'vscode') {
         Set-ObjectValue $normalized 'type' 'stdio'
         Set-ObjectValue $normalized 'command' 'cmd'
@@ -636,14 +697,15 @@ function Normalize-AgentRoomJsonMcpFile {
     param(
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Spec,
         [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl,
-        [AllowNull()][object]$ExistingEntry
+        [AllowNull()][object]$ExistingEntry,
+        [Parameter(Mandatory = $true)][string]$EffectiveMcpVersion
     )
 
     $document = Read-AgentRoomJson $Spec.Path
     $servers = Get-ObjectValue $document $Spec.RootKey
     if ($servers -isnot [System.Collections.IDictionary]) { $servers = [ordered]@{} }
     $entry = Get-ObjectValue $servers 'agent-room'
-    $entry = Normalize-AgentRoomPackageSpec -Entry $entry -ExistingEntry $ExistingEntry -Client $Spec.Client -NormalizedBaseUrl $NormalizedBaseUrl
+    $entry = Normalize-AgentRoomPackageSpec -Entry $entry -ExistingEntry $ExistingEntry -Client $Spec.Client -NormalizedBaseUrl $NormalizedBaseUrl -EffectiveMcpVersion $EffectiveMcpVersion
     Set-ObjectValue $servers 'agent-room' $entry
     Set-ObjectValue $document $Spec.RootKey $servers
     Write-AgentRoomJsonAtomic -Path $Spec.Path -Data $document
@@ -884,7 +946,10 @@ function Normalize-AgentRoomCodexHookBlocks {
 }
 
 function Normalize-AgentRoomCodexConfig {
-    param([Parameter(Mandatory = $true)][string]$NormalizedBaseUrl)
+    param(
+        [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl,
+        [Parameter(Mandatory = $true)][string]$EffectiveMcpVersion
+    )
 
     $path = Join-Path $script:Paths.CodexHome 'config.toml'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Upstream init did not create $path." }
@@ -892,12 +957,12 @@ function Normalize-AgentRoomCodexConfig {
     $newLine = if ($content.Contains("`r`n")) { "`r`n" } else { "`n" }
     $lines = [System.Collections.Generic.List[string]]::new()
     foreach ($line in (Split-AgentRoomToml $content)) { $lines.Add([string]$line) }
-    $package = Format-AgentRoomTomlString ($script:McpPackageName + '@' + $McpVersion)
+    $package = Format-AgentRoomTomlString ($script:McpPackageName + '@' + $EffectiveMcpVersion)
     Set-AgentRoomTomlTableKey -Lines $lines -Header '[mcp_servers.agent-room]' -Key 'command' -Value '"npx"'
     Set-AgentRoomTomlTableKey -Lines $lines -Header '[mcp_servers.agent-room]' -Key 'args' -Value ('["-y", ' + $package + ']')
     Set-AgentRoomTomlTableKey -Lines $lines -Header '[mcp_servers.agent-room.env]' -Key 'AGENT_ROOM_BASE_URL' -Value (Format-AgentRoomTomlString $NormalizedBaseUrl)
     $normalized = Join-AgentRoomToml -Lines $lines -NewLine $newLine
-    $normalized = Normalize-AgentRoomCodexHookBlocks -Content $normalized -HookCommand ('npx -y ' + $script:McpPackageName + '@' + $McpVersion + ' hook')
+    $normalized = Normalize-AgentRoomCodexHookBlocks -Content $normalized -HookCommand ('npx -y ' + $script:McpPackageName + '@' + $EffectiveMcpVersion + ' hook')
     $temporary = $path + '.tmp'
     [IO.File]::WriteAllText($temporary, $normalized, (New-Object System.Text.UTF8Encoding($false)))
     Move-Item -LiteralPath $temporary -Destination $path -Force
@@ -920,13 +985,14 @@ function Invoke-AgentRoomNormalization {
     param(
         [Parameter(Mandatory = $true)][string[]]$Targets,
         [Parameter(Mandatory = $true)][string]$NormalizedBaseUrl,
-        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ExistingEntries
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ExistingEntries,
+        [Parameter(Mandatory = $true)][string]$EffectiveMcpVersion
     )
 
-    $hookCommand = 'npx -y ' + $script:McpPackageName + '@' + $McpVersion + ' hook'
+    $hookCommand = 'npx -y ' + $script:McpPackageName + '@' + $EffectiveMcpVersion + ' hook'
     foreach ($spec in (Get-AgentRoomJsonMcpFileSpecs -Targets $Targets)) {
         $existing = $ExistingEntries[$spec.Key]
-        Normalize-AgentRoomJsonMcpFile -Spec $spec -NormalizedBaseUrl $NormalizedBaseUrl -ExistingEntry $existing
+        Normalize-AgentRoomJsonMcpFile -Spec $spec -NormalizedBaseUrl $NormalizedBaseUrl -ExistingEntry $existing -EffectiveMcpVersion $EffectiveMcpVersion
     }
     if ($Targets -contains 'claude') {
         $settingsPath = Join-Path $script:Paths.Home '.claude\settings.json'
@@ -936,7 +1002,7 @@ function Invoke-AgentRoomNormalization {
         Normalize-AgentRoomRules (Join-Path $script:Paths.Home '.claude\CLAUDE.md')
     }
     if ($Targets -contains 'codex') {
-        Normalize-AgentRoomCodexConfig -NormalizedBaseUrl $NormalizedBaseUrl
+        Normalize-AgentRoomCodexConfig -NormalizedBaseUrl $NormalizedBaseUrl -EffectiveMcpVersion $EffectiveMcpVersion
         Normalize-AgentRoomRules (Join-Path $script:Paths.CodexHome 'AGENTS.md')
     }
     if ($Targets -contains 'cursor') {
@@ -1096,18 +1162,57 @@ function Get-AgentRoomCodexHookCounts {
     return $counts
 }
 
+function Get-AgentRoomCodexPinnedHookCounts {
+    param(
+        [Parameter(Mandatory = $true)][string]$Content,
+        [AllowNull()][string]$ExpectedMcpVersion
+    )
+
+    $counts = @{ Stop = 0; UserPromptSubmit = 0; SessionStart = 0 }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    foreach ($line in (Split-AgentRoomToml $Content)) { $lines.Add([string]$line) }
+    $eventHeader = '^\[\[hooks\.(Stop|UserPromptSubmit|SessionStart)\]\]\s*$'
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        $outerMatch = [regex]::Match($lines[$i], $eventHeader)
+        if (-not $outerMatch.Success) { continue }
+        $event = $outerMatch.Groups[1].Value
+        $end = $i + 1
+        while ($end -lt $lines.Count) {
+            if ($lines[$end] -match '^\s*\[' -and $lines[$end].Trim() -cne "[[hooks.$event.hooks]]") { break }
+            $end++
+        }
+        for ($k = $i; $k -lt $end; $k++) {
+            if ($lines[$k].Trim() -cne "[[hooks.$event.hooks]]") { continue }
+            $childEnd = $k + 1
+            while ($childEnd -lt $end -and $lines[$childEnd] -notmatch '^\s*\[') { $childEnd++ }
+            for ($n = $k; $n -lt $childEnd; $n++) {
+                if ($lines[$n] -match '^\s*command\s*=\s*"(?<command>[^"]*)"\s*$' -and
+                    (Test-AgentRoomPinnedHookCommand -Command $Matches.command -ExpectedMcpVersion $ExpectedMcpVersion)) {
+                    $counts[$event]++
+                    break
+                }
+            }
+            $k = $childEnd - 1
+        }
+        $i = $end - 1
+    }
+    return $counts
+}
+
 function Test-AgentRoomMcpEntry {
     param(
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Spec,
-        [Parameter(Mandatory = $true)][string]$ExpectedBaseUrl
+        [Parameter(Mandatory = $true)][string]$ExpectedBaseUrl,
+        [AllowNull()][string]$ExpectedMcpVersion
     )
 
+    if (-not (Test-AgentRoomMcpVersion $ExpectedMcpVersion)) { return $false }
     if (-not (Test-Path -LiteralPath $Spec.Path -PathType Leaf)) { return $false }
     $document = Read-AgentRoomJson $Spec.Path
     $servers = Get-ObjectValue $document $Spec.RootKey
     $entry = Get-ObjectValue $servers 'agent-room'
     if ($entry -isnot [System.Collections.IDictionary]) { return $false }
-    $expectedPackage = $script:McpPackageName + '@' + $McpVersion
+    $expectedPackage = $script:McpPackageName + '@' + $ExpectedMcpVersion
     $args = Get-ObjectValue $entry 'args'
     if ($Spec.Client -eq 'vscode') {
         if ((Get-ObjectValue $entry 'type') -ne 'stdio' -or (Get-ObjectValue $entry 'command') -ne 'cmd') { return $false }
@@ -1123,12 +1228,13 @@ function Test-AgentRoomClientConfiguration {
     param(
         [Parameter(Mandatory = $true)][string]$Client,
         [Parameter(Mandatory = $true)][string[]]$Targets,
-        [Parameter(Mandatory = $true)][string]$ExpectedBaseUrl
+        [Parameter(Mandatory = $true)][string]$ExpectedBaseUrl,
+        [AllowNull()][string]$ExpectedMcpVersion
     )
 
     $mcpOk = $true
     foreach ($spec in (Get-AgentRoomJsonMcpFileSpecs -Targets $Targets)) {
-        if (-not (Test-AgentRoomMcpEntry -Spec $spec -ExpectedBaseUrl $ExpectedBaseUrl)) { $mcpOk = $false }
+        if (-not (Test-AgentRoomMcpEntry -Spec $spec -ExpectedBaseUrl $ExpectedBaseUrl -ExpectedMcpVersion $ExpectedMcpVersion)) { $mcpOk = $false }
     }
     $hookOk = $true
     $rulesOk = $true
@@ -1140,14 +1246,19 @@ function Test-AgentRoomClientConfiguration {
             $hooks = Get-ObjectValue $settings 'hooks'
             foreach ($event in $script:HookEvents) {
                 $count = 0
+                $pinnedCount = 0
                 $groups = Get-ObjectValue $hooks $event
                 foreach ($group in $groups) {
                     $children = Get-ObjectValue $group 'hooks'
                     foreach ($child in $children) {
-                        if (Test-AgentRoomHookCommand (Get-ObjectValue $child 'command')) { $count++ }
+                        $command = Get-ObjectValue $child 'command'
+                        if (Test-AgentRoomHookCommand $command) {
+                            $count++
+                            if (Test-AgentRoomPinnedHookCommand -Command $command -ExpectedMcpVersion $ExpectedMcpVersion) { $pinnedCount++ }
+                        }
                     }
                 }
-                if ($count -ne 1) { $hookOk = $false }
+                if ($count -ne 1 -or $pinnedCount -ne 1) { $hookOk = $false }
             }
         }
         $rulesOk = $rulesOk -and (Test-AgentRoomManagedRules (Join-Path $script:Paths.Home '.claude\CLAUDE.md'))
@@ -1159,12 +1270,15 @@ function Test-AgentRoomClientConfiguration {
             $toml = [IO.File]::ReadAllText($codexPath)
             $mcpTable = [regex]::Match($toml, '(?ms)^\[mcp_servers\.agent-room\]\s*\r?\n(?<body>.*?)(?=^\[|\z)')
             $envTable = [regex]::Match($toml, '(?ms)^\[mcp_servers\.agent-room\.env\]\s*\r?\n(?<body>.*?)(?=^\[|\z)')
-            $package = [regex]::Escape($script:McpPackageName + '@' + $McpVersion)
+            $package = [regex]::Escape($script:McpPackageName + '@' + $ExpectedMcpVersion)
             if (-not $mcpTable.Success -or $mcpTable.Groups['body'].Value -notmatch '(?m)^\s*command\s*=\s*"npx"\s*$' -or
                 $mcpTable.Groups['body'].Value -notmatch ('(?m)^\s*args\s*=\s*\["-y",\s*"' + $package + '"\]\s*$') -or
                 -not $envTable.Success -or $envTable.Groups['body'].Value -notmatch ('(?m)^\s*AGENT_ROOM_BASE_URL\s*=\s*"' + [regex]::Escape($ExpectedBaseUrl) + '"\s*$')) { $mcpOk = $false }
             $counts = Get-AgentRoomCodexHookCounts $toml
-            foreach ($event in $script:HookEvents) { if ($counts[$event] -ne 1) { $hookOk = $false } }
+            $pinnedCounts = Get-AgentRoomCodexPinnedHookCounts -Content $toml -ExpectedMcpVersion $ExpectedMcpVersion
+            foreach ($event in $script:HookEvents) {
+                if ($counts[$event] -ne 1 -or $pinnedCounts[$event] -ne 1) { $hookOk = $false }
+            }
         }
         $rulesOk = $rulesOk -and (Test-AgentRoomManagedRules (Join-Path $script:Paths.CodexHome 'AGENTS.md'))
     }
@@ -1175,8 +1289,15 @@ function Test-AgentRoomClientConfiguration {
             $hooksDoc = Read-AgentRoomJson $hooksPath
             $stop = Get-ObjectValue (Get-ObjectValue $hooksDoc 'hooks') 'stop'
             $count = 0
-            foreach ($item in @($stop)) { if (Test-AgentRoomHookCommand (Get-ObjectValue $item 'command')) { $count++ } }
-            if ($count -ne 1 -or (Get-ObjectValue $hooksDoc 'version') -ne 1) { $hookOk = $false }
+            $pinnedCount = 0
+            foreach ($item in @($stop)) {
+                $command = Get-ObjectValue $item 'command'
+                if (Test-AgentRoomHookCommand $command) {
+                    $count++
+                    if (Test-AgentRoomPinnedHookCommand -Command $command -ExpectedMcpVersion $ExpectedMcpVersion) { $pinnedCount++ }
+                }
+            }
+            if ($count -ne 1 -or $pinnedCount -ne 1 -or (Get-ObjectValue $hooksDoc 'version') -ne 1) { $hookOk = $false }
         }
     }
     if ($Targets -contains 'gemini') { $rulesOk = $rulesOk -and (Test-AgentRoomManagedRules (Join-Path $script:Paths.Home '.gemini\GEMINI.md')) }
@@ -1208,7 +1329,11 @@ function Get-AgentRoomEnvironmentBaseUrl {
 }
 
 function Invoke-AgentRoomStatus {
-    param([AllowNull()][string]$BaseUrlOverride, [switch]$AllowOfflineResult)
+    param(
+        [AllowNull()][string]$BaseUrlOverride,
+        [switch]$AllowOfflineResult,
+        [AllowNull()][string]$ExpectedMcpVersion
+    )
 
     $state = Get-AgentRoomState
     Write-Host 'Agent Room Client Status'
@@ -1216,6 +1341,10 @@ function Invoke-AgentRoomStatus {
         Write-Host 'NOT INSTALLED'
         return 0
     }
+    if ([string]::IsNullOrWhiteSpace($ExpectedMcpVersion)) {
+        $ExpectedMcpVersion = Resolve-AgentRoomEffectiveMcpVersion -Mode 'status' -State $state
+    }
+    $expectedVersionValid = Test-AgentRoomMcpVersion $ExpectedMcpVersion
     $storedBaseUrl = [string](Get-ObjectValue $state 'baseUrl')
     $url = if ([string]::IsNullOrWhiteSpace($BaseUrlOverride)) { $storedBaseUrl } else { Normalize-AgentRoomBaseUrl $BaseUrlOverride }
     Write-Host "Base URL`n  $url"
@@ -1226,7 +1355,11 @@ function Invoke-AgentRoomStatus {
     if ($runtime.NodeReady) { Write-Host "Runtime`n  Node: $($runtime.NodeVersion)" } else { Write-Host 'Runtime`n  Node: NEEDS NODE.JS 20+' }
     if ($runtime.NpmVersion) { Write-Host "  npm: OK ($($runtime.NpmVersion))" } else { Write-Host '  npm: MISSING' }
     if ($runtime.NpxVersion) { Write-Host "  npx: OK ($($runtime.NpxVersion))" } else { Write-Host '  npx: MISSING' }
-    Write-Host "  MCP package: $script:McpPackageName@$(Get-ObjectValue $state 'mcpVersion')"
+    if ($expectedVersionValid) {
+        Write-Host "  MCP package: $script:McpPackageName@$ExpectedMcpVersion"
+    } else {
+        Write-Host '  MCP package: NEEDS REPAIR (install-state.mcpVersion is missing or invalid)'
+    }
 
     $userBaseUrl = Get-AgentRoomEnvironmentBaseUrl
     $consistencyOk = (-not [string]::IsNullOrWhiteSpace($userBaseUrl)) -and
@@ -1235,7 +1368,7 @@ function Invoke-AgentRoomStatus {
     $exitCode = 0
     if (-not $api.Online -and -not $AllowOfflineResult) { $exitCode = 1 }
     if (-not $runtime.IsReady -or -not $consistencyOk) { $exitCode = 1 }
-    if ((Get-ObjectValue $state 'mcpVersion') -cne $McpVersion) { $exitCode = 1 }
+    if (-not $expectedVersionValid) { $exitCode = 1 }
 
     $stateClients = Get-ObjectValue $state 'clients'
     $selection = Expand-AgentRoomStateClients $stateClients
@@ -1250,7 +1383,7 @@ function Invoke-AgentRoomStatus {
             'vscode-copilot' { @('vscode', 'copilot') }
             default { @() }
         }
-        $result = Test-AgentRoomClientConfiguration -Client $client -Targets $targets -ExpectedBaseUrl $storedBaseUrl
+        $result = Test-AgentRoomClientConfiguration -Client $client -Targets $targets -ExpectedBaseUrl $storedBaseUrl -ExpectedMcpVersion $ExpectedMcpVersion
         $label = switch ($client) {
             'gemini-antigravity' { 'Gemini / Antigravity' }
             'vscode-copilot' { 'VS Code / Copilot' }
@@ -1297,6 +1430,12 @@ function Invoke-AgentRoomInstall {
     $previousState = Get-AgentRoomState
     if ($IsRepair -and $null -eq $previousState) { throw 'No Agent Room install state exists. Run install first.' }
 
+    $mode = if ($IsRepair) { 'repair' } else { 'install' }
+    $effectiveMcpVersion = Resolve-AgentRoomEffectiveMcpVersion -Mode $mode -State $previousState
+    if (-not (Test-AgentRoomMcpVersion $effectiveMcpVersion)) {
+        throw 'McpVersion must be a pinned semantic version such as 0.26.24; @latest is not supported.'
+    }
+
     $runtime = Ensure-NodeRuntime
     $resolvedBaseUrl = Resolve-AgentRoomBaseUrl -State $previousState -AllowPrompt
     $api = Test-AgentRoomApi $resolvedBaseUrl
@@ -1330,16 +1469,16 @@ function Invoke-AgentRoomInstall {
 
     Write-Host "Base URL: $resolvedBaseUrl"
     Write-Host ('Client targets: ' + ($selection.Clients -join ', '))
-    if ($null -ne $runtime.NpxCommand) { Write-Host "Pinned MCP package: $script:McpPackageName@$McpVersion" }
+    if ($null -ne $runtime.NpxCommand) { Write-Host "Pinned MCP package: $script:McpPackageName@$effectiveMcpVersion" }
 
     New-AgentRoomConfigBackup | Out-Null
     $existingEntries = Get-AgentRoomExistingMcpEntries -Targets $selection.Targets
     Set-AgentRoomBaseUrl -NormalizedBaseUrl $resolvedBaseUrl
 
     foreach ($target in $selection.Targets) {
-        Invoke-AgentRoomUpstreamInit -Target $target -NormalizedBaseUrl $resolvedBaseUrl
+        Invoke-AgentRoomUpstreamInit -Target $target -NormalizedBaseUrl $resolvedBaseUrl -EffectiveMcpVersion $effectiveMcpVersion
     }
-    Invoke-AgentRoomNormalization -Targets $selection.Targets -NormalizedBaseUrl $resolvedBaseUrl -ExistingEntries $existingEntries
+    Invoke-AgentRoomNormalization -Targets $selection.Targets -NormalizedBaseUrl $resolvedBaseUrl -ExistingEntries $existingEntries -EffectiveMcpVersion $effectiveMcpVersion
 
     $now = [DateTimeOffset]::UtcNow.ToString('o')
     $installedAt = if ($null -ne $previousState -and (Get-ObjectValue $previousState 'installedAt')) {
@@ -1348,14 +1487,14 @@ function Invoke-AgentRoomInstall {
     $state = [ordered]@{
         version = 1
         baseUrl = $resolvedBaseUrl
-        mcpVersion = $McpVersion
+        mcpVersion = $effectiveMcpVersion
         installedAt = $installedAt
         updatedAt = $now
         clients = @($selection.Clients)
     }
     Write-AgentRoomJsonAtomic -Path (Join-Path $script:Paths.StateRoot 'install-state.json') -Data $state
 
-    $statusCode = Invoke-AgentRoomStatus -BaseUrlOverride $resolvedBaseUrl -AllowOfflineResult:$allowOffline
+    $statusCode = Invoke-AgentRoomStatus -BaseUrlOverride $resolvedBaseUrl -AllowOfflineResult:$allowOffline -ExpectedMcpVersion $effectiveMcpVersion
     if ($statusCode -ne 0) { throw 'Post-install status found a client configuration or runtime issue.' }
     Write-Host 'Agent Room client setup completed. Restart the selected AI clients.'
     if ($selection.Clients -contains 'codex') { Write-Host 'Codex may require the one-time /hooks trust confirmation.' }
@@ -1426,9 +1565,6 @@ function Invoke-AgentRoomMain {
     $script:Paths = Resolve-AgentRoomPaths
     Start-AgentRoomTranscript
     try {
-        if ($McpVersion -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
-            throw 'McpVersion must be a pinned semantic version such as 0.26.24; @latest is not supported.'
-        }
         switch ($Action) {
             'install' { return (Invoke-AgentRoomInstall) }
             'repair' { return (Invoke-AgentRoomInstall -IsRepair) }
