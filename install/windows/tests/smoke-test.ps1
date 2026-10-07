@@ -267,6 +267,7 @@ $claudeServers = [ordered]@{
         args = @('-y', 'agent-room-mcp')
         env = [ordered]@{
             claudecode = 'BROKEN'
+            CLAUDE_CODE_ENTRYPOINT = 'claude-desktop'
             CUSTOM_USER_VAR = 'keep-me'
             HTTP_PROXY = 'http://127.0.0.1:7890'
             AGENT_ROOM_BASE_URL = $wrongBaseUrl
@@ -413,6 +414,12 @@ foreach ($spec in $markerSpecs) {
 }
 $claudeCliEntry = (Read-JsonFile (Join-Path $homeRoot '.claude.json')).mcpServers['agent-room']
 Assert-True (@($claudeCliEntry.env.Keys | Where-Object { [string]$_ -ieq 'CLAUDECODE' }).Count -eq 1) 'Claude marker merge created a case-duplicate environment key.'
+Assert-True ($claudeCliEntry.env.CLAUDECODE -ceq '1') 'Claude CLI CLAUDECODE does not match upstream init output.'
+Assert-True ($null -eq (Get-AgentRoomTestEnvValue -Path (Join-Path $homeRoot '.claude.json') -RootKey 'mcpServers' -Name 'CLAUDE_CODE_ENTRYPOINT')) 'Claude CLI retained the stale Desktop entrypoint marker after install.'
+$claudeDesktopPath = Join-Path $sandboxRoot 'AppData\Roaming\Claude\claude_desktop_config.json'
+$claudeDesktopEntry = (Read-JsonFile $claudeDesktopPath).mcpServers['agent-room']
+Assert-True ($claudeDesktopEntry.env.CLAUDECODE -ceq '1') 'Claude Desktop CLAUDECODE does not match upstream init output.'
+Assert-True ($claudeDesktopEntry.env.CLAUDE_CODE_ENTRYPOINT -ceq 'claude-desktop') 'Claude Desktop entrypoint marker was not preserved from upstream init.'
 foreach ($path in @(
     (Join-Path $homeRoot '.claude.json'),
     (Join-Path $sandboxRoot 'AppData\Roaming\Claude\claude_desktop_config.json'),
@@ -429,6 +436,21 @@ foreach ($path in @(
     Assert-True ($entry.env.HTTP_PROXY -ceq 'http://127.0.0.1:7890') "HTTP_PROXY was not preserved in $path."
 }
 Assert-AgentRoomPackageAndHookVersion $stateVersionUnderTest
+
+Write-Host 'Status detects a stale Claude CLI managed marker without modifying configuration'
+$claudeCliPath = Join-Path $homeRoot '.claude.json'
+Set-AgentRoomTestEnvValue -Path $claudeCliPath -RootKey 'mcpServers' -Name 'CLAUDE_CODE_ENTRYPOINT' -Value 'claude-desktop'
+$beforeStaleMarkerStatus = Get-ConfigHashes
+$staleMarkerStatus = Invoke-Installer -Arguments @('status') -ExpectedExitCode 1 -CaptureOutput
+$afterStaleMarkerStatus = Get-ConfigHashes
+Assert-True ([regex]::IsMatch($staleMarkerStatus, '(?s)Clients\s+Claude\s+MCP:\s+NEEDS REPAIR')) 'Status did not report Claude MCP NEEDS REPAIR for the stale CLI entrypoint marker.'
+Assert-True ((ConvertTo-Json $beforeStaleMarkerStatus -Compress) -ceq (ConvertTo-Json $afterStaleMarkerStatus -Compress)) 'Status modified configuration while detecting the stale Claude CLI marker.'
+Invoke-Installer -Arguments @('repair') | Out-Null
+Assert-True ($null -eq (Get-AgentRoomTestEnvValue -Path $claudeCliPath -RootKey 'mcpServers' -Name 'CLAUDE_CODE_ENTRYPOINT')) 'Repair did not remove the stale Claude CLI entrypoint marker.'
+$claudeDesktopEntry = (Read-JsonFile $claudeDesktopPath).mcpServers['agent-room']
+Assert-True ($claudeDesktopEntry.env.CLAUDE_CODE_ENTRYPOINT -ceq 'claude-desktop') 'Repair damaged the current Claude Desktop entrypoint marker.'
+$staleMarkerRepairedStatus = Invoke-Installer -Arguments @('status') -CaptureOutput
+Assert-True ([regex]::IsMatch($staleMarkerRepairedStatus, '(?s)Clients\s+Claude\s+MCP:\s+OK')) 'Status did not pass for Claude after repairing the stale CLI marker.'
 
 Write-Host 'Corrupt managed markers, then repair using state version'
 foreach ($spec in $markerSpecs) { Set-AgentRoomTestEnvValue -Path $spec.Path -RootKey $spec.RootKey -Name $spec.Name -Value 'BROKEN' }

@@ -515,13 +515,13 @@ function Get-AgentRoomJsonMcpFileSpecs {
     foreach ($target in $Targets) {
         switch ($target) {
             'claude' {
-                $specs.Add(@{ Key = 'ClaudeCli'; Client = 'claude'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.claude.json' })
-                $specs.Add(@{ Key = 'ClaudeDesktop'; Client = 'claude'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.AppData 'Claude\claude_desktop_config.json' })
+                $specs.Add(@{ Key = 'ClaudeCli'; Client = 'claude'; Surface = 'cli'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.claude.json' })
+                $specs.Add(@{ Key = 'ClaudeDesktop'; Client = 'claude'; Surface = 'desktop'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.AppData 'Claude\claude_desktop_config.json' })
             }
-            'cursor' { $specs.Add(@{ Key = 'CursorMcp'; Client = 'cursor'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.cursor\mcp.json' }) }
-            'gemini' { $specs.Add(@{ Key = 'GeminiMcp'; Client = 'gemini'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.gemini\config\mcp_config.json' }) }
-            'vscode' { $specs.Add(@{ Key = 'VSCodeMcp'; Client = 'vscode'; RootKey = 'servers'; Path = Join-Path $script:Paths.AppData 'Code\User\mcp.json' }) }
-            'copilot' { $specs.Add(@{ Key = 'CopilotMcp'; Client = 'copilot'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.CopilotHome 'mcp-config.json' }) }
+            'cursor' { $specs.Add(@{ Key = 'CursorMcp'; Client = 'cursor'; Surface = 'default'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.cursor\mcp.json' }) }
+            'gemini' { $specs.Add(@{ Key = 'GeminiMcp'; Client = 'gemini'; Surface = 'default'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.Home '.gemini\config\mcp_config.json' }) }
+            'vscode' { $specs.Add(@{ Key = 'VSCodeMcp'; Client = 'vscode'; Surface = 'default'; RootKey = 'servers'; Path = Join-Path $script:Paths.AppData 'Code\User\mcp.json' }) }
+            'copilot' { $specs.Add(@{ Key = 'CopilotMcp'; Client = 'copilot'; Surface = 'default'; RootKey = 'mcpServers'; Path = Join-Path $script:Paths.CopilotHome 'mcp-config.json' }) }
         }
     }
     return $specs.ToArray()
@@ -652,6 +652,9 @@ function Merge-AgentRoomEntry {
         foreach ($key in $oldEnvironment.Keys) { Set-ObjectValue $environment ([string]$key) $oldEnvironment[$key] }
     }
     $managedKeys = @(Get-AgentRoomManagedEnvKeys -Client $Client)
+    foreach ($managedKey in $managedKeys) {
+        Remove-ObjectValue $environment $managedKey | Out-Null
+    }
     if ($newEnvironment -is [System.Collections.IDictionary]) {
         foreach ($key in $newEnvironment.Keys) {
             $exists = $false
@@ -1199,6 +1202,55 @@ function Get-AgentRoomCodexPinnedHookCounts {
     return $counts
 }
 
+function Get-AgentRoomExpectedManagedEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    switch ("$Client|$Surface") {
+        'claude|cli' {
+            return [ordered]@{ CLAUDECODE = '1' }
+        }
+        'claude|desktop' {
+            return [ordered]@{ CLAUDECODE = '1'; CLAUDE_CODE_ENTRYPOINT = 'claude-desktop' }
+        }
+        'gemini|default' {
+            return [ordered]@{ ANTIGRAVITY_CLI = '1' }
+        }
+        'vscode|default' {
+            return [ordered]@{ GITHUB_COPILOT = '1' }
+        }
+        'copilot|default' {
+            return [ordered]@{ GITHUB_COPILOT = '1' }
+        }
+        default {
+            return [ordered]@{}
+        }
+    }
+}
+
+function Test-AgentRoomManagedEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Environment,
+        [Parameter(Mandatory = $true)][string]$Client,
+        [Parameter(Mandatory = $true)][string]$Surface
+    )
+
+    $managedKeys = @(Get-AgentRoomManagedEnvKeys -Client $Client)
+    $expected = Get-AgentRoomExpectedManagedEnvironment -Client $Client -Surface $Surface
+    foreach ($managedKey in $managedKeys) {
+        $actualValue = Get-ObjectValue $Environment $managedKey
+        $expectedValue = Get-ObjectValue $expected $managedKey
+        if ($null -eq $expectedValue) {
+            if ($null -ne $actualValue) { return $false }
+            continue
+        }
+        if ([string]$actualValue -cne [string]$expectedValue) { return $false }
+    }
+    return $true
+}
+
 function Test-AgentRoomMcpEntry {
     param(
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Spec,
@@ -1221,7 +1273,10 @@ function Test-AgentRoomMcpEntry {
         if ((Get-ObjectValue $entry 'command') -ne 'npx') { return $false }
         if (($args -join '|') -cne ('-y|' + $expectedPackage)) { return $false }
     }
-    return ((Get-ObjectValue (Get-ObjectValue $entry 'env') 'AGENT_ROOM_BASE_URL') -ceq $ExpectedBaseUrl)
+    $environment = Get-ObjectValue $entry 'env'
+    if ((Get-ObjectValue $environment 'AGENT_ROOM_BASE_URL') -cne $ExpectedBaseUrl) { return $false }
+    if ($environment -isnot [System.Collections.IDictionary]) { return $false }
+    return (Test-AgentRoomManagedEnvironment -Environment $environment -Client $Spec.Client -Surface $Spec.Surface)
 }
 
 function Test-AgentRoomClientConfiguration {
