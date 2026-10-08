@@ -26,6 +26,13 @@ function resultOf(reply) {
   return reply.parsed.result;
 }
 
+function pipelineResults(reply) {
+  assert.equal(reply.response.ok, true, `HTTP ${reply.response.status}`);
+  const items = Array.isArray(reply.parsed) ? reply.parsed : reply.parsed?.result;
+  assert.ok(Array.isArray(items), 'pipeline response must contain command results');
+  return items.map(item => item.result);
+}
+
 async function setGet(baseUrl, token, key, label) {
   const set = await post(baseUrl, token, '/', ['SET', key, label, 'EX', 60]);
   assert.equal(resultOf(set), 'OK');
@@ -46,7 +53,7 @@ async function run() {
     ['SET', `${privateKey}:pipeline`, 'private-pipeline', 'EX', 60],
     ['GET', `${privateKey}:pipeline`],
   ]);
-  assert.deepEqual(resultOf(privatePipeline).map(item => item.result), ['OK', 'private-pipeline']);
+  assert.deepEqual(pipelineResults(privatePipeline), ['OK', 'private-pipeline']);
   process.stdout.write('SRH private SET/GET and pipeline: PASS\n');
 
   await setGet(webUrl, webToken, webKey, 'web');
@@ -54,7 +61,7 @@ async function run() {
     ['SET', `${webKey}:pipeline`, 'web-pipeline', 'EX', 60],
     ['GET', `${webKey}:pipeline`],
   ]);
-  assert.deepEqual(resultOf(webPipeline).map(item => item.result), ['OK', 'web-pipeline']);
+  assert.deepEqual(pipelineResults(webPipeline), ['OK', 'web-pipeline']);
   process.stdout.write('SRH web SET/GET and pipeline: PASS\n');
 
   const proxyBase = 'http://127.0.0.1:3000/redis';
@@ -65,7 +72,7 @@ async function run() {
     ['SET', `${proxyKey}:pipeline`, 'proxy-pipeline', 'EX', 60],
     ['GET', `${proxyKey}:pipeline`],
   ]);
-  assert.deepEqual(resultOf(proxyPipeline).map(item => item.result), ['OK', 'proxy-pipeline']);
+  assert.deepEqual(pipelineResults(proxyPipeline), ['OK', 'proxy-pipeline']);
   process.stdout.write('/redis pipeline: PASS\n');
 
   const dangerous = await post(proxyBase, proxyToken, '/', ['FLUSHALL']);
