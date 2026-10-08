@@ -3,6 +3,7 @@ FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
+COPY tsconfig.base.json ./
 COPY packages ./packages
 COPY apps ./apps
 COPY api ./api
