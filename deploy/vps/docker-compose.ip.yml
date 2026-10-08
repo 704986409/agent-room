@@ -1,0 +1,104 @@
+name: agent-room
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/vps/Dockerfile
+      args:
+        VITE_PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+        VITE_UPSTASH_REDIS_REST_URL: ${VITE_UPSTASH_REDIS_REST_URL:?VITE_UPSTASH_REDIS_REST_URL is required}
+        VITE_UPSTASH_REDIS_REST_TOKEN: ${WEB_PROXY_TOKEN:?WEB_PROXY_TOKEN is required}
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL is required}
+      UPSTASH_REDIS_REST_URL: http://redis-rest-private
+      UPSTASH_REDIS_REST_TOKEN: ${SRH_PRIVATE_TOKEN:?SRH_PRIVATE_TOKEN is required}
+      WEB_PROXY_TOKEN: ${WEB_PROXY_TOKEN:?WEB_PROXY_TOKEN is required}
+      SRH_WEB_URL: http://redis-rest-web
+      SRH_WEB_TOKEN: ${SRH_WEB_TOKEN:?SRH_WEB_TOKEN is required}
+    ports:
+      - "${HOST_PORT:-3100}:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      redis-rest-private:
+        condition: service_started
+      redis-rest-web:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/app/deploy/vps/scripts/healthcheck.sh"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging: &rotated-logs
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - agent-room-private
+
+  redis:
+    image: redis:7.4-alpine
+    environment:
+      REDIS_BACKEND_PASSWORD: ${REDIS_BACKEND_PASSWORD:?REDIS_BACKEND_PASSWORD is required}
+      REDIS_WEB_PASSWORD: ${REDIS_WEB_PASSWORD:?REDIS_WEB_PASSWORD is required}
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - ../../../runtime/users.acl:/usr/local/etc/redis/users.acl:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH=$$REDIS_BACKEND_PASSWORD redis-cli --user backend ping | grep -q PONG
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    logging: *rotated-logs
+    networks:
+      - agent-room-private
+
+  redis-rest-private:
+    image: hiett/serverless-redis-http:latest
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: ${SRH_PRIVATE_TOKEN:?SRH_PRIVATE_TOKEN is required}
+      SRH_CONNECTION_STRING: redis://backend:${REDIS_BACKEND_PASSWORD:?REDIS_BACKEND_PASSWORD is required}@redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *rotated-logs
+    networks:
+      - agent-room-private
+
+  redis-rest-web:
+    image: hiett/serverless-redis-http:latest
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: ${SRH_WEB_TOKEN:?SRH_WEB_TOKEN is required}
+      SRH_CONNECTION_STRING: redis://web:${REDIS_WEB_PASSWORD:?REDIS_WEB_PASSWORD is required}@redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *rotated-logs
+    networks:
+      - agent-room-private
+
+volumes:
+  redis-data:
+    name: agent-room-redis-data
+
+networks:
+  agent-room-private:
+    name: agent-room-private
+    driver: bridge

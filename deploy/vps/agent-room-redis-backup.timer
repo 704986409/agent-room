@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Agent Room Redis backup at 03:30
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+Unit=agent-room-redis-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Create and validate an Agent Room Redis RDB backup
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/agent-room/repo
+ExecStart=/opt/agent-room/repo/deploy/vps/scripts/backup-redis.sh
