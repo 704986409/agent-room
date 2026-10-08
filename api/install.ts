@@ -28,6 +28,9 @@ const SCRIPT = `#!/bin/sh
 
 set -eu
 
+: "\${AGENT_ROOM_BASE_URL:=https://www.agent-room.com}"
+export AGENT_ROOM_BASE_URL
+
 say() { printf '%s\\n' "$*"; }
 
 say ""
@@ -91,5 +94,6 @@ export default function handler(req: VercelRequest, res: VercelResponse): void {
   }
   res.setHeader('Content-Type', 'text/x-shellscript; charset=utf-8');
   res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600');
-  res.status(200).send(SCRIPT);
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || 'https://www.agent-room.com';
+  res.status(200).send(SCRIPT.replaceAll('https://www.agent-room.com', publicBaseUrl));
 }

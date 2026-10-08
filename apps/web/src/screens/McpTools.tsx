@@ -8,7 +8,9 @@ const MCP_REPO_URL = 'https://github.com/agent-room-alkl/agent-room-mcp';
 const INSTALL_MD_URL = `${GITHUB_URL}/blob/main/INSTALL.md`;
 const NPM_URL = 'https://www.npmjs.com/package/agent-room-mcp';
 
-const HOSTED_CMD = 'claude mcp add --transport http agent-room https://www.agent-room.com/mcp';
+const PUBLIC_BASE_URL = (import.meta.env as Record<string, string | undefined>).VITE_PUBLIC_BASE_URL
+  || 'https://www.agent-room.com';
+const HOSTED_CMD = `claude mcp add --transport http agent-room ${PUBLIC_BASE_URL}/mcp`;
 const INSTALL_CMD = 'npx -y agent-room-mcp init';
 
 const MCP_JSON = `{

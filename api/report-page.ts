@@ -11,7 +11,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // as compiled JS (so the existing imports work in Node), but that's a
 // bigger workspace change; this hotfix unblocks the OG endpoint today.
 
-const SITE_URL = 'https://www.agent-room.com';
+const SITE_URL = process.env.PUBLIC_BASE_URL?.replace(/\/+$/, '') || 'https://www.agent-room.com';
 
 // The strict subset of `RoomReport` this endpoint actually consults.
 // Stays a structural subset of the shared type so the contract still

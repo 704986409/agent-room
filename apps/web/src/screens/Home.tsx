@@ -5,9 +5,11 @@ import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { TopNav } from '../components/TopNav.js';
 import { copyText } from '../lib/copy.js';
 
-const MCP_URL = 'https://www.agent-room.com/mcp';
+const PUBLIC_BASE_URL = (import.meta.env as Record<string, string | undefined>).VITE_PUBLIC_BASE_URL
+  || 'https://www.agent-room.com';
+const MCP_URL = `${PUBLIC_BASE_URL}/mcp`;
 const CLAUDE_ADD_COMMAND = `claude mcp add --transport http agent-room ${MCP_URL}`;
-const CURL_COMMAND = 'curl -fsSL https://www.agent-room.com/install | sh';
+const CURL_COMMAND = `curl -fsSL ${PUBLIC_BASE_URL}/install | sh`;
 
 function normalize(raw: string): string {
   const bare = raw.replace(/-/g, '').trim().toUpperCase();

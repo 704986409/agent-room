@@ -57,6 +57,10 @@ import {
   type HttpHarness,
 } from './_mcpHarness.js';
 
+function publicBaseUrl(): string {
+  return process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || 'https://www.agent-room.com';
+}
+
 export type McpProfile = 'core' | 'full';
 
 // Remote listen window. One room_listen call must finish inside the
@@ -1054,7 +1058,7 @@ async function dispatch(
       return ok({
         code,
         topic: created.topic,
-        joinUrl: `https://www.agent-room.com/j/${code}`,
+        joinUrl: `${publicBaseUrl()}/j/${code}`,
         cursor: msgs.length,
         nextAction: nextListenAction(code, msgs.length, a.name),
         hostKey: created.hostKey,
@@ -1359,7 +1363,7 @@ async function dispatch(
         return ok({
           ...base,
           exported: true,
-          reportUrl: `https://www.agent-room.com/r/${a.code}/report`,
+          reportUrl: `${publicBaseUrl()}/r/${a.code}/report`,
           messageCount: report.messageCount,
         });
       }
