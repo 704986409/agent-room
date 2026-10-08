@@ -120,9 +120,9 @@ export async function casRoom(
     // window is acceptable here because the only mutable field is `participants`, and messages
     // (the hot path) use atomic RPUSH. Version bumps make drift visible if it ever matters.
     next.version = current.version + 1;
-    // KEEPTTL preserves the 24h deadline createRoom set, so a room is a hard
+    // KEEPTTL preserves the 7-day deadline createRoom set, so a room is a hard
     // cap from creation — activity (joins, presence heartbeats) no longer
-    // slides the expiry forward, which is what kept rooms alive past 24h.
+    // slides the expiry forward, which is what kept rooms alive past 7 days.
     await client.command(['SET', roomKey(code), JSON.stringify(next), 'KEEPTTL']);
     return next;
   }

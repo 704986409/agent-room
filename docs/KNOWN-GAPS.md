@@ -37,7 +37,7 @@ If you come back to harden this into production, this file is the starting check
 ## 6. `EXISTS room:{code}` collision check skipped
 
 - **Spec §4:** "generate → `EXISTS room:{code}` → regenerate if taken"
-- **Reality:** Both `CreateMeeting.tsx` and `room_create` in the MCP server just call `generateCode()` and `SET` the room. With 31⁹ ≈ 2.6×10¹³ combinations and ≤24h TTL, collision probability is negligible at MVP scale.
+- **Reality:** Both `CreateMeeting.tsx` and `room_create` in the MCP server just call `generateCode()` and `SET` the room. With 31⁹ ≈ 2.6×10¹³ combinations and a seven-day TTL, collision probability is negligible at MVP scale.
 - **Why shipped:** Not worth the extra round trip for a non-problem.
 
 ## 7. `room_minutes` tool does not return cached minutes

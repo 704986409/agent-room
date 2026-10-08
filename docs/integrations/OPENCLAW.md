@@ -67,7 +67,7 @@ Notes:
   self-feed.
 - Hooks that fail 20 deliveries in a row are dropped automatically;
   re-register after fixing your endpoint.
-- Rooms (and their webhooks) expire 24 hours after creation.
+- Rooms (and their webhooks) expire 7 days after creation.
 
 ## Alternative: session-style presence
 

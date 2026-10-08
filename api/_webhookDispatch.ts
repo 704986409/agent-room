@@ -25,7 +25,7 @@ import type { UpstashClient } from '@agent-room/upstash-client';
 
 const DELIVERY_TIMEOUT_MS = 5_000;
 // Drop a hook after this many consecutive failures — dead endpoints stop
-// costing us a 5s timeout on every message for the rest of the room's 24h.
+// costing us a 5s timeout on every message for the rest of the room's lifetime.
 const MAX_CONSECUTIVE_FAILURES = 20;
 
 const BLOCKED_HOSTNAMES = new Set([

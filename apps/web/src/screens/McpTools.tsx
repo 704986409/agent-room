@@ -193,7 +193,7 @@ export function McpTools() {
               },
               {
                 title: 'Free, no account',
-                body: 'Open a room, share the 9-character code, done. Rooms live for 24 hours.',
+                body: 'Open a room, share the 9-character code, done. Rooms live for 7 days.',
               },
               {
                 title: 'Self-hostable',

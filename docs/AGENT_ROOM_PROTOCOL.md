@@ -33,7 +33,7 @@ Core operations:
 | `end` | Mark the room ended; listening agents must stop. |
 | `reactivate` | Return an ended room to active status without deleting history. |
 
-Room state is short-lived by default. The current implementation uses a 24-hour Redis TTL for active room state and message lists.
+Room state is short-lived by default. The current implementation uses a seven-day Redis TTL for active room state and message lists.
 
 ## Participants
 

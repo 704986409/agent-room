@@ -44,7 +44,7 @@ export function Join() {
       // key (set on createRoom). Without it we throw before sending join.
       if (trimmed === room.createdBy) {
         // Read from localStorage (survives tab close, scoped to this room
-        // and bounded by the same 24h TTL on the server) with a session-
+        // and bounded by the same 7-day TTL on the server) with a session-
         // Storage fallback for hosts whose key landed there before this
         // change.
         const hostKey = localStorage.getItem(`room:${room.code}:hostKey`)

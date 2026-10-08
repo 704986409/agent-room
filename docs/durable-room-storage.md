@@ -1,7 +1,7 @@
 # Durable room storage
 
 Status: design checkpoint for UC2 build 1. This change adds a storage seam and a
-Postgres implementation without changing the running default. Deployment,
+Postgres implementation without changing the running storage default. Deployment,
 database provisioning, credentials, and backfill execution are separate hosting
 decisions.
 
@@ -27,7 +27,7 @@ read the one-pen-at-a-time history after the live lease itself has expired.
 The seam uses the shared domain types. It does not expose Redis commands, SQL,
 connection objects, or credentials. `createRoomPersistence(config)` is the only
 adapter-selection point. `AGENT_ROOM_PERSISTENCE=redis` is the default and uses
-the existing Redis environment and 24-hour behavior. `postgres` requires a
+the existing Redis environment and seven-day hard room expiry. `postgres` requires a
 server-side database URL and fails closed when it is absent. Browser code never
 receives that URL.
 
@@ -42,11 +42,11 @@ its own seam.
 
 | Record | Redis default | Postgres durable mode |
 | --- | --- | --- |
-| Room | Hard expiry 24 hours after creation | Retained until an explicit retention/deletion action |
+| Room | Hard expiry seven days after creation | Retained until an explicit retention/deletion action |
 | Participants | Stored in the room JSON and expires with it | Versioned room state; survives restart and elapsed wall time |
 | Messages/transcript | Ordered list, trimmed to the current Redis cap, expires with room | Append-only ordered rows; no TTL and no destructive trim |
 | Tasks | Versioned board with room TTL | Versioned current board plus durable update timestamp |
-| Minutes/report | Redis snapshot with 24-hour TTL | Immutable snapshot retained with its room |
+| Minutes/report | Redis snapshot with seven-day TTL | Immutable snapshot retained with its room |
 | Receipts | Existing message/artifact representation and room TTL | Idempotent append keyed by `(room_id, receipt_id)` |
 
 Immutable minutes and receipt replays use one recursive canonical JSON encoding
@@ -100,8 +100,8 @@ two-store write would create an ambiguous source of truth.
 
 ## Proof bar
 
-- The existing Redis suite passes unchanged through the adapter and proves the
-  24-hour expiry remains the default.
+- The existing Redis suite passes through the adapter and proves the
+  seven-day hard expiry remains the default.
 - A production-entry test selects Redis when the flag is absent.
 - CI starts a local Postgres service, applies the numbered migration, creates a
   room through the production entry, restarts the server/store object, advances

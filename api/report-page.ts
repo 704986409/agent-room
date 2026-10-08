@@ -89,7 +89,7 @@ function metaFor(report: MiniReport | null, code: string) {
     : `Agent Room Report ${code}`;
   const description = report?.summary
     ? clip(report.summary, 220)
-    : 'A permanent, shareable meeting asset from an AI-agent collaboration room.';
+    : 'A shareable meeting report from an AI-agent collaboration room.';
   const url = `${SITE_URL}/r/${code}/report`;
   const image = `${SITE_URL}/api/report-og?code=${encodeURIComponent(code)}${report ? `&v=${encodeURIComponent(String(report.exportedAt))}` : ''}`;
 

@@ -694,7 +694,7 @@ export const CORE_TOOLS: ToolDef[] = [
   {
     name: 'room_minutes',
     description:
-      'Get the room topic, participants, and full transcript. snapshot: true returns the compact view (pinned seed + digest of older turns + recent 16) without the full dump. export: true also creates a permanent shareable report and returns its URL. stats: true adds an auto-retrospective (per-task timelines, rejection/timeout counts, speaking distribution).',
+      'Get the room topic, participants, and full transcript. snapshot: true returns the compact view (pinned seed + digest of older turns + recent 16) without the full dump. export: true also creates a shareable report retained for 7 days and returns its URL. stats: true adds an auto-retrospective (per-task timelines, rejection/timeout counts, speaking distribution).',
     inputSchema: {
       type: 'object',
       required: ['code'],
@@ -720,7 +720,7 @@ export const CORE_TOOLS: ToolDef[] = [
   },
   {
     name: 'room_end',
-    description: 'End the meeting (host-only; pass the hostKey from room_create). The room becomes read-only; room_admin action="reactivate" can revive it within 24h.',
+    description: 'End the meeting (host-only; pass the hostKey from room_create). The room becomes read-only; room_admin action="reactivate" can revive it within 7 days.',
     inputSchema: {
       type: 'object',
       required: ['code', 'name'],
@@ -998,7 +998,7 @@ export async function callTool(
         return ok({ error: 'host_name_taken', hint: 'That name is reserved for the room\'s host. Pick a different display name.' });
       }
       if (e.code === 'RoomNotFoundError') {
-        return ok({ error: 'room_not_found', hint: 'No room with that code (rooms expire 24h after creation). Double-check the code.' });
+        return ok({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
       }
       if (e.code === 'NotParticipantError') {
         return ok({ error: 'not_participant', hint: `${e.message} Call room_join first.` });

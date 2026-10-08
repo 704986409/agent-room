@@ -5,7 +5,7 @@ export const CODE_SEGMENTS = 3;
 export const CODE_LEN = CODE_SEGMENT_LEN * CODE_SEGMENTS;    // 9
 
 // Room lifetime
-export const ROOM_TTL_SECONDS = 24 * 60 * 60;                // 86400
+export const ROOM_TTL_SECONDS = 7 * 24 * 60 * 60;            // 604800
 /**
  * After this long with no chat (type=msg) from anyone, a host/cron may end
  * the room so MCP listen loops can stop. System/join lines do not reset the

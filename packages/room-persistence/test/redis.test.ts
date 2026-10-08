@@ -200,7 +200,7 @@ function receipt(): RoomReceipt {
 }
 
 describe('RedisRoomPersistence compatibility', () => {
-  it('keeps Redis as the production default and the existing hard room TTL', async () => {
+  it('keeps Redis as the production default and stores the seven-day hard room TTL', async () => {
     const redis = new RecordingRedis();
     const server = await RoomRecordServer.fromEnvironment({}, { redisClient: redis });
 
@@ -212,13 +212,13 @@ describe('RedisRoomPersistence compatibility', () => {
     ]);
   });
 
-  it('expires a production-entry Redis room after a 25-hour clock skip', async () => {
+  it('expires a production-entry Redis room after its seven-day hard deadline', async () => {
     const redis = new ExpiringRedis();
     const server = await RoomRecordServer.fromEnvironment({}, { redisClient: redis });
     await server.createRoom(room());
     expect(await server.getRoom(room().code)).toEqual(room());
 
-    redis.advance(25 * 60 * 60);
+    redis.advance(ROOM_TTL_SECONDS + 1);
 
     expect(await server.getRoom(room().code)).toBeNull();
   });

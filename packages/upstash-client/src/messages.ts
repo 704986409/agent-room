@@ -304,7 +304,7 @@ export async function appendMessage(
 }
 
 // Internal helper: write a message to the Redis list, pinning TTL to the
-// room's hard 24h deadline and keeping the absolute-count counter in lockstep.
+// room's hard 7-day deadline and keeping the absolute-count counter in lockstep.
 // INCR on the count key MUST sit in the same pipeline as RPUSH so the count
 // stays in lock-step with the list — listMessages relies on the invariant
 // `totalCount - listLen = number of LTRIMmed entries` to compensate cursors.

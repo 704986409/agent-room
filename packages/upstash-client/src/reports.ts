@@ -1,14 +1,14 @@
-import { extractArtifacts, type Message, type Room, type RoomReport, type TaskBoard } from '@agent-room/shared';
+import { extractArtifacts, ROOM_TTL_SECONDS, type Message, type Room, type RoomReport, type TaskBoard } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { buildRoomRetro } from './retro.js';
 import { deliverablesFromBoard, doneTasks, getTaskBoard } from './tasks.js';
 
 function reportKey(code: string): string { return `room-report:${code}`; }
 
-// Reports self-expire from Redis 24h after export — the same lifetime as the
-// room itself, so no room data outlives the room by design.
-export const REPORT_TTL_SECONDS = 24 * 60 * 60;
-export const REPORT_RETENTION = '1d' as const;
+// Reports self-expire from Redis 7 days after export, using the same retention
+// window as rooms with its own deadline measured from report export.
+export const REPORT_TTL_SECONDS = ROOM_TTL_SECONDS;
+export const REPORT_RETENTION = '7d' as const;
 
 export function buildRoomReport(room: Room, messages: Message[], board?: TaskBoard | null): RoomReport {
   const userMessages = messages.filter(m => m.type === 'msg' && m.text.trim());
@@ -63,7 +63,7 @@ export async function createRoomReport(
 ): Promise<RoomReport> {
   const board = await getTaskBoard(client, room.code).catch(() => null);
   const report = buildRoomReport(room, messages, board);
-  // 24h TTL — the report dies with the room (Redis drops it automatically).
+  // 7-day TTL — Redis drops the report automatically after its retention window.
   await client.command(['SET', reportKey(room.code), JSON.stringify(report), 'EX', REPORT_TTL_SECONDS]);
   return report;
 }

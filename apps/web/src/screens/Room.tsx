@@ -308,9 +308,10 @@ export function Room() {
     try {
       const client = createClient(ENV.upstash);
       await createRoomReport(client, room, messages);
-      // A1: copy the permanent share link to clipboard alongside navigating.
-      // The report key is stored without TTL (see packages/upstash-client/src/reports.ts),
-      // so the link survives past the 24h room TTL — that's exactly the "Save"
+      // A1: copy the share link to clipboard alongside navigating.
+      // The report key has a seven-day TTL measured from export (see
+      // packages/upstash-client/src/reports.ts), so it can outlive the room's
+      // seven-day creation deadline — that's exactly the "Save"
       // half of "Save & Share". Copy first so the toast lives across the
       // route change (ToastHost is mounted at router level).
       const reportUrl = `${window.location.origin}/r/${code}/report`;
@@ -1047,7 +1048,7 @@ export function Room() {
             {ended ? (
               // A1: ended-room CTA pivots from "Reactivate-only" to a primary
               // "Save & Share" call-to-action. Once the meeting wraps, the most
-              // valuable next step is to freeze it into a permanent shareable
+              // valuable next step is to freeze it into a shareable report
               // report (creates the asset + copies the link to clipboard);
               // Reactivate stays available as a secondary option, Back-to-home
               // tertiary. This makes share-link generation a one-click move
@@ -1055,7 +1056,7 @@ export function Room() {
               // the product.
               <div className="border-t border-border-faint p-4 bg-surface-softer">
                 <p className="text-xs text-ink-soft mb-3 text-center">
-                  This meeting has ended. Save it as a permanent report you can share with your team or client.
+                  This meeting has ended. Save a report to share with your team or client for 7 days.
                 </p>
                 <div className="flex flex-wrap gap-3 justify-center items-center">
                   <button

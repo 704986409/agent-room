@@ -8,7 +8,7 @@
 // replies via room_send like any other participant.
 //
 // Storage is a single JSON array under `room-webhooks:{code}`, capped small
-// and expiring on the room's fixed 24h deadline like every other room key.
+// and expiring on the room's fixed 7-day deadline like every other room key.
 // Writes are read-modify-write on that one key; registration is rare and
 // low-stakes enough that we accept the (tiny) lost-update window instead of
 // pulling in a CAS loop.

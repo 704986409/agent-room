@@ -146,8 +146,8 @@ async function main() {
   console.log('\n[12] TTL — room-msgs must expire alongside room (final review fix #2)');
   const roomTtl = (await client.command(['TTL', `room:${code}`])) as number;
   const msgsTtl = (await client.command(['TTL', `room-msgs:${code}`])) as number;
-  check('room:{code} TTL ≈ 86400', roomTtl > 86000 && roomTtl <= ROOM_TTL_SECONDS);
-  check('room-msgs:{code} TTL ≈ 86400', msgsTtl > 86000 && msgsTtl <= ROOM_TTL_SECONDS, `ttl=${msgsTtl}`);
+  check('room:{code} TTL ≈ 604800', roomTtl > 604700 && roomTtl <= ROOM_TTL_SECONDS);
+  check('room-msgs:{code} TTL ≈ 604800', msgsTtl > 604700 && msgsTtl <= ROOM_TTL_SECONDS, `ttl=${msgsTtl}`);
 
   console.log('\n[13] Bulk append under the LTRIM cap');
   // push 10 messages and verify listMessages returns them in order
