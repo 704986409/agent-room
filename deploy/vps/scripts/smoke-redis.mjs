@@ -83,7 +83,7 @@ async function run() {
     'EVAL', "return redis.call('KEYS','*')", 0,
   ]);
   const webEvalReply = `${webEvalKeys.text} ${JSON.stringify(webEvalKeys.parsed)}`;
-  assert.match(webEvalReply, /NOPERM/i, 'web ACL allowed a Lua script to call KEYS');
+  assert.match(webEvalReply, /(?:NOPERM|ACL failure in script)/i, 'web ACL allowed a Lua script to call KEYS');
   process.stdout.write('web ACL EVAL KEYS denial: PASS\n');
 
   for (const key of [privateKey, `${privateKey}:pipeline`, webKey, `${webKey}:pipeline`, proxyKey, `${proxyKey}:pipeline`]) {

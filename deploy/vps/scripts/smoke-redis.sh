@@ -57,10 +57,10 @@ expect_noperm 'web KEYS' web_cli KEYS '*'
 expect_noperm 'web CONFIG' web_cli CONFIG GET '*'
 
 eval_keys_output=$(compose exec -T redis sh -ec 'REDISCLI_AUTH="$REDIS_WEB_PASSWORD" redis-cli --user web EVAL "$1" 0 2>&1 || true' sh "return redis.call('KEYS','*')")
-if ! printf '%s' "$eval_keys_output" | grep -qi NOPERM; then
+if ! printf '%s' "$eval_keys_output" | grep -Eqi 'NOPERM|ACL failure in script'; then
   printf 'SECURITY BLOCKER: web ACL allowed EVAL to call KEYS\n' >&2
   exit 1
 fi
-printf 'web ACL EVAL KEYS: PASS (NOPERM)\n'
+printf 'web ACL EVAL KEYS: PASS (Redis ACL denied the script command)\n'
 
 compose exec -T app node /app/deploy/vps/scripts/smoke-redis.mjs
