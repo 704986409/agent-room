@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type ClipboardEvent, type DragEvent } from 'react';
+import { useRef, useState, useEffect, useCallback, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.js';
 import { useTaskBoard } from '../hooks/useTaskBoard.js';
@@ -10,7 +10,7 @@ import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
-import { PRESENCE_STALE_MS, PRESENCE_DISCONNECTED_MS, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type SystemEventType } from '@agent-room/shared';
+import { PRESENCE_STALE_MS, PRESENCE_DISCONNECTED_MS, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
@@ -339,7 +339,7 @@ export function Room() {
     return () => mq.removeEventListener('change', resetOnDesktop);
   }, []);
 
-  if (error) return <div className="p-10 text-red-600">{error}</div>;
+  if (error && !room) return <RoomRecoverySurface room={room} error={error} />;
   // An agent handed /r/CODE lands here, not on Join: there is no stored
   // identity, so the effect above bounces it to /j/CODE. That bounce is a
   // client-side navigation, and an agent that snapshots the page before it
@@ -685,6 +685,7 @@ export function Room() {
   }
 
   return (
+    <RoomRecoverySurface room={room} error={error}>
     <div className="h-full flex items-center justify-center p-0 sm:px-3 sm:py-4">
       <div className="w-full max-w-7xl h-full sm:h-[88vh] grid grid-rows-[auto_auto_1fr] bg-surface border-0 sm:border border-border rounded-none sm:rounded-xl shadow-none sm:shadow-card overflow-hidden">
         <header className="px-3.5 py-2.5 sm:px-4 sm:py-3 border-b border-border-faint flex justify-between items-center bg-surface shrink-0">
@@ -1275,6 +1276,26 @@ export function Room() {
         </div>
       </div>
     </div>
+    </RoomRecoverySurface>
+  );
+}
+
+export function RoomRecoverySurface({ room, error, children }: {
+  room: Room | null;
+  error: string | null;
+  children?: ReactNode;
+}) {
+  if (error && !room) return <div className="p-10 text-red-600">{error}</div>;
+
+  return (
+    <>
+      {room && error && (
+        <div role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+          Connection temporarily unavailable. Retrying…
+        </div>
+      )}
+      {children}
+    </>
   );
 }
 

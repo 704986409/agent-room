@@ -56,6 +56,8 @@ COPY deploy/vps/scripts/smoke-redis.mjs ./deploy/vps/scripts/smoke-redis.mjs
 
 RUN chmod 755 deploy/vps/scripts/healthcheck.sh
 
+USER node
+
 EXPOSE 3000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
   CMD ["/app/deploy/vps/scripts/healthcheck.sh"]

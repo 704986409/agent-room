@@ -301,23 +301,23 @@ function sendHealth(response: ServerResponse, statusCode: number, body: unknown)
   response.end(JSON.stringify(body));
 }
 
-async function handleReady(response: ServerResponse): Promise<void> {
-  const url = process.env.UPSTASH_REDIS_REST_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!url || !token) {
-    sendHealth(response, 503, { ready: false });
-    return;
-  }
+async function pingRedisRest(url: string | undefined, token: string | undefined): Promise<boolean> {
+  if (!url || !token) return false;
   try {
     const result = await createClient({ url, token }).command<string>(['PING']);
-    if (result !== 'PONG') {
-      sendHealth(response, 503, { ready: false });
-      return;
-    }
-    sendHealth(response, 200, { ready: true });
+    return result === 'PONG';
   } catch {
-    sendHealth(response, 503, { ready: false });
+    return false;
   }
+}
+
+async function handleReady(response: ServerResponse): Promise<void> {
+  const [privateRedis, webRedis] = await Promise.all([
+    pingRedisRest(process.env.UPSTASH_REDIS_REST_URL, process.env.UPSTASH_REDIS_REST_TOKEN),
+    pingRedisRest(process.env.SRH_WEB_URL, process.env.SRH_WEB_TOKEN),
+  ]);
+  const ready = privateRedis && webRedis;
+  sendHealth(response, ready ? 200 : 503, { ready, privateRedis, webRedis });
 }
 
 function mimeType(pathname: string): string {

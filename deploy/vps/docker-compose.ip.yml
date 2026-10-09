@@ -67,7 +67,7 @@ services:
       - agent-room-private
 
   redis-rest-private:
-    image: hiett/serverless-redis-http:latest
+    image: hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
     environment:
       SRH_MODE: env
       SRH_TOKEN: ${SRH_PRIVATE_TOKEN:?SRH_PRIVATE_TOKEN is required}
@@ -81,7 +81,7 @@ services:
       - agent-room-private
 
   redis-rest-web:
-    image: hiett/serverless-redis-http:latest
+    image: hiett/serverless-redis-http@sha256:5b0bb9239fce53abf87b2018a7a0deb9ec7bd900c5360738fe5fbeeb426f9150
     environment:
       SRH_MODE: env
       SRH_TOKEN: ${SRH_WEB_TOKEN:?SRH_WEB_TOKEN is required}

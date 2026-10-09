@@ -57,6 +57,7 @@ export function useRoom(code: string, selfName: string) {
     console.debug(traceTag, 'pullMessages.fire', { cursor: cursor.current, t: startedAt });
     try {
       const fresh = await listMessages(clientRef.current, code, cursor.current);
+      setState(s => s.error === null ? s : { ...s, error: null });
       console.debug(traceTag, 'pullMessages.fetched', {
         fresh: fresh.length,
         ms: Date.now() - startedAt,
@@ -77,8 +78,8 @@ export function useRoom(code: string, selfName: string) {
           setState(s => {
             const seen = new Set(s.messages.map(m => m.id));
             const deduped = recover.filter(m => !seen.has(m.id));
-            if (deduped.length === 0) return s;
-            return { ...s, messages: [...s.messages, ...deduped] };
+            if (deduped.length === 0) return s.error === null ? s : { ...s, error: null };
+            return { ...s, messages: [...s.messages, ...deduped], error: null };
           });
         }
         return;
@@ -107,8 +108,8 @@ export function useRoom(code: string, selfName: string) {
           newCursor: cursor.current,
           serverTotal: total,
         });
-        if (deduped.length === 0) return s;
-        return { ...s, messages: [...s.messages, ...deduped] };
+        if (deduped.length === 0) return s.error === null ? s : { ...s, error: null };
+        return { ...s, messages: [...s.messages, ...deduped], error: null };
       });
     } catch (e) {
       console.debug(traceTag, 'pullMessages.error', e);
@@ -121,7 +122,7 @@ export function useRoom(code: string, selfName: string) {
   const pullRoom = useCallback(async () => {
     try {
       const r = await getRoom(clientRef.current, code);
-      setState(s => ({ ...s, room: r }));
+      setState(s => ({ ...s, room: r, error: null }));
     } catch (e) {
       setState(s => ({ ...s, error: String(e) }));
     }
