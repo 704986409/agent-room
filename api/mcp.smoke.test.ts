@@ -134,6 +134,31 @@ function parsed(r: { content?: unknown }): Record<string, any> {
 }
 
 describe('hosted MCP endpoint', () => {
+  it('serves the configured deployment URLs on the browser landing page', async () => {
+    const previousPublicBaseUrl = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://ai-room.pupgo.top/';
+
+    try {
+      const url = `http://127.0.0.1:${port}/mcp`;
+      const response = await fetch(url, { headers: { accept: 'text/html' } });
+      const html = await response.text();
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('content-type')).toContain('text/html');
+      expect(html).toContain('https://ai-room.pupgo.top/mcp');
+      expect(html).toContain('https://ai-room.pupgo.top/docs/mcp');
+      expect(html).not.toContain('<your-deployment>');
+
+      const head = await fetch(url, { method: 'HEAD', headers: { accept: 'text/html' } });
+      expect(head.status).toBe(200);
+      expect(head.headers.get('content-type')).toContain('text/html');
+      expect(await head.text()).toBe('');
+    } finally {
+      if (previousPublicBaseUrl === undefined) delete process.env.PUBLIC_BASE_URL;
+      else process.env.PUBLIC_BASE_URL = previousPublicBaseUrl;
+    }
+  });
+
   it('serves the ten-tool surface, without the hosted-only two', async () => {
     const mcp = await connect();
     const tools = (await mcp.listTools()).tools.map(t => t.name);

@@ -86,6 +86,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const accept = typeof req.headers.accept === 'string' ? req.headers.accept : '';
     const wantsHtml = accept.includes('text/html');
     if (wantsHtml) {
+      const publicBaseUrl =
+        process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '')
+        || 'https://www.agent-room.com';
+      const html = MCP_LANDING_HTML.replaceAll('<your-deployment>', publicBaseUrl);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=3600');
       res.status(200);
@@ -93,7 +97,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         res.end();
         return;
       }
-      res.send(MCP_LANDING_HTML);
+      res.send(html);
       return;
     }
   }

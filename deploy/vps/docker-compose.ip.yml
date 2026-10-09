@@ -20,7 +20,7 @@ services:
       SRH_WEB_URL: http://redis-rest-web
       SRH_WEB_TOKEN: ${SRH_WEB_TOKEN:?SRH_WEB_TOKEN is required}
     ports:
-      - "${HOST_PORT:-3100}:3000"
+      - "127.0.0.1:${HOST_PORT:-3100}:3000"
     depends_on:
       redis:
         condition: service_healthy
