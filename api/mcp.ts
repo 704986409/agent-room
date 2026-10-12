@@ -1,9 +1,8 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { createRemoteRoomClient } from './_mcpRoomClient.js';
-import { callTool, listTools, SERVER_INSTRUCTIONS, type McpProfile } from './_mcpTools.js';
+import { createMcpServer } from './_mcpServer.js';
+import type { McpProfile } from './_mcpTools.js';
 import { detectHarness } from './_mcpHarness.js';
 
 // Hosted MCP endpoint (Streamable HTTP) — the zero-install way to connect an
@@ -79,6 +78,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
+  // Legacy SSE sessions require a sticky in-process GET/POST mapping and are
+  // served only by deploy/vps/server.ts, never by stateless Vercel functions.
+  if (req.query.legacySse === '1') {
+    res.status(501).json({ error: 'legacy_sse_requires_vps' });
+    return;
+  }
+
   // Browser / crawler GET (Accept: text/html) — MCP Streamable HTTP uses POST
   // in this deployment; clients probing with text/event-stream must still hit
   // the transport and get the spec-correct 405 when SSE isn't offered.
@@ -113,10 +119,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     typeof req.headers.host === 'string' ? req.headers.host : undefined,
   );
 
-  const server = new Server(
-    { name: 'agent-room', version: '1.0.0' },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
-  );
   // Which client is on the other end, so room_listen can be held to a window
   // this one survives — and so the tool description stops advertising a
   // ceiling that would break it. Stateless mode means `initialize` was usually
@@ -124,13 +126,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   // and the User-Agent header is what actually identifies the caller.
   // detectHarness takes both and falls back to "unknown", which caps nothing
   // and leaves every unidentified client exactly as it was.
-  const harnessFor = () => detectHarness(req.headers['user-agent'], server.getClientVersion()?.name);
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: listTools(profile, harnessFor()) }));
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
-    return callTool(roomClient, profile, name, (args ?? {}) as Record<string, unknown>, harnessFor());
-  });
+  const server = createMcpServer(
+    roomClient,
+    profile,
+    (mcpServer) => detectHarness(req.headers['user-agent'], mcpServer.getClientVersion()?.name),
+  );
 
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

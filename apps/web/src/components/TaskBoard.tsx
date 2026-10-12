@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ClientKind, Participant, RoomArtifact, Task, TaskState } from '@agent-room/shared';
+import type { ClientKind, Participant, RoomArtifact, Task, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
 import { artifactLabel } from '@agent-room/shared';
 import {
   blockTask,
@@ -207,8 +207,12 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
   code: string;
   onMention: (text: string) => void;
 }) {
-  const [panel, setPanel] = useState<'none' | 'reject' | 'block' | 'assign'>('none');
+  const [panel, setPanel] = useState<'none' | 'approve' | 'reject' | 'block' | 'assign'>('none');
   const [note, setNote] = useState('');
+  const [followUpTarget, setFollowUpTarget] = useState('');
+  const [followUpTargetClient, setFollowUpTargetClient] = useState<'' | 'web' | 'cc'>('');
+  const [followUpRequest, setFollowUpRequest] = useState('');
+  const [followUpError, setFollowUpError] = useState('');
   const tone = STATE_TONE[task.state];
 
   const iAmOwner = task.owner === me.name
@@ -221,7 +225,43 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
   const canCancel = !ended && isHost && !CLOSED.has(task.state)
     && !task.evidence && !task.readinessNote?.trim();
 
-  const closePanel = () => { setPanel('none'); setNote(''); };
+  const closePanel = () => {
+    setPanel('none');
+    setNote('');
+    setFollowUpTarget('');
+    setFollowUpTargetClient('');
+    setFollowUpRequest('');
+    setFollowUpError('');
+  };
+
+  const submitReview = async (verdict: 'done' | 'rejected') => {
+    const trimmedNote = note.trim();
+    if (verdict === 'rejected' && (!trimmedNote || trimmedNote.length > 600)) {
+      setFollowUpError('A rejection reason is required and must be no more than 600 characters.');
+      return;
+    }
+    const hasTarget = Boolean(followUpTarget.trim());
+    const hasRequest = Boolean(followUpRequest.trim());
+    if (hasTarget !== hasRequest) {
+      setFollowUpError('Fill in both the participant name and the requested action, or leave both blank.');
+      return;
+    }
+    const followUp: TaskVerifyFollowUp | undefined = hasTarget
+      ? {
+        target: followUpTarget.trim(),
+        request: followUpRequest.trim(),
+        ...(followUpTargetClient ? { targetClient: followUpTargetClient } : {}),
+      }
+      : undefined;
+    const ok = await run(
+      c => verifyTask(
+        c, code, task.id, { name: me.name, client: 'web' }, verdict,
+        trimmedNote || undefined, undefined, followUp,
+      ),
+      verdict === 'done' ? 'Approve failed' : 'Reject failed',
+    );
+    if (ok) closePanel();
+  };
 
   return (
     <article className="overflow-hidden rounded-xl border border-border-faint bg-surface">
@@ -274,6 +314,12 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               body={task.verdict.note}
             />
           )}
+          {task.verdict?.followUp && CLOSED.has(task.state) && (
+            <p className="mt-2 rounded-lg border border-border-faint bg-surface-softer px-2.5 py-2 text-[12px] leading-relaxed text-ink-muted break-words">
+              <span className="font-semibold text-ink-faint">Follow-up for @{task.verdict.followUp.target}: </span>
+              {task.verdict.followUp.request}
+            </p>
+          )}
 
           {panel === 'none' ? (
             <div className="mt-3 flex flex-wrap gap-2">
@@ -289,6 +335,14 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                     className={`${CTRL} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
                     Approve
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPanel('approve')}
+                    className={`${CTRL} border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}
+                  >
+                    Add note or follow-up
                   </button>
                   <button
                     type="button"
@@ -367,11 +421,11 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                 if (ok) closePanel();
               }}
             />
-          ) : (
+          ) : panel === 'block' ? (
             <NotePanel
               id={`task-note-${task.id}`}
-              label={panel === 'reject' ? 'What has to change before this passes?' : 'What exactly is missing?'}
-              submitLabel={panel === 'reject' ? 'Reject task' : 'Mark blocked'}
+              label="What exactly is missing?"
+              submitLabel="Mark blocked"
               destructive
               value={note}
               onChange={setNote}
@@ -379,13 +433,28 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               onCancel={closePanel}
               onSubmit={async () => {
                 const ok = await run(
-                  c => panel === 'reject'
-                    ? verifyTask(c, code, task.id, { name: me.name, client: 'web' }, 'rejected', note.trim())
-                    : blockTask(c, code, task.id, { name: me.name, client: 'web' }, note.trim()),
-                  panel === 'reject' ? 'Reject failed' : 'Block failed',
+                  c => blockTask(c, code, task.id, { name: me.name, client: 'web' }, note.trim()),
+                  'Block failed',
                 );
                 if (ok) closePanel();
               }}
+            />
+          ) : (
+            <VerifyPanel
+              id={`task-review-${task.id}`}
+              verdict={panel === 'approve' ? 'done' : 'rejected'}
+              note={note}
+              onNoteChange={value => { setNote(value); setFollowUpError(''); }}
+              followUpTarget={followUpTarget}
+              onFollowUpTargetChange={value => { setFollowUpTarget(value); setFollowUpError(''); }}
+              followUpTargetClient={followUpTargetClient}
+              onFollowUpTargetClientChange={value => { setFollowUpTargetClient(value); setFollowUpError(''); }}
+              followUpRequest={followUpRequest}
+              onFollowUpRequestChange={value => { setFollowUpRequest(value); setFollowUpError(''); }}
+              followUpError={followUpError}
+              busy={busy}
+              onCancel={closePanel}
+              onSubmit={() => submitReview(panel === 'approve' ? 'done' : 'rejected')}
             />
           )}
         </div>
@@ -475,6 +544,110 @@ function NotePanel({ id, label, submitLabel, destructive, value, onChange, busy,
           className={`${CTRL} flex-1 ${destructive ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-accent text-white hover:opacity-90'}`}
         >
           {submitLabel}
+        </button>
+        <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VerifyPanel({
+  id,
+  verdict,
+  note,
+  onNoteChange,
+  followUpTarget,
+  onFollowUpTargetChange,
+  followUpTargetClient,
+  onFollowUpTargetClientChange,
+  followUpRequest,
+  onFollowUpRequestChange,
+  followUpError,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  id: string;
+  verdict: 'done' | 'rejected';
+  note: string;
+  onNoteChange: (value: string) => void;
+  followUpTarget: string;
+  onFollowUpTargetChange: (value: string) => void;
+  followUpTargetClient: '' | 'web' | 'cc';
+  onFollowUpTargetClientChange: (value: '' | 'web' | 'cc') => void;
+  followUpRequest: string;
+  onFollowUpRequestChange: (value: string) => void;
+  followUpError: string;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: () => void | Promise<void>;
+}) {
+  const rejected = verdict === 'rejected';
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-surface-softer p-2.5">
+      <label className="block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-note`}>
+        {rejected ? 'What has to change before this passes?' : 'Review note (optional)'}
+      </label>
+      <textarea
+        id={`${id}-note`}
+        value={note}
+        onChange={event => onNoteChange(event.target.value)}
+        rows={3}
+        maxLength={rejected ? 600 : undefined}
+        className={`mt-1.5 ${FIELD} resize-none py-2 leading-relaxed`}
+      />
+      {rejected && <p className="mt-1 text-[11px] text-ink-soft">A reason is required (up to 600 characters).</p>}
+      <details className="mt-2 rounded-lg border border-border-faint bg-white px-2.5 py-2">
+        <summary className="cursor-pointer text-[11px] font-semibold text-ink-muted">Post-review action (optional)</summary>
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-soft">
+          Use this only when a specific room participant needs to act or respond.
+        </p>
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-target`}>
+          Room participant name
+        </label>
+        <input
+          id={`${id}-target`}
+          value={followUpTarget}
+          onChange={event => onFollowUpTargetChange(event.target.value)}
+          maxLength={120}
+          className={`mt-1 ${FIELD}`}
+        />
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-target-client`}>
+          Client (only if the name is ambiguous)
+        </label>
+        <select
+          id={`${id}-target-client`}
+          value={followUpTargetClient}
+          onChange={event => onFollowUpTargetClientChange(event.target.value as '' | 'web' | 'cc')}
+          className={`mt-1 ${FIELD}`}
+        >
+          <option value="">Resolve by name</option>
+          <option value="web">Web</option>
+          <option value="cc">Agent (cc)</option>
+        </select>
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-request`}>
+          Requested action or decision
+        </label>
+        <textarea
+          id={`${id}-request`}
+          value={followUpRequest}
+          onChange={event => onFollowUpRequestChange(event.target.value)}
+          rows={2}
+          maxLength={240}
+          className={`mt-1 ${FIELD} resize-none py-2 leading-relaxed`}
+        />
+      </details>
+      {followUpError && <p role="alert" className="mt-1 text-[11px] font-semibold text-rose-700">{followUpError}</p>}
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={busy || (rejected && (!note.trim() || note.trim().length > 600))}
+          onClick={onSubmit}
+          className={`${CTRL} flex-1 ${rejected ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+        >
+          {rejected ? 'Reject task' : 'Approve'}
         </button>
         <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
           Cancel

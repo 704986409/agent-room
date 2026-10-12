@@ -1,15 +1,22 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse, type Server as HttpServer } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { extname, isAbsolute, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type {
   VercelApiHandler,
   VercelRequest,
   VercelRequestQuery,
   VercelResponse,
 } from '@vercel/node';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import type { Server as McpServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { createClient } from '@agent-room/upstash-client';
+import { createMcpServer } from '../../api/_mcpServer.js';
+import { createRemoteRoomClient } from '../../api/_mcpRoomClient.js';
+import { detectHarness } from '../../api/_mcpHarness.js';
+import type { McpProfile } from '../../api/_mcpTools.js';
 import deleteRoomBlobsHandler from '../../api/delete-room-blobs.js';
 import installHandler from '../../api/install.js';
 import mcpHandler from '../../api/mcp.js';
@@ -18,13 +25,38 @@ import reportPageHandler from '../../api/report-page.js';
 import roomHandler from '../../api/room.js';
 import uploadHandler from '../../api/upload.js';
 
-const PORT = parsePort(process.env.PORT);
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
 const WEB_ROOT = resolve(process.env.WEB_ROOT?.trim() || resolve(process.cwd(), 'apps/web/dist'));
 const MCP_REQUEST_TIMEOUT_MS = 320_000;
 const API_BODY_LIMIT_BYTES = 20 * 1024 * 1024;
+const SSE_BODY_LIMIT_BYTES = 4 * 1024 * 1024;
+const SSE_HEARTBEAT_MS = 25_000;
+const MAX_SSE_SESSIONS = 64;
 const REDIS_PROXY_BODY_LIMIT_BYTES = 1024 * 1024;
 const MAX_PIPELINE_COMMANDS = 100;
+
+interface SseSession {
+  transport: SSEServerTransport;
+  mcpServer: McpServer;
+  heartbeat?: NodeJS.Timeout;
+  closed: boolean;
+  close(): void;
+}
+
+export interface VpsServerOptions {
+  host?: string;
+  /** Port 0 asks the OS for an available local test port. */
+  port?: number;
+  webRoot?: string;
+  sseHeartbeatMs?: number;
+  maxSseSessions?: number;
+}
+
+export interface VpsApp {
+  server: HttpServer;
+  getSseSessionCount(): number;
+  close(): Promise<void>;
+}
 
 const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   'delete-room-blobs': deleteRoomBlobsHandler,
@@ -345,6 +377,7 @@ async function serveStaticFile(
   response: ServerResponse,
   pathname: string,
   headOnly: boolean,
+  webRoot = WEB_ROOT,
 ): Promise<boolean> {
   let decodedPath: string;
   try {
@@ -353,8 +386,8 @@ async function serveStaticFile(
     sendHealth(response, 400, { error: 'invalid_path' });
     return true;
   }
-  const filePath = resolve(WEB_ROOT, `.${decodedPath === '/' ? '/index.html' : decodedPath}`);
-  const relativePath = relative(WEB_ROOT, filePath);
+  const filePath = resolve(webRoot, `.${decodedPath === '/' ? '/index.html' : decodedPath}`);
+  const relativePath = relative(webRoot, filePath);
   if (relativePath === '..' || relativePath.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(relativePath)) {
     sendHealth(response, 400, { error: 'invalid_path' });
     return true;
@@ -384,7 +417,153 @@ async function serveStaticFile(
   return true;
 }
 
-async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handleSseGet(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  sessions: Map<string, SseSession>,
+  options: Required<Pick<VpsServerOptions, 'sseHeartbeatMs' | 'maxSseSessions'>>,
+): Promise<void> {
+  if (request.method !== 'GET') {
+    response.setHeader('Allow', 'GET');
+    writeJson(response, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  if (sessions.size >= options.maxSseSessions) {
+    writeJson(response, 503, { error: 'sse_session_limit_reached' });
+    return;
+  }
+
+  const profile: McpProfile = url.searchParams.get('profile') === 'core' ? 'core' : 'full';
+  let mcpServer: McpServer | undefined;
+  let transport: SSEServerTransport | undefined;
+  try {
+    const roomClient = createRemoteRoomClient(
+      typeof request.headers.host === 'string' ? request.headers.host : undefined,
+    );
+    mcpServer = createMcpServer(
+      roomClient,
+      profile,
+      (server) => detectHarness(request.headers['user-agent'], server.getClientVersion()?.name),
+    );
+    response.setHeader('X-Accel-Buffering', 'no');
+    response.setHeader('Cache-Control', 'no-cache, no-transform');
+    // The process-wide socket timeout is for ordinary requests. This GET is a
+    // deliberate long-lived stream and has its own heartbeat and session cap.
+    request.socket.setTimeout(0);
+    transport = new SSEServerTransport('/sse/messages', response);
+    const sessionId = transport.sessionId;
+    let session!: SseSession;
+    const close = () => {
+      if (session.closed) return;
+      session.closed = true;
+      if (session.heartbeat) clearInterval(session.heartbeat);
+      sessions.delete(sessionId);
+      void session.transport.close().catch(() => {});
+      void session.mcpServer.close().catch(() => {});
+    };
+    session = { transport, mcpServer, closed: false, close };
+    sessions.set(sessionId, session);
+    transport.onclose = close;
+    transport.onerror = close;
+    response.once('close', close);
+    response.once('error', close);
+
+    await mcpServer.connect(transport);
+    if (!session.closed) {
+      session.heartbeat = setInterval(() => {
+        if (response.destroyed || response.writableEnded) {
+          close();
+          return;
+        }
+        try {
+          response.write(': ping\n\n');
+        } catch {
+          close();
+        }
+      }, options.sseHeartbeatMs);
+      session.heartbeat.unref();
+    }
+  } catch {
+    const session = transport ? sessions.get(transport.sessionId) : undefined;
+    if (session) session.close();
+    else {
+      void transport?.close().catch(() => {});
+      void mcpServer?.close().catch(() => {});
+    }
+    if (!response.headersSent) writeJson(response, 500, { error: 'sse_session_start_failed' });
+    else response.destroy();
+  }
+}
+
+async function handleSsePost(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  sessions: Map<string, SseSession>,
+): Promise<void> {
+  if (request.method !== 'POST') {
+    response.setHeader('Allow', 'POST');
+    writeJson(response, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  const ids = url.searchParams.getAll('sessionId');
+  const sessionId = ids[0];
+  if (ids.length !== 1 || !sessionId || sessionId.length > 128) {
+    writeJson(response, 400, { error: 'invalid_session_id' });
+    return;
+  }
+  const session = sessions.get(sessionId);
+  if (!session || session.closed) {
+    writeJson(response, 404, { error: 'unknown_sse_session' });
+    return;
+  }
+
+  session.heartbeat?.refresh();
+  const contentType = String(request.headers['content-type'] ?? '')
+    .split(';', 1)[0]!.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    try {
+      await session.transport.handlePostMessage(request, response);
+    } catch {
+      session.close();
+    }
+    if (response.statusCode >= 400) session.close();
+    return;
+  }
+
+  let body: unknown;
+  try {
+    const raw = await readRequestBody(request, Math.min(API_BODY_LIMIT_BYTES, SSE_BODY_LIMIT_BYTES));
+    if (!raw.length) throw new RequestBodyError('Request body must contain valid JSON.', 400);
+    body = JSON.parse(raw.toString('utf8')) as unknown;
+  } catch (error) {
+    const statusCode = error instanceof RequestBodyError ? error.status : 400;
+    writeJson(response, statusCode, {
+      error: statusCode === 413 ? 'body_too_large' : 'invalid_json',
+      message: error instanceof Error ? error.message : 'Request body must contain valid JSON.',
+    });
+    session.close();
+    return;
+  }
+
+  try {
+    await session.transport.handlePostMessage(request, response, body);
+    if (response.statusCode >= 400) session.close();
+  } catch {
+    if (!response.headersSent) writeJson(response, 500, { error: 'sse_message_failed' });
+    else response.destroy();
+    session.close();
+  }
+}
+
+async function handleRequest(
+  request: IncomingMessage,
+  response: ServerResponse,
+  sessions: Map<string, SseSession>,
+  webRoot: string,
+  sseOptions: Required<Pick<VpsServerOptions, 'sseHeartbeatMs' | 'maxSseSessions'>>,
+): Promise<void> {
   let url: URL;
   try {
     url = new URL(request.url ?? '/', 'http://agent-room.local');
@@ -394,6 +573,15 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   const pathname = url.pathname.replace(/\/+$/, '') || '/';
+  // These exact protocol routes precede API mapping and static SPA fallback.
+  if (pathname === '/sse') {
+    await handleSseGet(request, response, url, sessions, sseOptions);
+    return;
+  }
+  if (pathname === '/sse/messages') {
+    await handleSsePost(request, response, url, sessions);
+    return;
+  }
   if (pathname === '/healthz') {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       writeJson(response, 405, { error: 'method_not_allowed' });
@@ -465,23 +653,66 @@ async function handleRequest(request: IncomingMessage, response: ServerResponse)
   }
 
   const headOnly = request.method === 'HEAD';
-  if (await serveStaticFile(response, pathname, headOnly)) return;
+  if (await serveStaticFile(response, pathname, headOnly, webRoot)) return;
   if (extname(pathname)) {
     writeJson(response, 404, { error: 'not_found' });
     return;
   }
-  if (await serveStaticFile(response, '/index.html', headOnly)) return;
+  if (await serveStaticFile(response, '/index.html', headOnly, webRoot)) return;
   writeJson(response, 500, { error: 'web_assets_unavailable' });
 }
 
-const server = createServer((request, response) => {
-  void handleRequest(request, response);
-});
-server.requestTimeout = MCP_REQUEST_TIMEOUT_MS;
-server.headersTimeout = MCP_REQUEST_TIMEOUT_MS;
-server.setTimeout(MCP_REQUEST_TIMEOUT_MS);
-server.keepAliveTimeout = 65_000;
+export function createVpsApp(options: VpsServerOptions = {}): VpsApp {
+  const host = options.host ?? HOST;
+  const port = options.port ?? parsePort(process.env.PORT);
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error('port must be an integer from 0 to 65535.');
+  }
+  const webRoot = resolve(options.webRoot ?? WEB_ROOT);
+  const sseOptions = {
+    sseHeartbeatMs: options.sseHeartbeatMs ?? SSE_HEARTBEAT_MS,
+    maxSseSessions: options.maxSseSessions ?? MAX_SSE_SESSIONS,
+  };
+  if (!Number.isSafeInteger(sseOptions.sseHeartbeatMs) || sseOptions.sseHeartbeatMs <= 0) {
+    throw new Error('sseHeartbeatMs must be a positive integer.');
+  }
+  if (!Number.isSafeInteger(sseOptions.maxSseSessions) || sseOptions.maxSseSessions <= 0) {
+    throw new Error('maxSseSessions must be a positive integer.');
+  }
 
-server.listen(PORT, HOST, () => {
-  process.stdout.write(`Agent Room listening on ${HOST}:${PORT}\n`);
-});
+  const sessions = new Map<string, SseSession>();
+  const server = createHttpServer((request, response) => {
+    void handleRequest(request, response, sessions, webRoot, sseOptions);
+  });
+  server.requestTimeout = MCP_REQUEST_TIMEOUT_MS;
+  server.headersTimeout = MCP_REQUEST_TIMEOUT_MS;
+  server.setTimeout(MCP_REQUEST_TIMEOUT_MS);
+  server.keepAliveTimeout = 65_000;
+
+  return {
+    server,
+    getSseSessionCount: () => sessions.size,
+    async close() {
+      for (const session of [...sessions.values()]) session.close();
+      if (!server.listening) return;
+      await new Promise<void>((resolveClose, rejectClose) => {
+        server.close(error => error ? rejectClose(error) : resolveClose());
+      });
+    },
+  };
+}
+
+function startServer(): void {
+  const app = createVpsApp();
+  const port = parsePort(process.env.PORT);
+  app.server.listen(port, HOST, () => {
+    process.stdout.write(`Agent Room listening on ${HOST}:${port}\n`);
+  });
+  const close = () => { void app.close().catch(() => { process.exitCode = 1; }); };
+  process.once('SIGTERM', close);
+  process.once('SIGINT', close);
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
+  startServer();
+}

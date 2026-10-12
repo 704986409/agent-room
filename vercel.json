@@ -14,6 +14,8 @@
       ],
       "destination": "/api/report-page?code=:code"
     },
+    { "source": "/sse", "destination": "/api/mcp?legacySse=1" },
+    { "source": "/sse/messages", "destination": "/api/mcp?legacySse=1" },
     { "source": "/install", "destination": "/api/install" },
     { "source": "/mcp", "destination": "/api/mcp" },
     { "source": "/j/:code", "destination": "/j/index.html" },

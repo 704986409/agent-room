@@ -5,6 +5,8 @@
 // moderator assignments and host @-mentions, so it lives here rather than being
 // re-implemented (slightly differently) at each call site.
 
+import type { ClientKind } from './types.js';
+
 /**
  * Agent names mentioned as `@Name` in `text`, in roster order.
  *
@@ -44,7 +46,12 @@ export function hasMentionSyntax(text: string): boolean {
 /** Just enough of a message to decide who it is aimed at. */
 export interface AddressableMessage {
   text?: string;
-  metadata?: { targetAgentName?: string };
+  metadata?: {
+    targetAgentName?: string;
+    targetAgentClient?: ClientKind;
+    eventType?: string;
+    eventId?: string;
+  };
 }
 
 /** "Claude (2)" also answers to "Claude" — reconnects mint suffixed seats. */
@@ -71,8 +78,27 @@ function nameVariants(name: string): string[] {
  * Suffixed seats match a bare mention too. Waking one agent too many costs a
  * turn; missing the message that was meant for you costs the meeting.
  */
-export function wakesAgent(message: AddressableMessage, selfName: string): boolean {
+export function wakesAgent(
+  message: AddressableMessage,
+  selfName: string,
+  selfClient?: ClientKind,
+): boolean {
   if (!selfName.trim()) return false;
+
+  // Review notices are announcements to the room unless they carry an
+  // explicit follow-up target. Their prose includes the host's @mention, but
+  // that must not wake a similarly named or suffixed agent. This eventId
+  // prefix is specific to task-verification notices; other task_update events
+  // retain the legacy target/@mention behavior below.
+  const isReviewNotice = message.metadata?.eventType === 'task_update'
+    && message.metadata.eventId?.startsWith('task-verification:') === true;
+  if (isReviewNotice) {
+    const target = message.metadata?.targetAgentName;
+    const targetClient = message.metadata?.targetAgentClient;
+    if (!target || !targetClient || !selfClient) return false;
+    return target.trim() === selfName.trim() && targetClient === selfClient;
+  }
+
   const variants = nameVariants(selfName.trim());
   const target = message.metadata?.targetAgentName?.trim();
   if (target && variants.some(v => v.toLowerCase() === target.toLowerCase())) return true;

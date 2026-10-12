@@ -2,6 +2,7 @@ import type { Message, MessageMetadata, RoleInTurn, InvocationType } from '@agen
 import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { findSpeaker, MutedError, NotYourTurnError, getRoom } from './rooms.js';
+import { RoomNotFoundError, UpstashError } from './errors.js';
 import type { TurnSpokenEntry } from './turnState.js';
 import {
   advanceOnTimeout,
@@ -345,6 +346,73 @@ export async function appendSystemMessage(
 ): Promise<void> {
   const room = await getRoom(client, code); // throws RoomNotFoundError if the room is gone
   await rpushMessage(client, code, message, room.createdAt);
+}
+
+// The task board CAS and its verification event must commit together. Keep
+// the message keys, cap, counter, and fixed room deadline alongside the
+// ordinary message writer so this path cannot drift from listMessages().
+const TASK_VERIFY_COMMIT_SCRIPT =
+  "local board = redis.call('GET', KEYS[1])\n" +
+  "if ARGV[1] == 'absent' then\n" +
+  "  if board then return 0 end\n" +
+  "elseif board ~= ARGV[2] then return 0 end\n" +
+  "if redis.call('TYPE', KEYS[4]).ok ~= 'string' then return -1 end\n" +
+  "local listType = redis.call('TYPE', KEYS[2]).ok\n" +
+  "local countType = redis.call('TYPE', KEYS[3]).ok\n" +
+  "if (listType ~= 'none' and listType ~= 'list') or (countType ~= 'none' and countType ~= 'string') then return -2 end\n" +
+  "local expireAt = tonumber(ARGV[4])\n" +
+  "local maxMessages = tonumber(ARGV[6])\n" +
+  "if not expireAt or expireAt < 1 or expireAt % 1 ~= 0 or not maxMessages or maxMessages < 1 or maxMessages % 1 ~= 0 then return -2 end\n" +
+  "if countType == 'string' then\n" +
+  "  local countRaw = redis.call('GET', KEYS[3])\n" +
+  "  if countRaw ~= '0' and not string.match(countRaw, '^[1-9][0-9]*$') then return -2 end\n" +
+  "  if string.len(countRaw) > 19 or (string.len(countRaw) == 19 and countRaw > '9223372036854775806') then return -2 end\n" +
+  "end\n" +
+  "local legacyCount = 0\n" +
+  "if countType == 'none' and listType == 'list' then\n" +
+  "  legacyCount = redis.call('LLEN', KEYS[2])\n" +
+  "end\n" +
+  "if legacyCount > 0 then redis.call('SET', KEYS[3], legacyCount) end\n" +
+  "redis.call('SET', KEYS[1], ARGV[3])\n" +
+  "redis.call('EXPIREAT', KEYS[1], expireAt)\n" +
+  "redis.call('RPUSH', KEYS[2], ARGV[5])\n" +
+  "redis.call('INCR', KEYS[3])\n" +
+  "redis.call('LTRIM', KEYS[2], -maxMessages, -1)\n" +
+  "redis.call('EXPIREAT', KEYS[2], expireAt)\n" +
+  "redis.call('EXPIREAT', KEYS[3], expireAt)\n" +
+  "return 1";
+
+/**
+ * Atomically compare-and-swap a task board and append its verification event.
+ * Returns false only for a board CAS conflict. Storage-layout errors and a
+ * room expiring between its read and commit fail closed before any writes.
+ */
+export async function commitTaskVerification(
+  client: UpstashClient,
+  code: string,
+  expectedRaw: string | null,
+  nextRaw: string,
+  roomCreatedAt: number,
+  message: Message,
+): Promise<boolean> {
+  if (!Number.isSafeInteger(roomCreatedAt) || roomCreatedAt <= 0) {
+    throw new UpstashError('Invalid room creation time for verification commit.');
+  }
+  const createdAt = roomCreatedAt;
+  const expireAt = Math.floor(createdAt / 1000) + ROOM_TTL_SECONDS;
+  if (!Number.isSafeInteger(expireAt) || expireAt <= 0) {
+    throw new UpstashError('Invalid room expiration for verification commit.');
+  }
+  const safe = typeof message.text === 'string' ? message : { ...message, text: '' };
+  const result = Number(await client.command<number>([
+    'EVAL', TASK_VERIFY_COMMIT_SCRIPT, '4',
+    `task-board:${code}`, msgsKey(code), msgCountKey(code), `room:${code}`,
+    expectedRaw === null ? 'absent' : 'present', expectedRaw ?? '', nextRaw,
+    String(expireAt), JSON.stringify(safe), String(MAX_MESSAGES_PER_ROOM),
+  ]));
+  if (result === -1) throw new RoomNotFoundError(code);
+  if (result === -2) throw new UpstashError('Task verification message storage has an invalid Redis key type, counter, or retention metadata.');
+  return result === 1;
 }
 
 // Cursor semantics: `fromIndex` is the absolute count of messages the caller
