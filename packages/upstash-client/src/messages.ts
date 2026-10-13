@@ -34,6 +34,17 @@ function msgsKey(code: string): string { return `room-msgs:${code}`; }
 // pipeline as RPUSH/LTRIM so it can never drift relative to the list.
 function msgCountKey(code: string): string { return `room-msg-count:${code}`; }
 
+function roomExpirationTimestamp(roomCreatedAt: number): number {
+  if (!Number.isSafeInteger(roomCreatedAt) || roomCreatedAt <= 0) {
+    throw new UpstashError('Invalid room creation time for message retention.');
+  }
+  const expireAt = Math.floor(roomCreatedAt / 1000) + ROOM_TTL_SECONDS;
+  if (!Number.isSafeInteger(expireAt) || expireAt <= Math.floor(Date.now() / 1000)) {
+    throw new UpstashError('Room retention deadline has passed; refusing to write messages.');
+  }
+  return expireAt;
+}
+
 /** Next poll cursor after a full `listMessages(..., 0)` when the room has a counter key; `null` = legacy room. */
 export async function getMessageTotalCount(client: UpstashClient, code: string): Promise<number | null> {
   const countRaw = await client.command<unknown>(['GET', msgCountKey(code)]);
@@ -304,20 +315,20 @@ export async function appendMessage(
   };
 }
 
-// Internal helper: write a message to the Redis list, pinning TTL to the
-// room's hard 7-day deadline and keeping the absolute-count counter in lockstep.
+// Internal helper: write a message to the Redis list, pinning TTL no later than
+// the room's hard 7-day deadline and keeping the absolute-count counter in lockstep.
 // INCR on the count key MUST sit in the same pipeline as RPUSH so the count
 // stays in lock-step with the list — listMessages relies on the invariant
 // `totalCount - listLen = number of LTRIMmed entries` to compensate cursors.
-// EXPIREAT (a fixed creation+TTL deadline) rather than EXPIRE means the
-// message list dies exactly when the room does, instead of sliding forward.
+// EXPIREAT LT (a fixed creation+TTL deadline) rather than EXPIRE means the
+// message list cannot slide forward or extend an earlier expiration.
 async function rpushMessage(
   client: UpstashClient,
   code: string,
   message: Message,
   roomCreatedAt: number,
 ): Promise<void> {
-  const expireAt = (Number.isFinite(roomCreatedAt) ? Math.floor(roomCreatedAt / 1000) : Math.floor(Date.now() / 1000)) + ROOM_TTL_SECONDS;
+  const expireAt = roomExpirationTimestamp(roomCreatedAt);
   // Older MCP clients (and raw API callers) can send a message with no
   // `text` — persisting it verbatim crashed every web viewer of the room
   // ("Cannot read properties of undefined (reading 'length')" in Bubble
@@ -327,8 +338,8 @@ async function rpushMessage(
     ['RPUSH', msgsKey(code), JSON.stringify(safe)],
     ['INCR', msgCountKey(code)],
     ['LTRIM', msgsKey(code), -MAX_MESSAGES_PER_ROOM, -1],
-    ['EXPIREAT', msgsKey(code), expireAt],
-    ['EXPIREAT', msgCountKey(code), expireAt],
+    ['EXPIREAT', msgsKey(code), expireAt, 'LT'],
+    ['EXPIREAT', msgCountKey(code), expireAt, 'LT'],
   ]);
 }
 
@@ -372,14 +383,14 @@ const TASK_VERIFY_COMMIT_SCRIPT =
   "if countType == 'none' and listType == 'list' then\n" +
   "  legacyCount = redis.call('LLEN', KEYS[2])\n" +
   "end\n" +
-  "if legacyCount > 0 then redis.call('SET', KEYS[3], legacyCount) end\n" +
-  "redis.call('SET', KEYS[1], ARGV[3])\n" +
-  "redis.call('EXPIREAT', KEYS[1], expireAt)\n" +
+  "if legacyCount > 0 then redis.call('SET', KEYS[3], legacyCount, 'KEEPTTL') end\n" +
+  "redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')\n" +
+  "redis.call('EXPIREAT', KEYS[1], expireAt, 'LT')\n" +
   "redis.call('RPUSH', KEYS[2], ARGV[5])\n" +
   "redis.call('INCR', KEYS[3])\n" +
   "redis.call('LTRIM', KEYS[2], -maxMessages, -1)\n" +
-  "redis.call('EXPIREAT', KEYS[2], expireAt)\n" +
-  "redis.call('EXPIREAT', KEYS[3], expireAt)\n" +
+  "redis.call('EXPIREAT', KEYS[2], expireAt, 'LT')\n" +
+  "redis.call('EXPIREAT', KEYS[3], expireAt, 'LT')\n" +
   "return 1";
 
 /**
@@ -395,14 +406,7 @@ export async function commitTaskVerification(
   roomCreatedAt: number,
   message: Message,
 ): Promise<boolean> {
-  if (!Number.isSafeInteger(roomCreatedAt) || roomCreatedAt <= 0) {
-    throw new UpstashError('Invalid room creation time for verification commit.');
-  }
-  const createdAt = roomCreatedAt;
-  const expireAt = Math.floor(createdAt / 1000) + ROOM_TTL_SECONDS;
-  if (!Number.isSafeInteger(expireAt) || expireAt <= 0) {
-    throw new UpstashError('Invalid room expiration for verification commit.');
-  }
+  const expireAt = roomExpirationTimestamp(roomCreatedAt);
   const safe = typeof message.text === 'string' ? message : { ...message, text: '' };
   const result = Number(await client.command<number>([
     'EVAL', TASK_VERIFY_COMMIT_SCRIPT, '4',

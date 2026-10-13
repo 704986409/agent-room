@@ -180,7 +180,27 @@ describe('task board evidence gate', () => {
       .find(command => command[0] === 'EVAL');
     expect(evalCommand?.[7]).toBe(String(Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS));
     expect(evalCommand?.[1]).toContain("EXPIREAT");
+    expect(evalCommand?.[1]).toContain("'SET', KEYS[1], ARGV[3], 'KEEPTTL'");
+    expect(evalCommand?.[1]).toContain("'EXPIREAT', KEYS[1], expireAt, 'LT'");
     expect(evalCommand?.[1]).not.toContain("'EX',");
+  });
+
+  it('refuses to recreate a task board after the room retention deadline', async () => {
+    const store = installFakeRedis();
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
+    room.createdAt = Date.now() - (ROOM_TTL_SECONDS + 1) * 1000;
+    store.set(`room:${CODE}`, JSON.stringify(room));
+    const client = createClient(ENV);
+    const priorCalls = vi.mocked(fetch).mock.calls.length;
+
+    await expect(createTask(client, CODE, { title: 'Expired room', createdBy: 'Host' }))
+      .rejects.toMatchObject({ name: 'UpstashError' });
+    const attemptedCommands = vi.mocked(fetch).mock.calls.slice(priorCalls)
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[])
+      .filter(command => command[0] === 'EVAL');
+    expect(attemptedCommands).toHaveLength(0);
+    expect(await getTaskBoard(client, CODE)).toBeNull();
+    expect(store.has(`task-board:${CODE}`)).toBe(false);
   });
 
   it('creates a task in todo with an auto-assigned id', async () => {
@@ -469,6 +489,11 @@ describe('task board evidence gate', () => {
     const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
     expect(commitCommand?.[10]).toBe(String(Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS));
     expect(commitCommand?.[12]).toBe(String(MAX_MESSAGES_PER_ROOM));
+    expect(commitCommand?.[1]).toContain("'SET', KEYS[1], ARGV[3], 'KEEPTTL'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[1], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[2], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[3], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'SET', KEYS[3], legacyCount, 'KEEPTTL'");
   });
 
   it('initializes a legacy room counter from its retained list before adding the event', async () => {

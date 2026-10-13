@@ -109,7 +109,7 @@ function roomExpirationTimestamp(room: Room): number {
     throw new UpstashError('Invalid room creation time for task-board expiration.');
   }
   const expireAt = Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS;
-  if (!Number.isSafeInteger(expireAt) || expireAt <= 0) {
+  if (!Number.isSafeInteger(expireAt) || expireAt <= Math.floor(Date.now() / 1000)) {
     throw new UpstashError('Invalid room expiration for task-board write.');
   }
   return expireAt;
@@ -185,8 +185,10 @@ const CAS_SCRIPT =
   "else\n" +
   "  if cur ~= ARGV[2] then return 0 end\n" +
   "end\n" +
-  "redis.call('SET', KEYS[1], ARGV[3])\n" +
-  "redis.call('EXPIREAT', KEYS[1], expireAt)\n" +
+  // KEEPTTL prevents SET from discarding a pre-existing earlier deadline;
+  // EXPIREAT LT then adds a deadline to persistent keys or shortens a later one.
+  "redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')\n" +
+  "redis.call('EXPIREAT', KEYS[1], expireAt, 'LT')\n" +
   "return 1";
 
 async function casWriteTaskBoard(

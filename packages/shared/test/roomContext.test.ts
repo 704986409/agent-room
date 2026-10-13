@@ -85,6 +85,16 @@ describe('buildRoomContextView', () => {
     expect(view.recent).toHaveLength(ROOM_RECENT_LIMIT);
     expect(slimMessage(messages[0]!).name).toBe('Robin');
   });
+
+  it('keeps system review notices out of the compact conversational snapshot', () => {
+    const notice = msg({ time: 1, type: 'sys', name: 'system', client: 'cc', text: '✅ T-05 approved' });
+    const conversation = msg({ time: 2, name: 'QA-Worker', client: 'cc', text: 'I will add a boundary test' });
+    const view = buildRoomContextView([notice, conversation]);
+
+    expect(view.recent.map(message => message.text)).toEqual(['I will add a boundary test']);
+    expect(view.digest).toBeNull();
+    expect(view.olderCount).toBe(0);
+  });
 });
 
 describe('slimMessage attachments', () => {
