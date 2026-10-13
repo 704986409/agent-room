@@ -147,6 +147,21 @@ docker compose -p agent-room --env-file /opt/agent-room/secrets/.env.production 
 deploy/vps/scripts/smoke-redis.sh
 ```
 
+To exercise the browser `/redis` path through task review and AR-06, configure
+`VITE_UPSTASH_REDIS_REST_URL`, `VITE_UPSTASH_REDIS_REST_TOKEN` (or
+`WEB_PROXY_TOKEN`), and `WEB_ORIGIN` for an isolated local or staging
+environment, then run the focused Web Approve check:
+
+```sh
+WEB_ORIGIN=http://127.0.0.1:5173 node deploy/vps/scripts/smoke-web-approve.mjs
+```
+
+It checks `/readyz`, the `/redis` CORS preflight and `PING`, then creates a
+temporary room/task, submits evidence, approves with a `web` identity, and
+asserts the persisted task is `done` with exactly one AR-06 system notification.
+It removes its temporary Redis keys on exit. Run this only against local or
+isolated staging Redis because it creates and deletes temporary data.
+
 Also check them from a separate machine at
 `http://103.204.174.252:3100/healthz` and `/readyz`. If the host firewall or
 provider network blocks the new port, stop here; do not alter the firewall as

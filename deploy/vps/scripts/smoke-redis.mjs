@@ -64,6 +64,12 @@ async function run() {
   assert.deepEqual(pipelineResults(webPipeline), ['OK', 'web-pipeline']);
   process.stdout.write('SRH web SET/GET and pipeline: PASS\n');
 
+  const webEvalType = await post(webUrl, webToken, '/', [
+    'EVAL', "return redis.call('TYPE', KEYS[1])", '1', webKey,
+  ]);
+  assert.equal(resultOf(webEvalType), 'string', 'web ACL must allow TYPE inside the task-verification Lua script');
+  process.stdout.write('web ACL EVAL TYPE for task verification: PASS\n');
+
   const proxyBase = 'http://127.0.0.1:3000/redis';
   await setGet(proxyBase, proxyToken, proxyKey, 'browser-proxy');
   process.stdout.write('/redis command proxy: PASS\n');

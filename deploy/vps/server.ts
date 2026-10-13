@@ -211,6 +211,19 @@ function applyRedisCors(response: ServerResponse): void {
   response.setHeader('Cache-Control', 'no-store');
 }
 
+function redisUpstreamFailureDetails(error: unknown): { errorName: string; causeCode?: string } {
+  const rawName = error instanceof Error ? error.name : typeof error;
+  const errorName = /^[A-Za-z][A-Za-z0-9_.-]{0,60}$/.test(rawName) ? rawName : 'Error';
+  const cause = error instanceof Error ? error.cause : undefined;
+  const rawCode = cause && typeof cause === 'object' && 'code' in cause
+    ? (cause as { code?: unknown }).code
+    : undefined;
+  const causeCode = typeof rawCode === 'string' && /^[A-Z0-9_-]{1,40}$/i.test(rawCode)
+    ? rawCode
+    : undefined;
+  return { errorName, ...(causeCode ? { causeCode } : {}) };
+}
+
 function hasProxyToken(request: IncomingMessage, expected: string): boolean {
   const authorization = request.headers.authorization;
   if (typeof authorization !== 'string') return false;
@@ -314,6 +327,7 @@ async function handleRedisProxy(
       cache: 'no-store',
     });
     if (!upstream.ok) {
+      console.error('[redis-proxy] upstream returned non-2xx', { status: upstream.status });
       writeJson(response, 502, { error: 'redis_upstream_unavailable' });
       return;
     }
@@ -321,7 +335,8 @@ async function handleRedisProxy(
     response.setHeader('Content-Type', upstream.headers.get('content-type') || 'application/json');
     response.setHeader('Cache-Control', 'no-store');
     response.end(Buffer.from(await upstream.arrayBuffer()));
-  } catch {
+  } catch (error) {
+    console.error('[redis-proxy] upstream fetch failed', redisUpstreamFailureDetails(error));
     writeJson(response, 502, { error: 'redis_upstream_unavailable' });
   }
 }
