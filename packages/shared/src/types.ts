@@ -20,6 +20,7 @@ export interface Participant {
   joinedAt: number;      // epoch ms
   lastSeenAt: number;    // epoch ms
   listenUntil?: number;  // epoch ms — set by room_listen, expires naturally
+  listenLeases?: Record<string, number>; // per-room_listen expiry; optional for older Room JSON
   // Host approval gate. Undefined for participants joined before this field
   // existed (treated as legacy-approved). New joiners default to false until
   // the host (createdBy) approves them via approveParticipant.

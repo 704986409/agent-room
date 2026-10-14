@@ -4,7 +4,7 @@ import type {
   ReplyMode,
   ReplyModeConfig,
 } from '@agent-room/shared';
-import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
+import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, hasActiveListenLease, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { sha256Hex } from './sha256.js';
 import { RoomNotFoundError, ConcurrencyError } from './errors.js';
@@ -97,6 +97,32 @@ export async function getRoom(client: UpstashClient, code: string): Promise<Room
 }
 
 const CAS_MAX_ATTEMPTS = 3;
+
+// Presence must use an atomic compare-and-swap: overlapping listeners or a
+// delayed stamp racing a release/removal must not overwrite a newer Room.
+// The script compares the whole room JSON but keeps all mutation logic in TS.
+const CAS_LISTEN_PRESENCE_SCRIPT = `-- AR11 listen-presence CAS
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
+return 1`;
+
+async function casPresenceRoom(
+  client: UpstashClient,
+  code: string,
+  mutate: (current: Room) => Room,
+): Promise<Room> {
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+    const current = await getRoom(client, code);
+    const next = mutate(current);
+    if (next === current) return current;
+    next.version = current.version + 1;
+    const swapped = await client.command<number>([
+      'EVAL', CAS_LISTEN_PRESENCE_SCRIPT, '1', roomKey(code), JSON.stringify(current), JSON.stringify(next),
+    ]);
+    if (swapped === 1) return next;
+  }
+  throw new ConcurrencyError();
+}
 
 export async function casRoom(
   client: UpstashClient,
@@ -590,7 +616,7 @@ export async function removeParticipant(
   targetName: string,
   targetClient: 'web' | 'cc'
 ): Promise<Room> {
-  return casRoom(client, code, (current) => {
+  return casPresenceRoom(client, code, (current) => {
     // Self-removal is always allowed — agents that finish their turn or
     // were told to leave call this with requesterName === targetName.
     // Removing someone else still requires the host slot.
@@ -615,11 +641,19 @@ export async function endRoom(
   client: UpstashClient,
   code: string,
 ): Promise<Room> {
-  return casRoom(client, code, (current) => ({
-    ...current,
-    status: 'ended' as const,
-    endedAt: Date.now(),
-  }));
+  return casPresenceRoom(client, code, (current) => {
+    const endedAt = Date.now();
+    return {
+      ...current,
+      status: 'ended' as const,
+      endedAt,
+      participants: current.participants.map(p => ({
+        ...p,
+        listenUntil: endedAt,
+        listenLeases: undefined,
+      })),
+    };
+  });
 }
 
 export async function reactivateRoom(
@@ -639,12 +673,14 @@ export async function updatePresence(
   name: string,
   at: number
 ): Promise<void> {
-  await casRoom(client, code, (current) => ({
-    ...current,
-    participants: current.participants.map(p =>
+  await casPresenceRoom(client, code, (current) => {
+    const participants = current.participants.map(p =>
       p.name === name ? { ...p, lastSeenAt: at } : p
-    ),
-  }));
+    );
+    return participants.every((p, i) => p === current.participants[i])
+      ? current
+      : { ...current, participants };
+  });
 }
 
 // Stamp how long this participant intends to stay in their current room_listen
@@ -654,14 +690,51 @@ export async function setListenUntil(
   client: UpstashClient,
   code: string,
   name: string,
-  until: number
+  until: number | null,
+  leaseId?: string,
 ): Promise<void> {
-  await casRoom(client, code, (current) => ({
-    ...current,
-    participants: current.participants.map(p =>
-      p.name === name ? { ...p, listenUntil: until, lastSeenAt: Date.now() } : p
-    ),
-  }));
+  await casPresenceRoom(client, code, (current) => {
+    // A released listener may clear its own lease after room_end; no new lease
+    // can be created once the room is ended.
+    if (current.status !== 'active' && until !== null) return current;
+    const now = Date.now();
+    const participants = current.participants.map(p => {
+        // Listener presence belongs to an Agent seat, not merely a display
+        // name. A late write must not mark a Web seat or recreate a removed one.
+        if (p.name !== name || p.client !== 'cc') return p;
+        if (until !== null && (!Number.isFinite(until) || until <= now)) return p;
+        const leases: Record<string, number> = Object.fromEntries(
+          Object.entries(p.listenLeases ?? {}).filter(([, expiresAt]) =>
+            typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > now,
+          ),
+        );
+        // Older Rooms and rolling-upgrade instances only have listenUntil.
+        // Keep that legacy lease alive independently until it naturally ends.
+        const trackedUntil = Object.values(leases).reduce((max, expiresAt) => Math.max(max, expiresAt), 0);
+        if (typeof p.listenUntil === 'number' && Number.isFinite(p.listenUntil)
+          && p.listenUntil > now && p.listenUntil > trackedUntil) {
+          leases.legacy = p.listenUntil;
+        }
+        const leaseKey = leaseId ?? 'legacy';
+        if (until === null) {
+          delete leases[leaseKey];
+        } else {
+          leases[leaseKey] = until;
+        }
+        const activeUntil = Object.values(leases).reduce((max, expiresAt) => Math.max(max, expiresAt), 0);
+        // A release is not new activity. Keep lastSeenAt at the last live
+        // renewal so the UI moves through Not listening, Idle, Disconnected.
+        return {
+          ...p,
+          listenUntil: activeUntil > now ? activeUntil : now,
+          listenLeases: Object.keys(leases).length > 0 ? leases : undefined,
+          ...(until !== null ? { lastSeenAt: now } : {}),
+        };
+      });
+    // Missing member and stale/foreign release are deliberate no-ops.
+    if (participants.every((p, i) => p === current.participants[i])) return current;
+    return { ...current, participants };
+  });
 }
 
 /**
@@ -673,9 +746,7 @@ export async function setListenUntil(
  * back to the lastSeenAt clock, which is what actually decides abandonment.
  */
 export function isParticipantStale(p: Participant, now: number = Date.now()): boolean {
-  if (typeof p.listenUntil === 'number' && Number.isFinite(p.listenUntil) && p.listenUntil >= now) {
-    return false;
-  }
+  if (hasActiveListenLease(p, now)) return false;
   const lastSeen = typeof p.lastSeenAt === 'number' && Number.isFinite(p.lastSeenAt) ? p.lastSeenAt : 0;
   return now - lastSeen > PRESENCE_DISCONNECTED_MS;
 }

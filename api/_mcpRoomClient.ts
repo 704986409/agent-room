@@ -37,7 +37,6 @@ import {
   reactivateRoom as storeReactivateRoom,
   removeParticipant as storeRemoveParticipant,
   setListenUntil as storeSetListenUntil,
-  updatePresence,
   verifyHostKey,
   HostNameTakenError,
   MutedError,
@@ -406,11 +405,11 @@ export async function setListenUntil(
   client: RemoteRoomClient,
   code: string,
   name: string,
-  until: number,
+  until: number | null,
+  leaseId?: string,
 ): Promise<void> {
   await guarded(async () => {
-    await storeSetListenUntil(client.store, code, name, until);
-    await updatePresence(client.store, code, name, Date.now());
+    await storeSetListenUntil(client.store, code, name, until, leaseId);
   });
 }
 

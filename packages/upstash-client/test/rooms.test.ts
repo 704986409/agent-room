@@ -1,12 +1,204 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { AVATAR_PALETTE, ROOM_TTL_SECONDS, type Room } from '@agent-room/shared';
-import { createClient, createRoom, getRoom, RoomNotFoundError, casRoom, ConcurrencyError, joinRoom, InterviewRoomBusyError } from '../src/index.js';
+import { createClient, createRoom, getRoom, RoomNotFoundError, casRoom, ConcurrencyError, joinRoom, InterviewRoomBusyError, setListenUntil, updatePresence, removeParticipant, endRoom } from '../src/index.js';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
 
 function mockResp(body: unknown) {
   return new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 }
+
+function installRoomRedis(initial: Room) {
+  let raw = JSON.stringify(initial);
+  const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const command = JSON.parse(String(init?.body)) as string[];
+    if (command[0] === 'GET') return mockResp({ result: raw });
+    if (command[0] === 'SET') {
+      raw = command[2]!;
+      return mockResp({ result: 'OK' });
+    }
+    if (command[0] === 'EVAL') {
+      if (raw !== command[4]) return mockResp({ result: 0 });
+      raw = command[5]!;
+      return mockResp({ result: 1 });
+    }
+    throw new Error(`Unexpected Redis command: ${command[0]}`);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return {
+    client: createClient(ENV),
+    fetchMock,
+    readRoom: () => JSON.parse(raw) as Room,
+  };
+}
+
+describe('setListenUntil', () => {
+  afterEach(() => vi.useRealTimers());
+
+  const now = 1_800_000_000_000;
+  const roomWith = (status: Room['status'] = 'active', participants: Room['participants'] = []): Room => ({
+    code: 'ABC-DEF-GHJ', topic: 'presence', createdAt: now, createdBy: 'Host', status, version: 1, participants,
+  });
+  const agent = (name = 'Codex') => ({
+    name, role: '', color: '#000', initials: 'CO', client: 'cc' as const,
+    joinedAt: now, lastSeenAt: now,
+  });
+
+  it('does not let an older overlapping listener release a newer lease', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'old-listen');
+    vi.setSystemTime(now + 1_000);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 16_000, 'new-listen');
+    const lastSeenAt = redis.readRoom().participants[0]!.lastSeenAt;
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null, 'old-listen');
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 16_000,
+      listenLeases: { 'new-listen': now + 16_000 },
+      lastSeenAt,
+    });
+    expect(redis.fetchMock.mock.calls.every(([, init]) => {
+      const command = JSON.parse(String(init?.body)) as string[];
+      return command[0] !== 'EVAL' || (command[1]!.includes('AR11 listen-presence CAS') && command[1]!.includes("'KEEPTTL'"));
+    })).toBe(true);
+
+    vi.setSystemTime(now + 2_000);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null, 'new-listen');
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 2_000,
+      lastSeenAt,
+    });
+    expect(redis.readRoom().participants[0]!.listenLeases).toBeUndefined();
+  });
+
+  it('keeps the older listener live when the newer overlapping listener ends first', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'old-listen');
+    vi.setSystemTime(now + 1_000);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 16_000, 'new-listen');
+    const lastSeenAt = redis.readRoom().participants[0]!.lastSeenAt;
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null, 'new-listen');
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 15_000,
+      listenLeases: { 'old-listen': now + 15_000 },
+      lastSeenAt,
+    });
+  });
+
+  it('preserves a legacy scalar lease while a new-format listener releases', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [{ ...agent(), listenUntil: now + 10_000 }]));
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'new-listen');
+    vi.setSystemTime(now + 1_000);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null, 'new-listen');
+
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 10_000,
+      listenLeases: { legacy: now + 10_000 },
+    });
+  });
+
+  it('updates only the Agent seat with the matching name', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const webSeat = { ...agent('Same name'), client: 'web' as const, listenUntil: undefined };
+    const redis = installRoomRedis(roomWith('active', [webSeat, agent('Same name')]));
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Same name', now + 15_000, 'agent-listen');
+    const [web, cc] = redis.readRoom().participants;
+    expect(web!.listenUntil).toBeUndefined();
+    expect(cc!.listenLeases).toEqual({ 'agent-listen': now + 15_000 });
+  });
+
+  it('retries a conflicting room write so a delayed release cannot erase a newer lease', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'old-listen');
+
+    await Promise.all([
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', null, 'old-listen'),
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 16_000, 'new-listen'),
+    ]);
+
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 16_000,
+      listenLeases: { 'new-listen': now + 16_000 },
+    });
+  });
+
+  it('preserves two different Agent leases written concurrently', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent('Agent A'), agent('Agent B')]));
+
+    await Promise.all([
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Agent A', now + 15_000, 'lease-a'),
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Agent B', now + 15_000, 'lease-b'),
+    ]);
+
+    expect(redis.readRoom().participants.map(p => p.listenLeases)).toEqual([
+      { 'lease-a': now + 15_000 },
+      { 'lease-b': now + 15_000 },
+    ]);
+  });
+
+  it('keeps a Web heartbeat and Agent lease when their room writes race', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const host = { ...agent('Host'), client: 'web' as const };
+    const redis = installRoomRedis(roomWith('active', [host, agent('Codex')]));
+
+    await Promise.all([
+      updatePresence(redis.client, 'ABC-DEF-GHJ', 'Host', now + 1000),
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'agent-listen'),
+    ]);
+
+    const current = redis.readRoom().participants;
+    expect(current.find(p => p.name === 'Host')!.lastSeenAt).toBe(now + 1000);
+    expect(current.find(p => p.name === 'Codex')!.listenLeases).toEqual({ 'agent-listen': now + 15_000 });
+  });
+
+  it('does not recreate a participant when removal races a late listener stamp', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+
+    await Promise.all([
+      removeParticipant(redis.client, 'ABC-DEF-GHJ', 'Codex', 'Codex', 'cc'),
+      setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'late-listen'),
+    ]);
+
+    expect(redis.readRoom().participants).toEqual([]);
+  });
+
+  it('does not restore a lease after the room ended or the member was removed', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const ended = installRoomRedis(roomWith('active', [{
+      ...agent(), listenUntil: now + 10_000, listenLeases: { 'current-listen': now + 10_000 },
+    }]));
+    await endRoom(ended.client, 'ABC-DEF-GHJ');
+    expect(ended.readRoom().participants[0]!.listenLeases).toBeUndefined();
+    await setListenUntil(ended.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'late-stamp');
+    await setListenUntil(ended.client, 'ABC-DEF-GHJ', 'Codex', null, 'current-listen');
+    expect(ended.readRoom().participants[0]!.listenUntil).toBe(now);
+    expect(ended.readRoom().participants[0]!.listenLeases).toBeUndefined();
+
+    const removed = installRoomRedis(roomWith('active'));
+    await setListenUntil(removed.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'late-stamp');
+    expect(removed.readRoom().participants).toEqual([]);
+  });
+});
 
 describe('createRoom', () => {
   beforeEach(() => vi.restoreAllMocks());

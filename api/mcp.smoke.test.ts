@@ -23,7 +23,7 @@ process.env.UPSTASH_REDIS_REST_URL = REDIS_BASE;
 process.env.UPSTASH_REDIS_REST_TOKEN = 'smoke-token';
 
 /** Minimal Redis, covering exactly the commands this path issues. */
-function installFakeRedis(): void {
+function installFakeRedis(): Map<string, string> {
   const kv = new Map<string, string>();
   const lists = new Map<string, string[]>();
   const realFetch = globalThis.fetch;
@@ -57,6 +57,13 @@ function installFakeRedis(): void {
       case 'LTRIM': return 'OK';
       case 'EXPIRE': case 'EXPIREAT': case 'PEXPIRE': return 1;
       case 'EVAL': {
+        if (String(cmd[1]).includes('AR11 listen-presence CAS')) {
+          const evalKey = String(cmd[3]);
+          const expected = String(cmd[4]);
+          const next = String(cmd[5]);
+          if (kv.get(evalKey) === expected) { kv.set(evalKey, next); return 1; }
+          return 0;
+        }
         // The CAS script: EVAL <src> 1 <key> <'absent'|'present'> <expected> <next> [ttl]
         const evalKey = String(cmd[3]);
         const mode = String(cmd[4]);
@@ -80,14 +87,16 @@ function installFakeRedis(): void {
       : { result: run(body as (string | number)[]) };
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   }) as typeof fetch;
+  return kv;
 }
 
 let server: http.Server;
 let port = 0;
+let smokeKv: Map<string, string>;
 const clients: Client[] = [];
 
 beforeAll(async () => {
-  installFakeRedis();
+  smokeKv = installFakeRedis();
   const mcpHandler = (await import('./mcp.js')).default;
 
   server = http.createServer(async (req, res) => {
@@ -201,7 +210,7 @@ describe('hosted MCP endpoint', () => {
     expect(sent.sent).toBe(true);
 
     const listed = parsed(await mcp.callTool({
-      name: 'room_listen', arguments: { code, since: 0, name: 'Guest', timeoutMs: 0 },
+      name: 'room_listen', arguments: { code, since: 0, name: 'Guest', timeoutMs: 1_000 },
     }));
     expect(listed.messages.some((m: { text: string }) => m.text === 'hello over http')).toBe(true);
     // The listen loop contract rides on every result; without it an agent has
@@ -209,6 +218,13 @@ describe('hosted MCP endpoint', () => {
     expect(listed.listenStatus).toBe('active');
     expect(listed.nextAction).toMatchObject({ required: true, tool: 'room_listen' });
     expect(listed.hint).toContain('room_listen');
+
+    const storedRoom = JSON.parse(smokeKv.get(`room:${code}`)!) as {
+      participants: { name: string; listenUntil?: number; listenLeases?: Record<string, number> }[];
+    };
+    const guest = storedRoom.participants.find(p => p.name === 'Guest')!;
+    expect(guest.listenUntil).toBeLessThanOrEqual(Date.now());
+    expect(guest.listenLeases).toBeUndefined();
   }, 20_000);
 
   it('carries the room policy contract, which needs the ported shared module', async () => {

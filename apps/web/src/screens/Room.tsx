@@ -10,7 +10,7 @@ import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
-import { PRESENCE_STALE_MS, PRESENCE_DISCONNECTED_MS, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
+import { participantPresenceStatus, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
@@ -1321,47 +1321,18 @@ function PendingAttachment({ attachment, onRemove }: { attachment: MessageAttach
 }
 
 function participantPresence(p: Participant, now: number) {
-  if (p.listenUntil && p.listenUntil > now) {
-    return {
-      kind: 'listening' as const,
-      label: 'Listening now',
-      detail: '',
-      className: 'text-emerald-700',
-      dotClassName: 'bg-emerald-500',
-    };
+  const status = participantPresenceStatus(p, now);
+  if (status === 'listening') {
+    return { kind: 'listening' as const, label: 'Listening now', detail: '', className: 'text-emerald-700', dotClassName: 'bg-emerald-500' };
   }
-
-  if (now - p.lastSeenAt <= PRESENCE_STALE_MS) {
-    return {
-      kind: 'online' as const,
-      label: 'Online',
-      detail: '',
-      className: 'text-blue-700',
-      dotClassName: 'bg-blue-500',
-    };
+  if (status === 'online') {
+    return { kind: 'online' as const, label: 'Online', detail: '', className: 'text-blue-700', dotClassName: 'bg-blue-500' };
   }
-
-  // Past 5 minutes silent → almost certainly disconnected. Most common cause:
-  // a CLI agent (Cursor / Claude Code / Codex) was terminated by the user
-  // without calling room_leave, so the participant row stays in the room
-  // forever. The "Disconnected" label is a hint to the host that this
-  // participant is unlikely to come back, paired with the always-visible
-  // kick button so they can clean up in one click.
-  if (now - p.lastSeenAt > PRESENCE_DISCONNECTED_MS) {
-    return {
-      kind: 'disconnected' as const,
-      label: 'Disconnected',
-      detail: p.client === 'cc' ? 'host can remove' : '',
-      className: 'text-ink-faint',
-      dotClassName: 'bg-slate-400',
-    };
+  if (status === 'recent_activity') {
+    return { kind: 'idle' as const, label: 'Not listening', detail: 'Recently active', className: 'text-ink-soft', dotClassName: 'bg-slate-400' };
   }
-
-  return {
-    kind: 'idle' as const,
-    label: 'Idle',
-    detail: p.client === 'cc' ? 'not listening' : '',
-    className: 'text-ink-faint',
-    dotClassName: 'bg-slate-300',
-  };
+  if (status === 'disconnected') {
+    return { kind: 'disconnected' as const, label: 'Disconnected', detail: p.client === 'cc' ? 'host can remove' : '', className: 'text-ink-faint', dotClassName: 'bg-slate-400' };
+  }
+  return { kind: 'idle' as const, label: 'Idle', detail: p.client === 'cc' ? 'not listening' : '', className: 'text-ink-faint', dotClassName: 'bg-slate-300' };
 }

@@ -1,4 +1,44 @@
-import { LISTEN_LEASE_MS, LISTEN_LEASE_RENEW_MS } from './constants.js';
+import {
+  LISTEN_LEASE_MS,
+  LISTEN_LEASE_RENEW_MS,
+  PRESENCE_DISCONNECTED_MS,
+  PRESENCE_STALE_MS,
+} from './constants.js';
+import type { Participant } from './types.js';
+
+export type ParticipantPresenceStatus = 'listening' | 'online' | 'recent_activity' | 'idle' | 'disconnected';
+
+/** The Agent state is listening only while the current, finite lease is live. */
+export function hasActiveListenLease(participant: Participant, now: number = Date.now()): boolean {
+  if (participant.client !== 'cc') return false;
+  const legacyUntil = participant.listenUntil;
+  if (typeof legacyUntil === 'number' && Number.isFinite(legacyUntil) && legacyUntil > now) return true;
+  const leases = participant.listenLeases;
+  return !!leases && typeof leases === 'object'
+    && Object.values(leases).some(until => typeof until === 'number' && Number.isFinite(until) && until > now);
+}
+
+/**
+ * Separate a Web heartbeat from Agent listening. Agent activity timestamps
+ * are useful for recency, but do not prove that an MCP call is still running.
+ */
+export function participantPresenceStatus(
+  participant: Participant,
+  now: number = Date.now(),
+): ParticipantPresenceStatus {
+  if (hasActiveListenLease(participant, now)) return 'listening';
+
+  const lastSeenAt = Number.isFinite(participant.lastSeenAt) ? participant.lastSeenAt : 0;
+  const age = now - lastSeenAt;
+  if (participant.client === 'web') {
+    if (age <= PRESENCE_STALE_MS) return 'online';
+  } else if (age <= PRESENCE_STALE_MS) {
+    return 'recent_activity';
+  }
+
+  if (age > PRESENCE_DISCONNECTED_MS) return 'disconnected';
+  return 'idle';
+}
 
 /**
  * Keeps a participant's `listenUntil` lease alive for as long as the caller is
@@ -25,35 +65,46 @@ import { LISTEN_LEASE_MS, LISTEN_LEASE_RENEW_MS } from './constants.js';
  * @returns a stop function; call it in a `finally`.
  */
 export function startListenLease(
-  stamp: (until: number) => Promise<void>,
+  stamp: (until: number | null, leaseId: string) => Promise<void>,
   opts?: { leaseMs?: number; renewMs?: number },
 ): () => Promise<void> {
   const leaseMs = opts?.leaseMs ?? LISTEN_LEASE_MS;
   const renewMs = opts?.renewMs ?? LISTEN_LEASE_RENEW_MS;
+  const leaseId = globalThis.crypto.randomUUID();
   let stopped = false;
+  let inFlight: Promise<void> | undefined;
+  let stopping: Promise<void> | undefined;
 
-  const renew = async () => {
-    if (stopped) return;
-    try {
-      await stamp(Date.now() + leaseMs);
-    } catch { /* presence is non-essential — never break the listen */ }
+  const renew = (): void => {
+    // Do not pile up writes when Redis is slow. The active lease naturally
+    // expires if one renewal takes longer than its window.
+    if (stopped || inFlight) return;
+    const write = Promise.resolve()
+      .then(() => stamp(Date.now() + leaseMs, leaseId))
+      .catch(() => { /* presence is non-essential — never break the listen */ });
+    inFlight = write;
+    void write.finally(() => {
+      if (inFlight === write) inFlight = undefined;
+    });
   };
 
-  // First stamp is fire-and-forget for the same reason the original call was:
-  // the listen should start polling immediately, not wait on a presence write.
-  void renew();
+  // Start polling immediately; presence writes stay asynchronous.
+  renew();
   const timer = setInterval(() => { void renew(); }, renewMs);
   // Don't hold the process open just to advertise presence.
   (timer as unknown as { unref?: () => void }).unref?.();
 
   return async () => {
-    if (stopped) return;
+    if (stopping) return stopping;
     stopped = true;
     clearInterval(timer);
-    // Release the lease now. lastSeenAt is bumped by the same write, so a live
-    // agent that is merely between listens reads as "Working", not "Gone".
-    try {
-      await stamp(Date.now());
-    } catch { /* presence is non-essential */ }
+    // An in-flight stamp must finish before release, otherwise a delayed write
+    // can restore Listening after this call has ended. The lease ID also fences
+    // this release from a newer overlapping room_listen call for the same seat.
+    stopping = (async () => {
+      try { await inFlight; } catch { /* renew already absorbs errors */ }
+      try { await stamp(null, leaseId); } catch { /* presence is non-essential */ }
+    })();
+    return stopping;
   };
 }

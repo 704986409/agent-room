@@ -484,7 +484,7 @@ async function runListen(
   }
   const name = selfName;
   const releaseLease = startListenLease(
-    (until) => setListenUntil(client, code, name, until),
+    (until, leaseId) => setListenUntil(client, code, name, until, leaseId),
   );
   try {
     return await runListenInner(client, code, since, timeoutMs, selfName, wakeOn);

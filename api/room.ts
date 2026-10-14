@@ -196,12 +196,12 @@ async function dispatchRoomHttpAction(
     }
 
     case 'presence': {
-      await setListenUntil(
-        client,
-        str(p.code),
-        str(p.name),
-        num(p.until, Date.now()),
-      );
+      const until = typeof p.until === 'number' && Number.isFinite(p.until) ? p.until : null;
+      if (typeof p.leaseId === 'string') {
+        await setListenUntil(client, str(p.code), str(p.name), until, p.leaseId);
+      } else {
+        await setListenUntil(client, str(p.code), str(p.name), until);
+      }
 
       return { ok: true };
     }
