@@ -104,6 +104,50 @@ describe('wakesAgent', () => {
     expect(wakesAgent(m('turn is yours', 'Claude'), 'Claude (2)')).toBe(true);
   });
 
+  it('uses the exact target name and client for task verification notices', () => {
+    const review = {
+      text: '✅ T-01 — 验收通过。主持人：@Alex；审核者：Reviewer',
+      metadata: {
+        eventType: 'task_update',
+        eventId: 'task-verification:T-01:123:cc:Reviewer',
+        targetAgentName: 'Alex',
+        targetAgentClient: 'cc' as const,
+      },
+    };
+
+    expect(wakesAgent(review, 'Alex', 'cc')).toBe(true);
+    expect(wakesAgent(review, 'Other', 'cc')).toBe(false);
+    expect(wakesAgent(review, 'Alex', 'web')).toBe(false);
+    expect(wakesAgent(review, 'Alex (2)', 'cc')).toBe(false);
+    expect(wakesAgent(review, 'alex', 'cc')).toBe(false);
+  });
+
+  it('does not fall back to @mentions when a review notice has no complete target', () => {
+    const review = {
+      text: '✅ T-01 — 验收通过。主持人：@Alex；审核者：@Reviewer',
+      metadata: {
+        eventType: 'task_update',
+        eventId: 'task-verification:T-01:123:cc:Reviewer',
+      },
+    };
+
+    expect(wakesAgent(review, 'Alex', 'cc')).toBe(false);
+    expect(wakesAgent(review, 'Reviewer', 'cc')).toBe(false);
+    expect(wakesAgent(review, 'Alex')).toBe(false);
+  });
+
+  it('keeps legacy task updates and ordinary @mentions on their previous rules', () => {
+    expect(wakesAgent({
+      text: '@Claude please review',
+      metadata: { eventType: 'task_update', eventId: 'task-update:T-01' },
+    }, 'Claude', 'cc')).toBe(true);
+    expect(wakesAgent({
+      text: 'assigned',
+      metadata: { eventType: 'task_update', eventId: 'task-update:T-01', targetAgentName: 'Claude' },
+    }, 'Claude', 'cc')).toBe(true);
+    expect(wakesAgent({ text: '@Claude please review' }, 'Claude')).toBe(true);
+  });
+
   it('is not fooled by an email address', () => {
     expect(wakesAgent(m('mail robin@agent-room.com about it'), 'robin')).toBe(false);
   });

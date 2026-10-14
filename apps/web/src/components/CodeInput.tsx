@@ -5,9 +5,10 @@ interface Props {
   value: string;                          // raw 9-char code (no dashes), uppercase
   onChange: (value: string) => void;      // fires on every keystroke
   onComplete?: (value: string) => void;   // fires when length hits 9
+  ariaLabel?: (digit: number) => string;
 }
 
-export function CodeInput({ value, onChange, onComplete }: Props) {
+export function CodeInput({ value, onChange, onComplete, ariaLabel }: Props) {
   const [focusIdx, setFocusIdx] = useState(0);
   const refs = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -43,6 +44,7 @@ export function CodeInput({ value, onChange, onComplete }: Props) {
           onChange={e => setCharAt(idx, e.target.value.slice(-1))}
           onFocus={() => setFocusIdx(idx)}
           onKeyDown={e => handleKey(e, idx)}
+          aria-label={ariaLabel?.(idx + 1)}
           maxLength={1}
           className={`w-7 h-10 text-center font-mono font-bold text-lg rounded-md border outline-none ${active ? 'border-accent ring-4 ring-accent-tint text-accent' : 'border-border bg-surface-sunken'}`}
         />

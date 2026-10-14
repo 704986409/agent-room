@@ -2,6 +2,7 @@ import type { Message, MessageMetadata, RoleInTurn, InvocationType } from '@agen
 import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { findSpeaker, MutedError, NotYourTurnError, getRoom } from './rooms.js';
+import { RoomNotFoundError, UpstashError } from './errors.js';
 import type { TurnSpokenEntry } from './turnState.js';
 import {
   advanceOnTimeout,
@@ -32,6 +33,17 @@ function msgsKey(code: string): string { return `room-msgs:${code}`; }
 // returns the second new message). The counter key is INCRed in the same
 // pipeline as RPUSH/LTRIM so it can never drift relative to the list.
 function msgCountKey(code: string): string { return `room-msg-count:${code}`; }
+
+function roomExpirationTimestamp(roomCreatedAt: number): number {
+  if (!Number.isSafeInteger(roomCreatedAt) || roomCreatedAt <= 0) {
+    throw new UpstashError('Invalid room creation time for message retention.');
+  }
+  const expireAt = Math.floor(roomCreatedAt / 1000) + ROOM_TTL_SECONDS;
+  if (!Number.isSafeInteger(expireAt) || expireAt <= Math.floor(Date.now() / 1000)) {
+    throw new UpstashError('Room retention deadline has passed; refusing to write messages.');
+  }
+  return expireAt;
+}
 
 /** Next poll cursor after a full `listMessages(..., 0)` when the room has a counter key; `null` = legacy room. */
 export async function getMessageTotalCount(client: UpstashClient, code: string): Promise<number | null> {
@@ -303,20 +315,20 @@ export async function appendMessage(
   };
 }
 
-// Internal helper: write a message to the Redis list, pinning TTL to the
-// room's hard 7-day deadline and keeping the absolute-count counter in lockstep.
+// Internal helper: write a message to the Redis list, pinning TTL no later than
+// the room's hard 7-day deadline and keeping the absolute-count counter in lockstep.
 // INCR on the count key MUST sit in the same pipeline as RPUSH so the count
 // stays in lock-step with the list — listMessages relies on the invariant
 // `totalCount - listLen = number of LTRIMmed entries` to compensate cursors.
-// EXPIREAT (a fixed creation+TTL deadline) rather than EXPIRE means the
-// message list dies exactly when the room does, instead of sliding forward.
+// EXPIREAT LT (a fixed creation+TTL deadline) rather than EXPIRE means the
+// message list cannot slide forward or extend an earlier expiration.
 async function rpushMessage(
   client: UpstashClient,
   code: string,
   message: Message,
   roomCreatedAt: number,
 ): Promise<void> {
-  const expireAt = (Number.isFinite(roomCreatedAt) ? Math.floor(roomCreatedAt / 1000) : Math.floor(Date.now() / 1000)) + ROOM_TTL_SECONDS;
+  const expireAt = roomExpirationTimestamp(roomCreatedAt);
   // Older MCP clients (and raw API callers) can send a message with no
   // `text` — persisting it verbatim crashed every web viewer of the room
   // ("Cannot read properties of undefined (reading 'length')" in Bubble
@@ -326,8 +338,8 @@ async function rpushMessage(
     ['RPUSH', msgsKey(code), JSON.stringify(safe)],
     ['INCR', msgCountKey(code)],
     ['LTRIM', msgsKey(code), -MAX_MESSAGES_PER_ROOM, -1],
-    ['EXPIREAT', msgsKey(code), expireAt],
-    ['EXPIREAT', msgCountKey(code), expireAt],
+    ['EXPIREAT', msgsKey(code), expireAt, 'LT'],
+    ['EXPIREAT', msgCountKey(code), expireAt, 'LT'],
   ]);
 }
 
@@ -345,6 +357,66 @@ export async function appendSystemMessage(
 ): Promise<void> {
   const room = await getRoom(client, code); // throws RoomNotFoundError if the room is gone
   await rpushMessage(client, code, message, room.createdAt);
+}
+
+// The task board CAS and its verification event must commit together. Keep
+// the message keys, cap, counter, and fixed room deadline alongside the
+// ordinary message writer so this path cannot drift from listMessages().
+const TASK_VERIFY_COMMIT_SCRIPT =
+  "local board = redis.call('GET', KEYS[1])\n" +
+  "if ARGV[1] == 'absent' then\n" +
+  "  if board then return 0 end\n" +
+  "elseif board ~= ARGV[2] then return 0 end\n" +
+  "if redis.call('TYPE', KEYS[4]).ok ~= 'string' then return -1 end\n" +
+  "local listType = redis.call('TYPE', KEYS[2]).ok\n" +
+  "local countType = redis.call('TYPE', KEYS[3]).ok\n" +
+  "if (listType ~= 'none' and listType ~= 'list') or (countType ~= 'none' and countType ~= 'string') then return -2 end\n" +
+  "local expireAt = tonumber(ARGV[4])\n" +
+  "local maxMessages = tonumber(ARGV[6])\n" +
+  "if not expireAt or expireAt < 1 or expireAt % 1 ~= 0 or not maxMessages or maxMessages < 1 or maxMessages % 1 ~= 0 then return -2 end\n" +
+  "if countType == 'string' then\n" +
+  "  local countRaw = redis.call('GET', KEYS[3])\n" +
+  "  if countRaw ~= '0' and not string.match(countRaw, '^[1-9][0-9]*$') then return -2 end\n" +
+  "  if string.len(countRaw) > 19 or (string.len(countRaw) == 19 and countRaw > '9223372036854775806') then return -2 end\n" +
+  "end\n" +
+  "local legacyCount = 0\n" +
+  "if countType == 'none' and listType == 'list' then\n" +
+  "  legacyCount = redis.call('LLEN', KEYS[2])\n" +
+  "end\n" +
+  "if legacyCount > 0 then redis.call('SET', KEYS[3], legacyCount, 'KEEPTTL') end\n" +
+  "redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')\n" +
+  "redis.call('EXPIREAT', KEYS[1], expireAt, 'LT')\n" +
+  "redis.call('RPUSH', KEYS[2], ARGV[5])\n" +
+  "redis.call('INCR', KEYS[3])\n" +
+  "redis.call('LTRIM', KEYS[2], -maxMessages, -1)\n" +
+  "redis.call('EXPIREAT', KEYS[2], expireAt, 'LT')\n" +
+  "redis.call('EXPIREAT', KEYS[3], expireAt, 'LT')\n" +
+  "return 1";
+
+/**
+ * Atomically compare-and-swap a task board and append its verification event.
+ * Returns false only for a board CAS conflict. Storage-layout errors and a
+ * room expiring between its read and commit fail closed before any writes.
+ */
+export async function commitTaskVerification(
+  client: UpstashClient,
+  code: string,
+  expectedRaw: string | null,
+  nextRaw: string,
+  roomCreatedAt: number,
+  message: Message,
+): Promise<boolean> {
+  const expireAt = roomExpirationTimestamp(roomCreatedAt);
+  const safe = typeof message.text === 'string' ? message : { ...message, text: '' };
+  const result = Number(await client.command<number>([
+    'EVAL', TASK_VERIFY_COMMIT_SCRIPT, '4',
+    `task-board:${code}`, msgsKey(code), msgCountKey(code), `room:${code}`,
+    expectedRaw === null ? 'absent' : 'present', expectedRaw ?? '', nextRaw,
+    String(expireAt), JSON.stringify(safe), String(MAX_MESSAGES_PER_ROOM),
+  ]));
+  if (result === -1) throw new RoomNotFoundError(code);
+  if (result === -2) throw new UpstashError('Task verification message storage has an invalid Redis key type, counter, or retention metadata.');
+  return result === 1;
 }
 
 // Cursor semantics: `fromIndex` is the absolute count of messages the caller

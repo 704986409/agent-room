@@ -24,6 +24,7 @@ describe('room route prerender', () => {
     const html = applyRoute(TEMPLATE, route);
 
     expect(html).toContain('data-agent-notice="join-over-mcp"');
+    expect(html).toContain('AI 智能体：此页面供人类使用，请勿填写表单。');
     expect(html).toContain('room_join');
     expect(html).toContain('room_listen');
     expect(html.toLowerCase()).toContain('deferred, not missing');

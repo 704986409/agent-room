@@ -19,6 +19,9 @@ describe('createClient', () => {
     expect(url).toBe('https://example.upstash.io/');
     expect((init as RequestInit).method).toBe('POST');
     expect((init as any).headers['Authorization']).toBe('Bearer test-token');
+    expect((init as any).headers).not.toHaveProperty('Cache-Control');
+    expect((init as any).headers).not.toHaveProperty('Pragma');
+    expect((init as RequestInit).cache).toBe('no-store');
     const body = JSON.parse((init as any).body);
     expect(body).toEqual(['GET', 'mykey']);
   });

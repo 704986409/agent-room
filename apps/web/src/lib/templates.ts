@@ -9,6 +9,7 @@
 
 import type { RolePreset } from '@agent-room/shared';
 import { ROLE_PRESETS } from '@agent-room/shared';
+import { translate, type Locale, type MessageKey } from '../i18n/messages.js';
 
 export interface RoomTemplate {
   id: string;
@@ -138,6 +139,22 @@ export function templateById(id: string | null | undefined): RoomTemplate | unde
 
 export function roleLabelFor(roleId: string): string {
   return r(roleId)?.label ?? roleId;
+}
+
+export function localizedRoleLabel(roleId: string, locale: Locale): string {
+  const preset = r(roleId);
+  return preset ? translate(locale, `role.${preset.id}` as MessageKey) : roleId;
+}
+
+export function localizedTemplate(template: RoomTemplate, locale: Locale): RoomTemplate {
+  const prefix = `template.${template.id}`;
+  return {
+    ...template,
+    label: translate(locale, `${prefix}.label` as MessageKey),
+    description: translate(locale, `${prefix}.description` as MessageKey),
+    topicSeed: translate(locale, `${prefix}.topic` as MessageKey),
+    openingMessage: translate(locale, `${prefix}.opening` as MessageKey),
+  };
 }
 
 export function roleNameFor(roleId: string): string {

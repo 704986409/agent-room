@@ -12,7 +12,7 @@ const MSG: Message = {
 };
 
 const APPROVED_ROOM: Room = {
-  code: 'ABC-DEF-GHJ', topic: 't', createdAt: 0, createdBy: 'host', status: 'active', version: 1,
+  code: 'ABC-DEF-GHJ', topic: 't', createdAt: Date.now(), createdBy: 'host', status: 'active', version: 1,
   participants: [
     { name: 'A', role: 'r', color: '#111', initials: 'AA', client: 'web', joinedAt: 0, lastSeenAt: 0, canSpeak: true },
   ],
@@ -25,7 +25,7 @@ describe('appendMessage', () => {
     const fetchMock = vi.fn()
       // First call: getRoom (speak gate check)
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(APPROVED_ROOM) }))
-      // Second call: pipeline (RPUSH+INCR+LTRIM+EXPIREAT×2)
+      // Second call: pipeline (RPUSH+INCR+LTRIM+EXPIREAT-LT×2)
       .mockResolvedValueOnce(mockResp([
         { result: 1 }, { result: 1 }, { result: 'OK' }, { result: 1 }, { result: 1 },
       ]));
@@ -57,14 +57,30 @@ describe('appendMessage', () => {
     expect(cmds[2][0]).toBe('LTRIM');
     expect(cmds[2][2]).toBe(-MAX_MESSAGES_PER_ROOM);
     expect(cmds[2][3]).toBe(-1);
-    // EXPIREAT pins both keys to a fixed deadline (room.createdAt + TTL).
-    // APPROVED_ROOM.createdAt is 0, so the deadline is exactly ROOM_TTL_SECONDS.
+    // EXPIREAT LT pins both keys to the fixed room deadline without extending
+    // a key that already expires earlier.
+    const expectedExpireAt = Math.floor(APPROVED_ROOM.createdAt / 1000) + ROOM_TTL_SECONDS;
     expect(cmds[3][0]).toBe('EXPIREAT');
     expect(cmds[3][1]).toBe('room-msgs:ABC-DEF-GHJ');
-    expect(cmds[3][2]).toBe(ROOM_TTL_SECONDS);
+    expect(cmds[3][2]).toBe(expectedExpireAt);
+    expect(cmds[3][3]).toBe('LT');
     expect(cmds[4][0]).toBe('EXPIREAT');
     expect(cmds[4][1]).toBe('room-msg-count:ABC-DEF-GHJ');
-    expect(cmds[4][2]).toBe(ROOM_TTL_SECONDS);
+    expect(cmds[4][2]).toBe(expectedExpireAt);
+    expect(cmds[4][3]).toBe('LT');
+  });
+
+  it('refuses writes when the room retention deadline has passed', async () => {
+    const expiredRoom = {
+      ...APPROVED_ROOM,
+      createdAt: Date.now() - (ROOM_TTL_SECONDS + 1) * 1000,
+    };
+    const fetchMock = vi.fn().mockResolvedValueOnce(mockResp({ result: JSON.stringify(expiredRoom) }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createClient(ENV);
+    await expect(appendMessage(client, 'ABC-DEF-GHJ', MSG)).rejects.toMatchObject({ name: 'UpstashError' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('coerces a missing text field to "" before persisting', async () => {
@@ -112,7 +128,7 @@ describe('appendMessage — moderator-mode status updates', () => {
   // A moderator-mode room with a Moderator agent and a non-moderator worker
   // agent. Both are approved cc-client participants.
   const MOD_ROOM: Room = {
-    code: 'MOD-ROO-M01', topic: 't', createdAt: 0, createdBy: 'host',
+    code: 'MOD-ROO-M01', topic: 't', createdAt: Date.now(), createdBy: 'host',
     status: 'active', version: 1,
     replyMode: 'moderator',
     modeConfig: { moderatorAgentName: 'Mod', moderatorAgentClient: 'cc' },
@@ -210,7 +226,7 @@ describe('appendMessage — sequential status heartbeat', () => {
   it('renews the current sequential speaker deadline on a kind=status ping', async () => {
     const now = Date.now();
     const seqRoom: Room = {
-      code: 'SEQ-HBT-001', topic: 't', createdAt: 0, createdBy: 'host',
+      code: 'SEQ-HBT-001', topic: 't', createdAt: Date.now(), createdBy: 'host',
       status: 'active', version: 1,
       replyMode: 'sequential',
       modeConfig: { leadAgentName: 'Lead', leadAgentClient: 'cc' },

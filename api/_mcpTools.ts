@@ -305,18 +305,25 @@ function buildMessage(name: string, role: string, text: string, speaker?: Partic
 type McpTextContent = { type: 'text'; text: string };
 type McpImageContent = { type: 'image'; data: string; mimeType: string };
 type McpContent = McpTextContent | McpImageContent;
-type McpToolResult = { content: McpContent[]; isError?: boolean };
+type McpToolResult = {
+  content: McpContent[];
+  structuredContent?: Record<string, unknown>;
+  isError?: boolean;
+};
 
 const LISTEN_IMAGE_LIMIT = 4;
 const LISTEN_IMAGE_MAX_BYTES = 2 * 1024 * 1024;
 const LISTEN_IMAGE_MIME = /^(image\/(png|jpeg|jpg|webp|gif))$/i;
 
-function ok(value: unknown, extra: McpContent[] = []): McpToolResult {
+function ok(value: unknown, extra: McpContent[] = [], includeStructuredContent = false): McpToolResult {
   return {
     content: [
       { type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) },
       ...extra,
     ],
+    ...(includeStructuredContent && value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? { structuredContent: value as Record<string, unknown> }
+      : {}),
   };
 }
 
@@ -567,7 +574,7 @@ async function runListenInner(
       // moderator events carry targetAgentName when they mean you, and waking
       // on the rest would put the agent in a loop with the room's bookkeeping.
       const forMe = (m: typeof msgs[number]) =>
-        wakesAgent(m, selfName as string)
+        wakesAgent(m, selfName as string, 'cc')
         || (humanBroadcastsToMe && m.type === 'msg' && m.client === 'web' && m.name !== selfName)
         || (sole && m.type === 'msg' && m.name !== selfName);
       const addressed = selective && msgs.some(forMe);
@@ -606,6 +613,7 @@ type ToolDef = {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
+  outputSchema?: Record<string, unknown>;
 };
 
 const CODE_PROP = { type: 'string', description: '9-character dashed room code, e.g. ABC-DEF-GHJ' };
@@ -790,7 +798,7 @@ export const FULL_TOOLS: ToolDef[] = [
     name: 'room_task',
     description:
       [
-        'Evidence-gated task board, one tool for all actions. list → read the board. create → add a task; YOU may create one for yourself the moment the room asks for work, without waiting to be assigned (owner + definition-of-done, and a verifier who is not the owner IF another agent is here — leave verifier unset when you are the only one, never skip the task over it). claim → take a task (state: in_progress). submit → hand in with PROOF: what you produced (fileListing + fileExcerpt) and how you checked it — runOutput + exitCode if it has a run, otherwise checks, each done-when criterion and how you verified it. Goes to awaiting_review, never straight to done. verify → the designated verifier rules done/rejected (never your own task). reassign → any joined participant moves owner/verifier. cancel → any joined participant archives todo/in_progress tasks to the cancelled lane.',
+        'Evidence-gated task board, one tool for all actions. list → read the board. create → add a task; YOU may create one for yourself the moment the room asks for work, without waiting to be assigned (owner + definition-of-done, and a verifier who is not the owner IF another agent is here — leave verifier unset when you are the only one, never skip the task over it). claim → take a task (state: in_progress). submit → hand in with PROOF: what you produced (fileListing + fileExcerpt) and how you checked it — runOutput + exitCode if it has a run, otherwise checks, each done-when criterion and how you verified it. Goes to awaiting_review, never straight to done. verify → the designated verifier rules done/rejected (never your own task); it posts the single official system review notice with the note and optional followUp. Do not repeat the ruling with room_send. followUp is a request to a real room participant, not a new task or an automatic wake. If acceptance fails, choose rejected; do not use done + followUp to bypass it. reassign → any joined participant moves owner/verifier. cancel → any joined participant archives todo/in_progress tasks to the cancelled lane.',
         'Nobody assigns you tasks here. A request in the room IS the task: open it with create, claim it, and say so — do not ask the room to "assign it formally" first. If the request is one you cannot do, answer that in the room; silence is never the reply to a direct request.',
         'The board is the source of truth. Real work gets a task; a task is done only when its VERIFIER rules done, never because the owner says so — so verify by re-doing the check yourself: re-run the command, or open the artifact and walk the done-when criteria. Reading the output the owner pasted is not verifying.',
         'room_join and room_listen return yourTasks when the board is holding something for you. That is the only way to find out after being away, because board events are posted into the transcript and a transcript reaches whoever was present at the time.',
@@ -813,10 +821,22 @@ export const FULL_TOOLS: ToolDef[] = [
         exitCode: { type: 'number', description: 'submit: exit code of the run (0 = pass)' },
         checks: { type: 'string', description: 'submit: each done-when criterion and how you verified it (use this for work that has no test run instead of inventing an exitCode)' },
         verdict: { type: 'string', enum: ['done', 'rejected'], description: 'verify: your ruling' },
-        note: { type: 'string', description: 'verify: reasoning / what to fix (optional)' },
+        note: { type: 'string', description: 'verify: required when verdict is rejected; optional for done (max 600 characters)' },
+        followUp: {
+          type: 'object',
+          description: 'verify only; optional action request, not a second report',
+          required: ['target', 'request'],
+          properties: {
+            target: { type: 'string', description: 'Exact room participant display name' },
+            request: { type: 'string', description: 'Specific requested action or decision' },
+            targetClient: { type: 'string', enum: ['web', 'cc'], description: 'Disambiguate only when the room has the same display name on both clients' },
+          },
+          additionalProperties: false,
+        },
         reason: { type: 'string', description: 'cancel: optional reason shown in the cancelled lane' },
       },
     },
+    outputSchema: { type: 'object', additionalProperties: true },
   },
   {
     name: 'room_webhook',
@@ -1383,14 +1403,15 @@ async function dispatch(
     }
 
     case 'room_task': {
+      const taskOk = (value: unknown) => ok(value, [], true);
       switch (a.action) {
         case 'list': {
           const body = await client.post<{ board: TaskBoard }>({ action: 'taskBoard', code: a.code });
-          return ok({ board: body.board });
+          return taskOk({ board: body.board });
         }
         case 'create': {
           const err = requireFields(a, ['name', 'title']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const body = await client.post<{ board: TaskBoard; task: Task }>({
             action: 'taskCreate',
             code: a.code,
@@ -1402,15 +1423,15 @@ async function dispatch(
             ...(await roleClients(client, a.code, a.owner, a.verifier)),
             ...(a.dod ? { dod: a.dod } : {}),
           });
-          return ok({ task: body.task, board: body.board });
+          return taskOk({ task: body.task, board: body.board });
         }
         case 'claim': {
           const err = requireFields(a, ['name', 'id']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const body = await client.post<{ board: TaskBoard; task: Task }>({
             action: 'taskClaim', code: a.code, id: a.id, name: a.name, client: 'cc',
           });
-          return ok({
+          return taskOk({
             task: body.task,
             board: body.board,
             workNext: {
@@ -1425,11 +1446,11 @@ async function dispatch(
         }
         case 'submit': {
           const err = requireFields(a, ['name', 'id', 'fileListing', 'fileExcerpt']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const ran = typeof a.runOutput === 'string' && a.runOutput.trim() !== '';
           const coded = typeof a.exitCode === 'number' && Number.isFinite(a.exitCode);
           if (ran !== coded) {
-            return ok({
+            return taskOk({
               error: 'bad_request',
               hint: ran
                 ? 'runOutput needs a numeric exitCode with it.'
@@ -1437,7 +1458,7 @@ async function dispatch(
             });
           }
           if (!ran && !(typeof a.checks === 'string' && a.checks.trim())) {
-            return ok({
+            return taskOk({
               error: 'bad_request',
               hint: 'submit needs proof you checked it: runOutput + exitCode for work with a run, '
                 + 'or checks — each done-when criterion and how you verified it — for work without one.',
@@ -1461,7 +1482,7 @@ async function dispatch(
             task => task.state === 'todo'
               && task.owner?.trim().toLowerCase() === a.name.trim().toLowerCase(),
           );
-          return ok({
+          return taskOk({
             task: body.task,
             board: body.board,
             taskStateUpdated: body.task.state === 'awaiting_review',
@@ -1488,15 +1509,25 @@ async function dispatch(
         }
         case 'verify': {
           const err = requireFields(a, ['name', 'id', 'verdict']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const body = await client.post<{ board: TaskBoard; task: Task }>({
             action: 'taskVerify', code: a.code, id: a.id, name: a.name, client: 'cc', verdict: a.verdict, note: a.note,
+            ...(a.followUp !== undefined ? { followUp: a.followUp } : {}),
           });
-          return ok({ task: body.task, board: body.board });
+          const followUpRecorded = Boolean(body.task.verdict?.followUp);
+          return taskOk({
+            task: body.task,
+            board: body.board,
+            verified: true,
+            notificationSent: true,
+            followUpRecorded,
+            nextAction: 'no_duplicate_report',
+            hint: 'The system posted the single official review notice with the note and optional followUp. Do not repeat the ruling with room_send; use it only for new substantive information, reconsideration, or complex coordination. If acceptance fails, choose rejected; do not use done + followUp to bypass it.',
+          });
         }
         case 'reassign': {
           const err = requireFields(a, ['name', 'id']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const body = await client.post<{ board: TaskBoard; task: Task }>({
             action: 'taskReassign',
             code: a.code,
@@ -1507,11 +1538,11 @@ async function dispatch(
             ...(a.verifier ? { verifier: a.verifier } : {}),
             ...(await roleClients(client, a.code, a.owner, a.verifier)),
           });
-          return ok({ task: body.task, board: body.board });
+          return taskOk({ task: body.task, board: body.board });
         }
         case 'cancel': {
           const err = requireFields(a, ['name', 'id']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return taskOk({ error: 'bad_request', hint: err });
           const body = await client.post<{ board: TaskBoard; task: Task }>({
             action: 'taskCancel',
             code: a.code,
@@ -1520,10 +1551,10 @@ async function dispatch(
             requesterClient: 'cc',
             ...(a.reason ? { reason: a.reason } : {}),
           });
-          return ok({ task: body.task, board: body.board });
+          return taskOk({ task: body.task, board: body.board });
         }
         default:
-          return ok({ error: 'bad_request', hint: 'room_task action must be one of: list, create, claim, submit, verify, reassign, cancel.' });
+          return taskOk({ error: 'bad_request', hint: 'room_task action must be one of: list, create, claim, submit, verify, reassign, cancel.' });
       }
     }
 

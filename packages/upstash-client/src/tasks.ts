@@ -14,10 +14,12 @@
 //   - verifyTask is the ONLY way to reach 'done' / 'rejected', and it rejects
 //     (NotVerifierError) anyone who is not the task's designated verifier — and
 //     always rejects the owner verifying their own task (OwnerCannotVerifyError).
-import type { ClientKind, SubTask, Task, TaskBoard, TaskEvidence, TaskRoleChange, TaskState } from '@agent-room/shared';
-import { ROOM_TTL_SECONDS, TASK_BLOCK_DEMOTE_THRESHOLD } from '@agent-room/shared';
+import type { ClientKind, Message, Room, SubTask, Task, TaskBoard, TaskEvidence, TaskRoleChange, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
+import { redactSecretText, ROOM_TTL_SECONDS, TASK_BLOCK_DEMOTE_THRESHOLD } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { ConcurrencyError, UpstashError } from './errors.js';
+import { commitTaskVerification } from './messages.js';
+import { getRoom } from './rooms.js';
 
 export class TaskNotFoundError extends UpstashError {
   constructor(id: string) { super(`Task ${id} not found`); this.name = 'TaskNotFoundError'; }
@@ -60,6 +62,15 @@ export class VerifierCannotClaimError extends UpstashError {
 export class TaskStateError extends UpstashError {
   constructor(message: string) { super(message); this.name = 'TaskStateError'; }
 }
+export class TaskVerifyFollowUpError extends TaskStateError {
+  constructor(message: string) { super(`Invalid followUp: ${message}`); this.name = 'TaskVerifyFollowUpError'; }
+}
+export class TaskVerifyReasonError extends TaskStateError {
+  constructor(message = 'A rejection reason is required and must contain 1–600 visible characters.') {
+    super(message);
+    this.name = 'TaskVerifyReasonError';
+  }
+}
 
 /** True when a claim would set owner to the task's designated verifier (T-13 deadlock). */
 function claimerIsDesignatedVerifier(
@@ -91,6 +102,17 @@ const CAS_MAX_ATTEMPTS = 6;
 
 function taskBoardKey(code: string): string {
   return `task-board:${code}`;
+}
+
+function roomExpirationTimestamp(room: Room): number {
+  if (!Number.isSafeInteger(room.createdAt) || room.createdAt <= 0) {
+    throw new UpstashError('Invalid room creation time for task-board expiration.');
+  }
+  const expireAt = Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS;
+  if (!Number.isSafeInteger(expireAt) || expireAt <= Math.floor(Date.now() / 1000)) {
+    throw new UpstashError('Invalid room expiration for task-board write.');
+  }
+  return expireAt;
 }
 
 // Index of rooms that have ever had a task created, so a periodic cron sweep
@@ -155,13 +177,18 @@ export async function getTaskBoard(client: UpstashClient, code: string): Promise
 // a transient null read made the mutator run on an empty board and blank the
 // whole board to 0. The CAS makes both cases retry against fresh state instead.
 const CAS_SCRIPT =
+  "local expireAt = tonumber(ARGV[4])\n" +
+  "if not expireAt or expireAt < 1 or expireAt % 1 ~= 0 then return -1 end\n" +
   "local cur = redis.call('GET', KEYS[1])\n" +
   "if ARGV[1] == 'absent' then\n" +
   "  if cur then return 0 end\n" +
   "else\n" +
   "  if cur ~= ARGV[2] then return 0 end\n" +
   "end\n" +
-  "redis.call('SET', KEYS[1], ARGV[3], 'EX', tonumber(ARGV[4]))\n" +
+  // KEEPTTL prevents SET from discarding a pre-existing earlier deadline;
+  // EXPIREAT LT then adds a deadline to persistent keys or shortens a later one.
+  "redis.call('SET', KEYS[1], ARGV[3], 'KEEPTTL')\n" +
+  "redis.call('EXPIREAT', KEYS[1], expireAt, 'LT')\n" +
   "return 1";
 
 async function casWriteTaskBoard(
@@ -170,14 +197,16 @@ async function casWriteTaskBoard(
   expectedRaw: string | null,
   nextRaw: string,
 ): Promise<boolean> {
-  const ttlSeconds = await roomRetentionSeconds(client, code);
+  const room = await getRoom(client, code);
+  const expireAt = roomExpirationTimestamp(room);
   const res = await client.command<number>([
     'EVAL', CAS_SCRIPT, '1', taskBoardKey(code),
     expectedRaw === null ? 'absent' : 'present',
     expectedRaw ?? '',
     nextRaw,
-    String(ttlSeconds),
+    String(expireAt),
   ]);
+  if (Number(res) === -1) throw new UpstashError('Invalid task-board expiration timestamp.');
   return Number(res) === 1;
 }
 
@@ -214,6 +243,44 @@ async function casTaskBoard(
     }
     // Lost the race — another writer changed the board between our read and
     // write. Back off briefly and retry against the fresh state.
+    lastError = new ConcurrencyError();
+    await sleep(20 + Math.floor(Math.random() * 50));
+  }
+  throw lastError instanceof ConcurrencyError ? lastError : new ConcurrencyError();
+}
+
+async function casTaskBoardWithMessage(
+  client: UpstashClient,
+  code: string,
+  mutator: (current: TaskBoard) => TaskBoard,
+  messageFor: (next: TaskBoard, room: Room) => Message,
+): Promise<TaskBoard> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
+    const raw = await getTaskBoardRaw(client, code);
+    let current: TaskBoard;
+    if (raw === null) {
+      current = { code, tasks: [], version: 0 };
+    } else {
+      try { current = JSON.parse(raw) as TaskBoard; }
+      catch { current = { code, tasks: [], version: 0 }; }
+    }
+    let next: TaskBoard;
+    try {
+      next = mutator(current);
+    } catch (error) {
+      if (error instanceof ConcurrencyError) { lastError = error; continue; }
+      throw error;
+    }
+    next.version = current.version + 1;
+
+    // Resolve the actual host and room deadline on every CAS attempt. The Lua
+    // script also checks that the room key still exists at commit time.
+    const room = await getRoom(client, code);
+    const message = messageFor(next, room);
+    if (await commitTaskVerification(client, code, raw, JSON.stringify(next), room.createdAt, message)) {
+      return next;
+    }
     lastError = new ConcurrencyError();
     await sleep(20 + Math.floor(Math.random() * 50));
   }
@@ -657,9 +724,20 @@ export async function verifyTask(
   verdict: 'done' | 'rejected',
   note: string | undefined,
   now: number = Date.now(),
+  followUp?: TaskVerifyFollowUp,
 ): Promise<{ board: TaskBoard; task: Task }> {
+  // A rejected verdict must be reviewable from the task record alone. Validate
+  // and normalize before reading follow-up targets or entering the atomic
+  // board+message commit, so invalid reasons cannot mutate Redis.
+  const normalizedNote = verdict === 'rejected' ? normalizeRejectedNote(note) : note;
+  // Resolve optional follow-up data before the task-board write. A fresh room
+  // read is repeated in the pre-commit message factory so a departed target
+  // cannot be silently recorded as an unresolved @mention.
+  const normalizedFollowUp = followUp === undefined
+    ? undefined
+    : normalizeTaskVerifyFollowUp(followUp, await getRoom(client, code));
   let updated: Task;
-  const board = await casTaskBoard(client, code, (current) => {
+  const board = await casTaskBoardWithMessage(client, code, (current) => {
     const task = findTask(current, id);
     if (task.state === 'done' || task.state === 'cancelled') throw new TaskDoneImmutableError(id);
     if (task.state !== 'awaiting_review') {
@@ -683,12 +761,153 @@ export async function verifyTask(
     updated = {
       ...task,
       state: verdict === 'done' ? 'done' : 'rejected',
-      verdict: { verdict, note, by: verifier.name, byClient: verifier.client, at: now },
+      verdict: {
+        verdict,
+        note: normalizedNote,
+        ...(normalizedFollowUp ? { followUp: normalizedFollowUp } : {}),
+        by: verifier.name,
+        byClient: verifier.client,
+        at: now,
+      },
       updatedAt: now,
     };
     return { ...replaceTask(current, updated), lastProgressAt: now };
+  }, (next, room) => {
+    const task = findTask(next, id);
+    return taskVerificationMessage(task, room, verifier, verdict, normalizedNote, now);
   });
   return { board, task: updated! };
+}
+
+const FOLLOW_UP_TARGET_MAX_CHARS = 120;
+const FOLLOW_UP_REQUEST_MAX_CHARS = 240;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
+
+function normalizeTaskVerifyFollowUp(value: unknown, room: Room): TaskVerifyFollowUp {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new TaskVerifyFollowUpError('provide an object with target and request strings.');
+  }
+
+  let ownKeys: PropertyKey[];
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new TaskVerifyFollowUpError('provide a plain object.');
+    }
+    ownKeys = Reflect.ownKeys(value);
+  } catch (error) {
+    if (error instanceof TaskVerifyFollowUpError) throw error;
+    throw new TaskVerifyFollowUpError('provide a plain object.');
+  }
+  if (ownKeys.some(key => typeof key !== 'string' || !['target', 'request', 'targetClient'].includes(key))) {
+    throw new TaskVerifyFollowUpError('unknown fields are not allowed.');
+  }
+
+  const input = value as Record<string, unknown>;
+  if (typeof input.target !== 'string' || typeof input.request !== 'string') {
+    throw new TaskVerifyFollowUpError('target and request must be non-empty strings.');
+  }
+  const target = input.target.trim();
+  if (!target || target.length > FOLLOW_UP_TARGET_MAX_CHARS || CONTROL_CHARACTERS.test(input.target)) {
+    throw new TaskVerifyFollowUpError(`target must be a room participant name of 1–${FOLLOW_UP_TARGET_MAX_CHARS} characters with no control characters.`);
+  }
+  const rawRequest = input.request.trim();
+  if (!rawRequest || rawRequest.length > FOLLOW_UP_REQUEST_MAX_CHARS) {
+    throw new TaskVerifyFollowUpError(`request must contain 1–${FOLLOW_UP_REQUEST_MAX_CHARS} characters.`);
+  }
+  const request = safeNotificationText(rawRequest, FOLLOW_UP_REQUEST_MAX_CHARS);
+  if (!request || request.length > FOLLOW_UP_REQUEST_MAX_CHARS) {
+    throw new TaskVerifyFollowUpError(`request must contain 1–${FOLLOW_UP_REQUEST_MAX_CHARS} visible characters.`);
+  }
+
+  const requestedClient = input.targetClient;
+  if (requestedClient !== undefined && requestedClient !== 'web' && requestedClient !== 'cc') {
+    throw new TaskVerifyFollowUpError('targetClient must be "web" or "cc" when supplied.');
+  }
+
+  const candidates = new Map<string, { name: string; client: ClientKind }>();
+  const addCandidate = (name: string, client: ClientKind) => {
+    if (name.trim() === target) candidates.set(`${name.trim()}\u0000${client}`, { name: name.trim(), client });
+  };
+  // The host seat exists as Room.createdBy even before the host joins the
+  // participants array; a joined web host is the same seat and is deduplicated.
+  addCandidate(room.createdBy, 'web');
+  for (const participant of room.participants) addCandidate(participant.name, participant.client);
+
+  let matches = [...candidates.values()];
+  if (requestedClient !== undefined) matches = matches.filter(candidate => candidate.client === requestedClient);
+  if (matches.length === 0) {
+    throw new TaskVerifyFollowUpError(`target "${target}" is not a participant in this room.`);
+  }
+  if (matches.length > 1) {
+    throw new TaskVerifyFollowUpError(`target "${target}" is ambiguous; supply targetClient ("web" or "cc").`);
+  }
+
+  return { target, request, targetClient: matches[0]!.client };
+}
+
+function normalizedNotificationText(value: unknown): string {
+  return redactSecretText(typeof value === 'string' ? value : '')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function normalizeRejectedNote(note: string | undefined): string {
+  const normalized = normalizedNotificationText(note);
+  if (!normalized || normalized.length > 600) throw new TaskVerifyReasonError();
+  return normalized;
+}
+
+function safeNotificationText(value: unknown, limit: number): string {
+  return normalizedNotificationText(value).slice(0, limit);
+}
+
+function taskVerificationMessage(
+  task: Task,
+  room: Room,
+  verifier: { name: string; client: ClientKind },
+  verdict: 'done' | 'rejected',
+  note: string | undefined,
+  now: number,
+): Message {
+  const safeId = safeNotificationText(task.id, 80) || 'task';
+  const safeTitle = safeNotificationText(task.title, 180) || '(untitled)';
+  const hostName = safeNotificationText(room.createdBy, 120) || 'host';
+  const verifierName = safeNotificationText(verifier.name, 120) || 'verifier';
+  const safeNote = safeNotificationText(note, 600);
+  const decision = verdict === 'done' ? '验收通过' : '验收未通过';
+  const review = verdict === 'done' ? '审核意见' : '原因';
+  const details = `主持人：@${hostName}；审核者：${verifierName}`
+    + (safeNote ? `；${review}：${safeNote}` : '');
+  const followUp = task.verdict?.followUp
+    ? normalizeTaskVerifyFollowUp(task.verdict.followUp, room)
+    : undefined;
+  const followUpText = followUp
+    ? `；后续处理：@${safeNotificationText(followUp.target, FOLLOW_UP_TARGET_MAX_CHARS)} ${safeNotificationText(followUp.request, FOLLOW_UP_REQUEST_MAX_CHARS)}`
+    : '';
+  const icon = verdict === 'done' ? '✅' : '❌';
+
+  return {
+    id: now,
+    type: 'sys',
+    name: 'system',
+    initials: 'AR',
+    color: '#5B6AFF',
+    role: 'System',
+    text: `${icon} ${safeId} "${safeTitle}" — ${decision}。${details}${followUpText} (now ${verdict}).`,
+    client: 'cc',
+    time: now,
+    metadata: {
+      eventType: 'task_update',
+      taskId: safeId,
+      eventId: `task-verification:${safeId}:${now}:${verifier.client}:${verifierName}`,
+      ...(followUp ? {
+        targetAgentName: followUp.target,
+        targetAgentClient: followUp.targetClient,
+      } : {}),
+    },
+  };
 }
 
 // Edit a task's mutable fields and/or correct its scope. This is the path the

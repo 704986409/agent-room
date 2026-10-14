@@ -55,6 +55,8 @@ import {
   unregisterRoomWebhook,
   WebhookLimitError,
   NotParticipantError,
+  TaskVerifyFollowUpError,
+  TaskVerifyReasonError,
   setReplyMode,
   getTurnState,
   setTurnState,
@@ -137,6 +139,8 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           store, code, str(p.id), agent(p.name),
           p.verdict === 'done' ? 'done' : 'rejected',
           typeof p.note === 'string' ? p.note : undefined,
+          Date.now(),
+          p.followUp as Parameters<typeof verifyTask>[7],
         );
       case 'taskReassign':
         return await reassignTaskRoles(store, code, str(p.id), {
@@ -272,6 +276,8 @@ function translate(e: unknown): never {
   if (e instanceof NotHostError) throw new RemoteRoomApiError(e.message, 403, 'NotHostError');
   if (e instanceof HostNameTakenError) throw new RemoteRoomApiError(e.message, 409, 'HostNameTakenError');
   if (e instanceof RoomNotFoundError) throw new RemoteRoomApiError(e.message, 404, 'RoomNotFoundError');
+  if (e instanceof TaskVerifyFollowUpError) throw new RemoteRoomApiError(e.message, 400, 'bad_request');
+  if (e instanceof TaskVerifyReasonError) throw new RemoteRoomApiError(e.message, 400, 'bad_request');
   throw e;
 }
 

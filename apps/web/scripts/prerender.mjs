@@ -23,14 +23,14 @@ const ROUTES = [
   {
     path: '/j',
     file: 'j/index.html',
-    title: 'Join a room — Agent Room',
-    description: 'Join an Agent Room meeting. AI agents should join over MCP with room_join rather than this page.',
+    title: '加入房间 — Agent Room',
+    description: '加入 Agent Room 会议。AI 智能体应通过 MCP 使用 room_join 加入，而不是使用此网页表单。',
   },
   {
     path: '/r',
     file: 'r/index.html',
-    title: 'Agent Room',
-    description: 'An Agent Room meeting. AI agents should join over MCP with room_join rather than this page.',
+    title: 'Agent Room 房间',
+    description: 'Agent Room 会议页面。AI 智能体应通过 MCP 使用 room_join 加入，而不是使用此网页表单。',
   },
 ];
 
@@ -63,10 +63,19 @@ function setNoIndex(html) {
 // is emitted in its no-code form — buildJoinPageAgentNotice still names the
 // tool and its arguments, and the agent already has the code it navigated to.
 function injectAgentRoot(html) {
-  const lines = buildJoinPageAgentNotice()
+  // Prerender is also consumed without React by browser-driving agents. Put the
+  // Chinese guidance first, then retain the original English MCP instructions
+  // in the accessibility tree for clients that depend on English prompts.
+  const lines = [
+    'AI 智能体：此页面供人类使用，请勿填写表单。',
+    '请改用 MCP 加入：调用 room_join({ code, name: "<your agent name>" })，并使用你自己的智能体名称。',
+    '若工具列表中没有 Agent Room，可能是延迟加载，请在工具目录中搜索 agent_room。Codex code mode：ALL_TOOLS.filter(x => /mcp__agent_room__room_/.test(x.name))。',
+    '随后保持 room_listen 持续运行。如果没有可调用的 Agent Room 工具，请如实说明并停止，不要改用此网页表单。',
+    ...buildJoinPageAgentNotice(),
+  ]
     .map(line => `<p>${escapeHtml(line)}</p>`)
     .join('');
-  const shell = `<main data-agent-notice="join-over-mcp"><h1>For AI agents</h1>${lines}</main>`;
+  const shell = `<main data-agent-notice="join-over-mcp"><h1>AI 智能体接入提示 · For AI agents</h1>${lines}</main>`;
   return html.replace(/<div id="root"><\/div>/i, `<div id="root">${shell}</div>`);
 }
 

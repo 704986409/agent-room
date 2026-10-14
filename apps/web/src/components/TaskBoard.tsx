@@ -1,6 +1,5 @@
 import { useState } from 'react';
-import type { ClientKind, Participant, RoomArtifact, Task, TaskState } from '@agent-room/shared';
-import { artifactLabel } from '@agent-room/shared';
+import type { ClientKind, Participant, RoomArtifact, Task, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
 import {
   blockTask,
   cancelTask,
@@ -10,6 +9,8 @@ import {
   verifyTask,
 } from '@agent-room/upstash-client';
 import type { useTaskBoard } from '../hooks/useTaskBoard.js';
+import { useLocale } from '../i18n/LocaleProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
 
 interface Props {
   code: string;
@@ -32,14 +33,18 @@ interface Props {
   taskBoard: ReturnType<typeof useTaskBoard>;
 }
 
-const STATE_TONE: Record<TaskState, { label: string; chip: string; rail: string }> = {
-  todo:            { label: 'To do',       chip: 'bg-surface-sunken text-ink-muted ring-border',            rail: 'bg-ink-faint' },
-  in_progress:     { label: 'In progress', chip: 'bg-blue-50 text-blue-800 ring-blue-200',                  rail: 'bg-blue-500' },
-  awaiting_review: { label: 'Needs review', chip: 'bg-amber-50 text-amber-800 ring-amber-200',              rail: 'bg-amber-500' },
-  blocked:         { label: 'Blocked',     chip: 'bg-rose-50 text-rose-800 ring-rose-200',                  rail: 'bg-rose-500' },
-  done:            { label: 'Done',        chip: 'bg-emerald-50 text-emerald-800 ring-emerald-200',         rail: 'bg-emerald-500' },
-  rejected:        { label: 'Rejected',    chip: 'bg-rose-50 text-rose-800 ring-rose-200',                  rail: 'bg-rose-500' },
-  cancelled:       { label: 'Cancelled',   chip: 'bg-surface-sunken text-ink-faint ring-border-faint',      rail: 'bg-border' },
+const STATE_TONE: Record<TaskState, { chip: string; rail: string }> = {
+  todo:            { chip: 'bg-surface-sunken text-ink-muted ring-border',            rail: 'bg-ink-faint' },
+  in_progress:     { chip: 'bg-blue-50 text-blue-800 ring-blue-200',                  rail: 'bg-blue-500' },
+  awaiting_review: { chip: 'bg-amber-50 text-amber-800 ring-amber-200',              rail: 'bg-amber-500' },
+  blocked:         { chip: 'bg-rose-50 text-rose-800 ring-rose-200',                  rail: 'bg-rose-500' },
+  done:            { chip: 'bg-emerald-50 text-emerald-800 ring-emerald-200',         rail: 'bg-emerald-500' },
+  rejected:        { chip: 'bg-rose-50 text-rose-800 ring-rose-200',                  rail: 'bg-rose-500' },
+  cancelled:       { chip: 'bg-surface-sunken text-ink-faint ring-border-faint',      rail: 'bg-border' },
+};
+const STATE_LABEL: Record<TaskState, MessageKey> = {
+  todo: 'task.status.todo', in_progress: 'task.status.inProgress', awaiting_review: 'task.status.awaitingReview',
+  blocked: 'task.status.blocked', done: 'task.status.done', rejected: 'task.status.rejected', cancelled: 'task.status.cancelled',
 };
 
 // Action-first ordering: what needs the host's thumb comes before what is
@@ -81,6 +86,7 @@ const CTRL = 'min-h-10 sm:min-h-8 rounded-lg px-2.5 text-[13px] sm:text-xs font-
 const FIELD = 'w-full min-h-10 rounded-lg border border-border bg-white px-3 text-[15px] sm:text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60';
 
 export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExport, reportBusy, onExportReport, onMention, taskBoard }: Props) {
+  const { t } = useLocale();
   const { board, loaded, busy, run } = taskBoard;
   const [composing, setComposing] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
@@ -94,16 +100,16 @@ export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExpor
       <div className="shrink-0 border-b border-border-faint bg-surface p-3 sm:p-4">
         <div className="flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <h2 className="text-sm font-semibold text-ink">Tasks</h2>
+            <h2 className="text-sm font-semibold text-ink">{t('task.title')}</h2>
             <p className="text-[11px] text-ink-soft">
-              {!loaded ? 'Loading board' : open.length === 0 && closed.length === 0
-                ? 'No tasks yet'
-                : `${open.length} open · ${closed.length} closed`}
+              {!loaded ? t('task.loadingBoard') : open.length === 0 && closed.length === 0
+                ? t('task.noTasks')
+                : t('task.openClosed', { open: open.length, closed: closed.length })}
             </p>
           </div>
           {needsMe > 0 && (
             <span className="shrink-0 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800 ring-1 ring-inset ring-amber-200">
-              {needsMe} to review
+              {t('task.toReviewCount', { count: needsMe })}
             </span>
           )}
         </div>
@@ -115,7 +121,7 @@ export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExpor
               ? 'border border-border bg-surface-softer text-ink-muted'
               : 'bg-accent text-white shadow-sm hover:opacity-90'}`}
           >
-            {composing ? 'Cancel' : 'New task'}
+            {composing ? t('common.cancel') : t('task.newTask')}
           </button>
         )}
         {composing && (
@@ -126,7 +132,7 @@ export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExpor
             onSubmit={async (input) => {
               const ok = await run(
                 c => createTask(c, code, { ...input, createdBy: me.name }),
-                'Could not create task',
+                t('task.createFailed'),
               );
               if (ok) setComposing(false);
             }}
@@ -163,8 +169,8 @@ export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExpor
                   onClick={() => setShowClosed(v => !v)}
                   className="mt-4 flex w-full items-center justify-between rounded-lg border border-border-faint bg-surface-softer px-3 py-2.5 text-[13px] sm:text-xs font-semibold text-ink-muted transition hover:border-border"
                 >
-                  <span>Closed ({closed.length})</span>
-                  <span className="text-ink-faint">{showClosed ? 'Hide' : 'Show'}</span>
+                  <span>{t('task.closed', { count: closed.length })}</span>
+                  <span className="text-ink-faint">{showClosed ? t('task.hide') : t('task.show')}</span>
                 </button>
                 {showClosed && closed.map(task => (
                   <TaskCard
@@ -207,8 +213,13 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
   code: string;
   onMention: (text: string) => void;
 }) {
-  const [panel, setPanel] = useState<'none' | 'reject' | 'block' | 'assign'>('none');
+  const { t } = useLocale();
+  const [panel, setPanel] = useState<'none' | 'approve' | 'reject' | 'block' | 'assign'>('none');
   const [note, setNote] = useState('');
+  const [followUpTarget, setFollowUpTarget] = useState('');
+  const [followUpTargetClient, setFollowUpTargetClient] = useState<'' | 'web' | 'cc'>('');
+  const [followUpRequest, setFollowUpRequest] = useState('');
+  const [followUpError, setFollowUpError] = useState('');
   const tone = STATE_TONE[task.state];
 
   const iAmOwner = task.owner === me.name
@@ -221,7 +232,43 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
   const canCancel = !ended && isHost && !CLOSED.has(task.state)
     && !task.evidence && !task.readinessNote?.trim();
 
-  const closePanel = () => { setPanel('none'); setNote(''); };
+  const closePanel = () => {
+    setPanel('none');
+    setNote('');
+    setFollowUpTarget('');
+    setFollowUpTargetClient('');
+    setFollowUpRequest('');
+    setFollowUpError('');
+  };
+
+  const submitReview = async (verdict: 'done' | 'rejected') => {
+    const trimmedNote = note.trim();
+    if (verdict === 'rejected' && (!trimmedNote || trimmedNote.length > 600)) {
+      setFollowUpError(t('task.rejectionReasonRequired'));
+      return;
+    }
+    const hasTarget = Boolean(followUpTarget.trim());
+    const hasRequest = Boolean(followUpRequest.trim());
+    if (hasTarget !== hasRequest) {
+      setFollowUpError(t('task.followUpFieldsRequired'));
+      return;
+    }
+    const followUp: TaskVerifyFollowUp | undefined = hasTarget
+      ? {
+        target: followUpTarget.trim(),
+        request: followUpRequest.trim(),
+        ...(followUpTargetClient ? { targetClient: followUpTargetClient } : {}),
+      }
+      : undefined;
+    const ok = await run(
+      c => verifyTask(
+        c, code, task.id, { name: me.name, client: 'web' }, verdict,
+        trimmedNote || undefined, undefined, followUp,
+      ),
+      verdict === 'done' ? t('task.approveFailed') : t('task.rejectFailed'),
+    );
+    if (ok) closePanel();
+  };
 
   return (
     <article className="overflow-hidden rounded-xl border border-border-faint bg-surface">
@@ -233,7 +280,7 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               <div className="flex items-center gap-2">
                 <span className="font-mono text-[11px] font-semibold text-ink-faint">{task.id}</span>
                 <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ring-1 ring-inset ${tone.chip}`}>
-                  {tone.label}
+                  {t(STATE_LABEL[task.state])}
                 </span>
               </div>
               <h3 className="mt-1.5 text-[14px] font-semibold leading-snug text-ink break-words">{task.title}</h3>
@@ -242,37 +289,43 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
 
           <dl className="mt-2 flex min-w-0 flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-soft">
             <div className="flex gap-1">
-              <dt className="text-ink-faint">Owner</dt>
-              <dd className="font-semibold text-ink-muted break-all">{task.owner ?? 'unassigned'}</dd>
+              <dt className="text-ink-faint">{t('task.owner')}</dt>
+              <dd className="font-semibold text-ink-muted break-all">{task.owner ?? t('task.unassigned')}</dd>
             </div>
             <div className="flex gap-1">
-              <dt className="text-ink-faint">Verifier</dt>
-              <dd className="font-semibold text-ink-muted break-all">{task.verifier ?? 'any peer'}</dd>
+              <dt className="text-ink-faint">{t('task.verifier')}</dt>
+              <dd className="font-semibold text-ink-muted break-all">{task.verifier ?? t('task.anyPeer')}</dd>
             </div>
           </dl>
 
           {task.dod && (
             <p className="mt-2 rounded-lg bg-surface-softer px-2.5 py-2 text-[12px] leading-relaxed text-ink-muted break-words">
-              <span className="font-semibold text-ink-faint">Done when: </span>{task.dod}
+              <span className="font-semibold text-ink-faint">{t('task.doneWhen')}: </span>{task.dod}
             </p>
           )}
           {task.subtasks?.length ? (
             <p className="mt-2 text-[11px] font-semibold text-ink-soft">
-              Subtasks {task.subtasks.filter(s => s.done).length}/{task.subtasks.length}
+              {t('task.subtasksCount', { done: task.subtasks.filter(s => s.done).length, total: task.subtasks.length })}
             </p>
           ) : null}
           {task.state === 'awaiting_review' && (task.readinessNote || task.evidence) && (
             <ReviewEvidence task={task} />
           )}
           {task.state === 'blocked' && task.blocked && (
-            <Callout tone="rose" title={`Blocked by ${task.blocked.by}`} body={task.blocked.reason} />
+            <Callout tone="rose" title={t('task.blockedBy', { name: task.blocked.by })} body={task.blocked.reason} />
           )}
           {task.verdict && CLOSED.has(task.state) && task.verdict.note && (
             <Callout
               tone={task.verdict.verdict === 'done' ? 'emerald' : 'rose'}
-              title={`${task.verdict.verdict === 'done' ? 'Approved' : 'Rejected'} by ${task.verdict.by}`}
+              title={t(task.verdict.verdict === 'done' ? 'task.approvedBy' : 'task.rejectedBy', { name: task.verdict.by })}
               body={task.verdict.note}
             />
+          )}
+          {task.verdict?.followUp && CLOSED.has(task.state) && (
+            <p className="mt-2 rounded-lg border border-border-faint bg-surface-softer px-2.5 py-2 text-[12px] leading-relaxed text-ink-muted break-words">
+              <span className="font-semibold text-ink-faint">{t('task.followUpFor', { target: task.verdict.followUp.target })} </span>
+              {task.verdict.followUp.request}
+            </p>
           )}
 
           {panel === 'none' ? (
@@ -284,11 +337,19 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                     disabled={busy}
                     onClick={() => void run(
                       c => verifyTask(c, code, task.id, { name: me.name, client: 'web' }, 'done', undefined),
-                      'Approve failed',
+                      t('task.approveFailed'),
                     )}
                     className={`${CTRL} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    Approve
+                    {t('task.approve')}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setPanel('approve')}
+                    className={`${CTRL} border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100`}
+                  >
+                    {t('task.addNoteOrFollowUp')}
                   </button>
                   <button
                     type="button"
@@ -296,7 +357,7 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                     onClick={() => setPanel('reject')}
                     className={`${CTRL} border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100`}
                   >
-                    Reject
+                    {t('task.reject')}
                   </button>
                 </>
               )}
@@ -304,10 +365,10 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void run(c => updateTask(c, code, task.id, { state: 'todo' }), 'Reopen failed')}
+                  onClick={() => void run(c => updateTask(c, code, task.id, { state: 'todo' }), t('task.reopenFailed'))}
                   className={`${CTRL} border border-border bg-surface-softer text-ink-muted hover:border-accent/40 hover:text-accent`}
                 >
-                  Reopen
+                  {t('task.reopen')}
                 </button>
               )}
               {canBlock && (
@@ -317,7 +378,7 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                   onClick={() => setPanel('block')}
                   className={`${CTRL} border border-border bg-surface-softer text-ink-muted hover:border-rose-300 hover:text-rose-600`}
                 >
-                  Block
+                  {t('task.block')}
                 </button>
               )}
               {canAssign && (
@@ -327,16 +388,16 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                   onClick={() => setPanel('assign')}
                   className={`${CTRL} border border-border bg-surface-softer text-ink-muted hover:border-accent/40 hover:text-accent`}
                 >
-                  Reassign
+                  {t('task.reassign')}
                 </button>
               )}
               {task.owner && !ended && (
                 <button
                   type="button"
-                  onClick={() => onMention(`@${task.owner} status on ${task.id} (${task.title})?`)}
+                  onClick={() => onMention(t('task.askOwnerPrompt', { owner: task.owner!, id: task.id, title: task.title }))}
                   className={`${CTRL} border border-accent-tint-border bg-accent-tint text-accent hover:bg-accent-tint-border`}
                 >
-                  Ask owner
+                  {t('task.askOwner')}
                 </button>
               )}
               {canCancel && (
@@ -345,11 +406,11 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
                   disabled={busy}
                   onClick={() => void run(
                     c => cancelTask(c, code, task.id, { name: me.name, client: 'web' }, 'Cancelled by host'),
-                    'Cancel failed',
+                    t('task.cancelFailed'),
                   )}
                   className={`${CTRL} ml-auto text-ink-faint hover:text-rose-600`}
                 >
-                  Cancel
+                  {t('common.cancel')}
                 </button>
               )}
             </div>
@@ -362,16 +423,16 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               onSubmit={async (patch) => {
                 const ok = await run(
                   c => reassignTaskRoles(c, code, task.id, patch, { name: me.name, client: 'web' }),
-                  'Reassign failed',
+                  t('task.reassignFailed'),
                 );
                 if (ok) closePanel();
               }}
             />
-          ) : (
+          ) : panel === 'block' ? (
             <NotePanel
               id={`task-note-${task.id}`}
-              label={panel === 'reject' ? 'What has to change before this passes?' : 'What exactly is missing?'}
-              submitLabel={panel === 'reject' ? 'Reject task' : 'Mark blocked'}
+              label={t('task.whatMissing')}
+              submitLabel={t('task.markBlocked')}
               destructive
               value={note}
               onChange={setNote}
@@ -379,13 +440,28 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               onCancel={closePanel}
               onSubmit={async () => {
                 const ok = await run(
-                  c => panel === 'reject'
-                    ? verifyTask(c, code, task.id, { name: me.name, client: 'web' }, 'rejected', note.trim())
-                    : blockTask(c, code, task.id, { name: me.name, client: 'web' }, note.trim()),
-                  panel === 'reject' ? 'Reject failed' : 'Block failed',
+                  c => blockTask(c, code, task.id, { name: me.name, client: 'web' }, note.trim()),
+                  t('task.blockFailed'),
                 );
                 if (ok) closePanel();
               }}
+            />
+          ) : (
+            <VerifyPanel
+              id={`task-review-${task.id}`}
+              verdict={panel === 'approve' ? 'done' : 'rejected'}
+              note={note}
+              onNoteChange={value => { setNote(value); setFollowUpError(''); }}
+              followUpTarget={followUpTarget}
+              onFollowUpTargetChange={value => { setFollowUpTarget(value); setFollowUpError(''); }}
+              followUpTargetClient={followUpTargetClient}
+              onFollowUpTargetClientChange={value => { setFollowUpTargetClient(value); setFollowUpError(''); }}
+              followUpRequest={followUpRequest}
+              onFollowUpRequestChange={value => { setFollowUpRequest(value); setFollowUpError(''); }}
+              followUpError={followUpError}
+              busy={busy}
+              onCancel={closePanel}
+              onSubmit={() => submitReview(panel === 'approve' ? 'done' : 'rejected')}
             />
           )}
         </div>
@@ -395,12 +471,13 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
 }
 
 function ReviewEvidence({ task }: { task: Task }) {
+  const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const ev = task.evidence;
   return (
     <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5">
       <p className="text-[12px] leading-relaxed text-amber-900 break-words">
-        {task.readinessNote ?? 'Evidence submitted and waiting on a peer ruling.'}
+        {task.readinessNote ?? t('task.evidenceWaiting')}
       </p>
       {ev && (
         <>
@@ -410,17 +487,17 @@ function ReviewEvidence({ task }: { task: Task }) {
             className="mt-2 text-[11px] font-semibold text-amber-800 underline underline-offset-2"
           >
             {open
-              ? 'Hide evidence'
-              : `Evidence from ${ev.submittedBy}${typeof ev.exitCode === 'number' ? ` (exit ${ev.exitCode})` : ''}`}
+              ? t('task.evidenceHide')
+              : t('task.evidenceFrom', { name: ev.submittedBy, exit: typeof ev.exitCode === 'number' ? ` (exit ${ev.exitCode})` : '' })}
           </button>
           {open && (
             <div className="mt-2 space-y-2">
               {/* The check is a run OR a criterion-by-criterion account; show whichever was given. */}
-              {([['Files', ev.fileListing], ['Excerpt', ev.fileExcerpt], ['Run output', ev.runOutput], ['Checks', ev.checks]] as const)
+              {([['task.evidenceFiles', ev.fileListing], ['task.evidenceExcerpt', ev.fileExcerpt], ['task.evidenceRunOutput', ev.runOutput], ['task.evidenceChecks', ev.checks]] as const)
                 .filter(([, body]) => Boolean(body))
                 .map(([label, body]) => (
                 <div key={label}>
-                  <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700">{label}</div>
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700">{t(label as MessageKey)}</div>
                   <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-ink px-2.5 py-2 text-[11px] leading-relaxed text-white/90">
                     <code>{body}</code>
                   </pre>
@@ -457,6 +534,7 @@ function NotePanel({ id, label, submitLabel, destructive, value, onChange, busy,
   onCancel: () => void;
   onSubmit: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <div className="mt-3 rounded-lg border border-border bg-surface-softer p-2.5">
       <label className="block text-[11px] font-semibold text-ink-muted" htmlFor={id}>{label}</label>
@@ -477,7 +555,112 @@ function NotePanel({ id, label, submitLabel, destructive, value, onChange, busy,
           {submitLabel}
         </button>
         <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
-          Cancel
+          {t('common.cancel')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function VerifyPanel({
+  id,
+  verdict,
+  note,
+  onNoteChange,
+  followUpTarget,
+  onFollowUpTargetChange,
+  followUpTargetClient,
+  onFollowUpTargetClientChange,
+  followUpRequest,
+  onFollowUpRequestChange,
+  followUpError,
+  busy,
+  onCancel,
+  onSubmit,
+}: {
+  id: string;
+  verdict: 'done' | 'rejected';
+  note: string;
+  onNoteChange: (value: string) => void;
+  followUpTarget: string;
+  onFollowUpTargetChange: (value: string) => void;
+  followUpTargetClient: '' | 'web' | 'cc';
+  onFollowUpTargetClientChange: (value: '' | 'web' | 'cc') => void;
+  followUpRequest: string;
+  onFollowUpRequestChange: (value: string) => void;
+  followUpError: string;
+  busy: boolean;
+  onCancel: () => void;
+  onSubmit: () => void | Promise<void>;
+}) {
+  const { t } = useLocale();
+  const rejected = verdict === 'rejected';
+  return (
+    <div className="mt-3 rounded-lg border border-border bg-surface-softer p-2.5">
+      <label className="block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-note`}>
+        {rejected ? t('task.rejectionPrompt') : t('task.reviewNote')}
+      </label>
+      <textarea
+        id={`${id}-note`}
+        value={note}
+        onChange={event => onNoteChange(event.target.value)}
+        rows={3}
+        maxLength={rejected ? 600 : undefined}
+        className={`mt-1.5 ${FIELD} resize-none py-2 leading-relaxed`}
+      />
+      {rejected && <p className="mt-1 text-[11px] text-ink-soft">{t('task.rejectionHelp')}</p>}
+      <details className="mt-2 rounded-lg border border-border-faint bg-white px-2.5 py-2">
+        <summary className="cursor-pointer text-[11px] font-semibold text-ink-muted">{t('task.postReviewAction')}</summary>
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-soft">
+          {t('task.postReviewHelp')}
+        </p>
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-target`}>
+          {t('task.participantName')}
+        </label>
+        <input
+          id={`${id}-target`}
+          value={followUpTarget}
+          onChange={event => onFollowUpTargetChange(event.target.value)}
+          maxLength={120}
+          className={`mt-1 ${FIELD}`}
+        />
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-target-client`}>
+          {t('task.clientAmbiguous')}
+        </label>
+        <select
+          id={`${id}-target-client`}
+          value={followUpTargetClient}
+          onChange={event => onFollowUpTargetClientChange(event.target.value as '' | 'web' | 'cc')}
+          className={`mt-1 ${FIELD}`}
+        >
+          <option value="">{t('task.resolveByName')}</option>
+          <option value="web">{t('task.web')}</option>
+          <option value="cc">{t('task.agentClient')}</option>
+        </select>
+        <label className="mt-2 block text-[11px] font-semibold text-ink-muted" htmlFor={`${id}-request`}>
+          {t('task.requestedAction')}
+        </label>
+        <textarea
+          id={`${id}-request`}
+          value={followUpRequest}
+          onChange={event => onFollowUpRequestChange(event.target.value)}
+          rows={2}
+          maxLength={240}
+          className={`mt-1 ${FIELD} resize-none py-2 leading-relaxed`}
+        />
+      </details>
+      {followUpError && <p role="alert" className="mt-1 text-[11px] font-semibold text-rose-700">{followUpError}</p>}
+      <div className="mt-2 flex gap-2">
+        <button
+          type="button"
+          disabled={busy || (rejected && (!note.trim() || note.trim().length > 600))}
+          onClick={onSubmit}
+          className={`${CTRL} flex-1 ${rejected ? 'bg-rose-600 text-white hover:bg-rose-700' : 'bg-emerald-600 text-white hover:bg-emerald-700'}`}
+        >
+          {rejected ? t('task.rejectTask') : t('task.approve')}
+        </button>
+        <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
+          {t('common.cancel')}
         </button>
       </div>
     </div>
@@ -491,6 +674,7 @@ function AssignPanel({ agents, task, busy, onCancel, onSubmit }: {
   onCancel: () => void;
   onSubmit: (patch: { owner?: string; ownerClient?: 'cc'; verifier?: string; verifierClient?: 'cc' }) => void;
 }) {
+  const { t } = useLocale();
   const [owner, setOwner] = useState(task.owner ?? '');
   const [verifier, setVerifier] = useState(task.verifier ?? '');
   // An empty select omits the field from the patch, so the existing holder
@@ -504,11 +688,11 @@ function AssignPanel({ agents, task, busy, onCancel, onSubmit }: {
 
   return (
     <div className="mt-3 space-y-2 rounded-lg border border-border bg-surface-softer p-2.5">
-      <AgentSelect id={`owner-${task.id}`} label="Owner" value={owner} onChange={setOwner} agents={agents} anyLabel="Leave unchanged" />
-      <AgentSelect id={`verifier-${task.id}`} label="Verifier" value={verifier} onChange={setVerifier} agents={agents} anyLabel="Leave unchanged" />
+      <AgentSelect id={`owner-${task.id}`} label={t('task.owner')} value={owner} onChange={setOwner} agents={agents} anyLabel={t('task.leaveUnchanged')} />
+      <AgentSelect id={`verifier-${task.id}`} label={t('task.verifier')} value={verifier} onChange={setVerifier} agents={agents} anyLabel={t('task.leaveUnchanged')} />
       {conflict && (
         <p className="text-[11px] font-semibold text-rose-700">
-          That leaves {resultOwner} as both owner and verifier. Nobody signs off on their own delivery.
+          {t('task.sameOwnerVerifier', { name: resultOwner ?? '' })}
         </p>
       )}
       <div className="flex gap-2">
@@ -521,10 +705,10 @@ function AssignPanel({ agents, task, busy, onCancel, onSubmit }: {
           })}
           className={`${CTRL} flex-1 bg-accent text-white hover:opacity-90`}
         >
-          Save roles
+          {t('task.saveRoles')}
         </button>
         <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </div>
@@ -556,6 +740,7 @@ function NewTaskForm({ agents, busy, onCancel, onSubmit }: {
   onCancel: () => void;
   onSubmit: (input: { title: string; dod?: string; owner?: string; ownerClient?: 'cc'; verifier?: string; verifierClient?: 'cc' }) => void;
 }) {
+  const { t } = useLocale();
   const [title, setTitle] = useState('');
   const [dod, setDod] = useState('');
   const [owner, setOwner] = useState(agents[0]?.name ?? '');
@@ -577,50 +762,50 @@ function NewTaskForm({ agents, busy, onCancel, onSubmit }: {
       }}
     >
       <div>
-        <label htmlFor="new-task-title" className="block text-[11px] font-semibold text-ink-muted">What needs doing</label>
+        <label htmlFor="new-task-title" className="block text-[11px] font-semibold text-ink-muted">{t('task.whatNeedsDoing')}</label>
         <input
           id="new-task-title"
           value={title}
           onChange={e => setTitle(e.target.value)}
-          placeholder="Add rate limiting to the login route"
+          placeholder={t('task.newTitleExample')}
           autoFocus
           className={`mt-1 ${FIELD}`}
         />
       </div>
       <div>
         <label htmlFor="new-task-dod" className="block text-[11px] font-semibold text-ink-muted">
-          Done when <span className="font-medium text-ink-faint">optional but recommended</span>
+          {t('task.doneWhen')} <span className="font-medium text-ink-faint">{t('task.optionalRecommended')}</span>
         </label>
         <textarea
           id="new-task-dod"
           value={dod}
           onChange={e => setDod(e.target.value)}
           rows={2}
-          placeholder="Tests pass and a 6th request inside a minute returns 429"
+          placeholder={t('task.dodExample')}
           className={`mt-1 ${FIELD} resize-none py-2 leading-relaxed`}
         />
       </div>
       {agents.length === 0 ? (
         <p className="rounded-lg bg-white px-2.5 py-2 text-[11px] leading-relaxed text-ink-soft">
-          No agents in the room yet. Create the task anyway and assign it once an agent joins.
+          {t('task.noAgents')}
         </p>
       ) : (
         <div className="grid grid-cols-2 gap-2 [&>*]:min-w-0">
-          <AgentSelect id="new-task-owner" label="Owner" value={owner} onChange={setOwner} agents={agents} anyLabel="Unassigned" />
-          <AgentSelect id="new-task-verifier" label="Verifier" value={verifier} onChange={setVerifier} agents={agents} anyLabel="Any peer" />
+          <AgentSelect id="new-task-owner" label={t('task.owner')} value={owner} onChange={setOwner} agents={agents} anyLabel={t('task.unassigned')} />
+          <AgentSelect id="new-task-verifier" label={t('task.verifier')} value={verifier} onChange={setVerifier} agents={agents} anyLabel={t('task.anyPeer')} />
         </div>
       )}
       {conflict && (
         <p className="text-[11px] font-semibold text-rose-700">
-          Pick a different verifier. An agent cannot sign off on its own work.
+          {t('task.differentVerifier')}
         </p>
       )}
       <div className="flex gap-2">
         <button type="submit" disabled={busy || !title.trim() || conflict} className={`${CTRL} flex-1 bg-accent text-white hover:opacity-90`}>
-          {busy ? 'Creating' : 'Create task'}
+          {busy ? t('task.createBusy') : t('task.create')}
         </button>
         <button type="button" onClick={onCancel} className={`${CTRL} border border-border bg-white text-ink-muted`}>
-          Cancel
+          {t('common.cancel')}
         </button>
       </div>
     </form>
@@ -647,13 +832,14 @@ function BoardSkeleton() {
 }
 
 function EmptyBoard({ hasAgents }: { hasAgents: boolean }) {
+  const { t } = useLocale();
   return (
     <div className="rounded-xl border border-dashed border-border bg-surface-softer p-5 text-center">
-      <h3 className="text-[13px] font-semibold text-ink">Nothing assigned yet</h3>
+      <h3 className="text-[13px] font-semibold text-ink">{t('task.nothingAssigned')}</h3>
       <p className="mx-auto mt-1.5 max-w-xs text-[12px] leading-relaxed text-ink-soft">
         {hasAgents
-          ? 'Create a task to hand real work to an agent. Every task gets an owner and a different verifier, so nothing is done just because its owner says so.'
-          : 'Bring an agent into the room first, then create a task to hand it real work with an owner and a separate verifier.'}
+          ? t('task.emptyWithAgents')
+          : t('task.emptyWithoutAgents')}
       </p>
     </div>
   );
@@ -665,10 +851,11 @@ function DeliverySection({ artifacts, canExport, reportBusy, onExportReport }: {
   reportBusy: boolean;
   onExportReport: () => void;
 }) {
+  const { t } = useLocale();
   return (
     <section className="mt-6 border-t border-border-faint pt-4">
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold text-ink">Delivery log</h2>
+        <h2 className="text-sm font-semibold text-ink">{t('task.deliveryLog')}</h2>
         <span className="text-[11px] text-ink-soft">{artifacts.length}</span>
       </div>
       {artifacts.length ? (
@@ -676,7 +863,7 @@ function DeliverySection({ artifacts, canExport, reportBusy, onExportReport }: {
           {artifacts.slice(-8).reverse().map(a => (
             <div key={a.id} className="rounded-lg border border-border-faint bg-surface-softer p-2.5">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-wide text-ink-muted">{artifactLabel(a.kind)}</span>
+                <span className="text-[10px] font-bold uppercase tracking-wide text-ink-muted">{t(`task.artifact.${a.kind}` as MessageKey)}</span>
                 <span className="text-[10px] text-ink-faint">{a.author}</span>
               </div>
               <p className="mt-1 text-[12px] leading-relaxed text-ink break-words">{a.text}</p>
@@ -685,7 +872,7 @@ function DeliverySection({ artifacts, canExport, reportBusy, onExportReport }: {
         </div>
       ) : (
         <p className="mt-2 rounded-lg border border-border-faint bg-surface-softer p-3 text-[12px] leading-relaxed text-ink-soft">
-          Mark a message with [DECISION], [TODO], [STATUS], or [RESULT] and it lands here.
+          {t('task.markersHint')}
         </p>
       )}
       <button
@@ -694,7 +881,7 @@ function DeliverySection({ artifacts, canExport, reportBusy, onExportReport }: {
         disabled={reportBusy || !canExport}
         className={`mt-3 w-full ${CTRL} border border-accent-tint-border bg-accent-tint text-accent hover:bg-accent-tint-border`}
       >
-        {reportBusy ? 'Saving' : 'Save and share report'}
+        {reportBusy ? t('task.saving') : t('task.saveReport')}
       </button>
     </section>
   );

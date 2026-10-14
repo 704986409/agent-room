@@ -3,6 +3,7 @@ import type { TaskBoard } from '@agent-room/shared';
 import { ROOM_POLL_MS, ROOM_POLL_HIDDEN_MS } from '@agent-room/shared';
 import { createClient, getTaskBoard } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
+import { useLocale } from '../i18n/LocaleProvider.js';
 
 /**
  * Polls the room's task board. The board already exists server-side (created
@@ -12,6 +13,7 @@ import { ENV } from '../env.js';
  * than stopping, so a backgrounded tab still catches state changes.
  */
 export function useTaskBoard(code: string) {
+  const { t } = useLocale();
   const [board, setBoard] = useState<TaskBoard | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -73,7 +75,7 @@ export function useTaskBoard(code: string) {
     // already true by the time the second one checks.
     if (busyRef.current) {
       const { showToast } = await import('../components/Toast.js');
-      showToast('Still saving the last change, try again in a moment');
+      showToast(t('task.stillSaving'));
       return false;
     }
     busyRef.current = true;
@@ -90,7 +92,7 @@ export function useTaskBoard(code: string) {
       busyRef.current = false;
       setBusy(false);
     }
-  }, [reload]);
+  }, [reload, t]);
 
   return { board, loaded, busy, reload, run };
 }

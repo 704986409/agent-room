@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createClient,
+  buildRoomReport,
   createTask,
   claimTask,
   submitTask,
@@ -29,36 +30,122 @@ import {
   TaskNotFoundError,
   hostSetTaskState,
   TaskDoneImmutableError,
+  TaskVerifyFollowUpError,
+  TaskVerifyReasonError,
+  getMessageTotalCount,
+  listMessages,
 } from '../src/index.js';
+import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
 const CODE = 'ABC-DEF-GHJ';
+let failNextTaskVerificationCommit = false;
 
 // In-memory fake of the Upstash REST endpoint: interprets the GET/SET/DEL
 // command array the client sends and keeps a key→value Map, so the CAS
 // read-modify-write loop in tasks.ts actually round-trips against state.
 function installFakeRedis(): Map<string, string> {
   const store = new Map<string, string>();
+  failNextTaskVerificationCommit = false;
+  store.set(`room:${CODE}`, JSON.stringify({
+    code: CODE,
+    topic: 'Test room',
+    createdAt: Date.now(),
+    createdBy: 'Room Host',
+    status: 'active',
+    version: 1,
+    participants: [],
+  }));
+  const readList = (key: string): string[] => {
+    const raw = store.get(key);
+    return raw ? JSON.parse(raw) as string[] : [];
+  };
+  const writeList = (key: string, list: string[]) => store.set(key, JSON.stringify(list));
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
-    const cmd = JSON.parse(init.body) as string[];
-    const op = cmd[0];
-    const key = cmd[1];
-    let result: unknown = null;
-    if (op === 'GET') result = store.has(key) ? store.get(key) : null;
-    else if (op === 'SET') { store.set(key, cmd[2]); result = 'OK'; }
-    else if (op === 'DEL') { result = store.delete(key) ? 1 : 0; }
-    else if (op === 'EVAL') {
-      // Emulate the task-board CAS script:
-      //   EVAL <script> 1 <key> <'absent'|'present'> <expected> <next> <ttl>
-      const evalKey = cmd[3];
-      const mode = cmd[4];
-      const expected = cmd[5];
-      const next = cmd[6];
-      const cur = store.has(evalKey) ? store.get(evalKey) : undefined;
-      const ok = mode === 'absent' ? cur === undefined : cur === expected;
-      if (ok) { store.set(evalKey, next); result = 1; } else { result = 0; }
-    }
-    return new Response(JSON.stringify({ result }), { headers: { 'Content-Type': 'application/json' } });
+    const run = (rawCommand: string[]): unknown => {
+      const cmd = rawCommand.map(String);
+      const op = cmd[0];
+      const key = cmd[1]!;
+      if (op === 'GET') return store.has(key) ? store.get(key) : null;
+      if (op === 'SET') { store.set(key, cmd[2]!); return 'OK'; }
+      if (op === 'DEL') return store.delete(key) ? 1 : 0;
+      if (op === 'LLEN') return readList(key).length;
+      if (op === 'LRANGE') {
+        const list = readList(key);
+        const start = Number(cmd[2]);
+        const stop = Number(cmd[3]);
+        const from = start < 0 ? Math.max(list.length + start, 0) : start;
+        const to = stop < 0 ? list.length + stop : stop;
+        return list.slice(from, to + 1);
+      }
+      if (op === 'RPUSH') {
+        const list = readList(key);
+        list.push(...cmd.slice(2));
+        writeList(key, list);
+        return list.length;
+      }
+      if (op === 'INCR') {
+        const next = Number(store.get(key) ?? 0) + 1;
+        store.set(key, String(next));
+        return next;
+      }
+      if (op === 'LTRIM') {
+        const list = readList(key);
+        const start = Number(cmd[2]);
+        const stop = Number(cmd[3]);
+        const from = start < 0 ? Math.max(list.length + start, 0) : start;
+        const to = stop < 0 ? list.length + stop : stop;
+        writeList(key, list.slice(from, to + 1));
+        return 'OK';
+      }
+      if (op === 'EXPIREAT') return 1;
+      if (op === 'EVAL') {
+        if (cmd[2] === '4') {
+          if (failNextTaskVerificationCommit) {
+            failNextTaskVerificationCommit = false;
+            throw new Error('Injected task verification storage failure');
+          }
+          // Mirrors the verification script's key/argument layout and executes
+          // its writes synchronously, just as Redis serializes one Lua script.
+          const [boardKey, listKey, countKey, roomKey] = cmd.slice(3, 7);
+          const [mode, expected, next, _expireAt, message, maxMessages] = cmd.slice(7);
+          const cur = store.get(boardKey!);
+          if (mode === 'absent' ? cur !== undefined : cur !== expected) return 0;
+          if (!store.has(roomKey!)) return -1;
+          const countRaw = store.get(countKey!);
+          if (countRaw !== undefined) {
+            if (countRaw !== '0' && !/^[1-9][0-9]*$/.test(countRaw)) return -2;
+            if (countRaw.length > 19 || (countRaw.length === 19 && countRaw > '9223372036854775806')) return -2;
+          }
+          const list = readList(listKey!);
+          const previousListLength = list.length;
+          list.push(message!);
+          if (list.length > Number(maxMessages)) list.splice(0, list.length - Number(maxMessages));
+          store.set(boardKey!, next!);
+          writeList(listKey!, list);
+          const previousCount = store.has(countKey!) ? Number(store.get(countKey!)) : previousListLength;
+          store.set(countKey!, String(previousCount + 1));
+          return 1;
+        }
+        // Existing task-board-only CAS used by every non-verify mutation.
+        const evalKey = cmd[3]!;
+        const mode = cmd[4];
+        const expected = cmd[5];
+        const next = cmd[6]!;
+        const _expireAt = cmd[7]!;
+        const cur = store.has(evalKey) ? store.get(evalKey) : undefined;
+        const ok = mode === 'absent' ? cur === undefined : cur === expected;
+        if (ok) { store.set(evalKey, next); return 1; }
+        return 0;
+      }
+      return null;
+    };
+
+    const body = JSON.parse(init.body) as string[] | string[][];
+    const results = _url.endsWith('/pipeline')
+      ? (body as string[][]).map(command => ({ result: run(command) }))
+      : { result: run(body as string[]) };
+    return new Response(JSON.stringify(results), { headers: { 'Content-Type': 'application/json' } });
   }));
   return store;
 }
@@ -76,9 +163,11 @@ const VERIFIER = { name: 'GPT', client: 'cc' as const };
 describe('task board evidence gate', () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it('uses the room plan retention for task-board CAS writes', async () => {
+  it('pins task-board CAS writes to the room creation deadline', async () => {
     const store = installFakeRedis();
-    store.set(`room:${CODE}`, JSON.stringify({ code: CODE, retentionSeconds: 90 * 24 * 60 * 60 }));
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
+    room.createdAt -= 24 * 60 * 60 * 1000;
+    store.set(`room:${CODE}`, JSON.stringify(room));
     const client = createClient(ENV);
 
     await createTask(client, CODE, {
@@ -89,7 +178,29 @@ describe('task board evidence gate', () => {
     const evalCommand = calls
       .map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[])
       .find(command => command[0] === 'EVAL');
-    expect(evalCommand?.[7]).toBe(String(90 * 24 * 60 * 60));
+    expect(evalCommand?.[7]).toBe(String(Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS));
+    expect(evalCommand?.[1]).toContain("EXPIREAT");
+    expect(evalCommand?.[1]).toContain("'SET', KEYS[1], ARGV[3], 'KEEPTTL'");
+    expect(evalCommand?.[1]).toContain("'EXPIREAT', KEYS[1], expireAt, 'LT'");
+    expect(evalCommand?.[1]).not.toContain("'EX',");
+  });
+
+  it('refuses to recreate a task board after the room retention deadline', async () => {
+    const store = installFakeRedis();
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
+    room.createdAt = Date.now() - (ROOM_TTL_SECONDS + 1) * 1000;
+    store.set(`room:${CODE}`, JSON.stringify(room));
+    const client = createClient(ENV);
+    const priorCalls = vi.mocked(fetch).mock.calls.length;
+
+    await expect(createTask(client, CODE, { title: 'Expired room', createdBy: 'Host' }))
+      .rejects.toMatchObject({ name: 'UpstashError' });
+    const attemptedCommands = vi.mocked(fetch).mock.calls.slice(priorCalls)
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[])
+      .filter(command => command[0] === 'EVAL');
+    expect(attemptedCommands).toHaveLength(0);
+    expect(await getTaskBoard(client, CODE)).toBeNull();
+    expect(store.has(`task-board:${CODE}`)).toBe(false);
   });
 
   it('creates a task in todo with an auto-assigned id', async () => {
@@ -186,17 +297,19 @@ describe('task board evidence gate', () => {
   });
 
   it('forbids the owner from verifying their own task', async () => {
-    installFakeRedis();
+    const store = installFakeRedis();
     const client = createClient(ENV);
     const { task } = await createTask(client, CODE, { title: 'X', createdBy: 'Claude' });
     await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
     await expect(
       verifyTask(client, CODE, task.id, OWNER, 'done', undefined),
     ).rejects.toBeInstanceOf(OwnerCannotVerifyError);
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
   it('forbids a non-designated verifier from ruling', async () => {
-    installFakeRedis();
+    const store = installFakeRedis();
     const client = createClient(ENV);
     const { task } = await createTask(client, CODE, {
       title: 'X', verifier: VERIFIER.name, verifierClient: VERIFIER.client, createdBy: 'Claude',
@@ -205,32 +318,64 @@ describe('task board evidence gate', () => {
     await expect(
       verifyTask(client, CODE, task.id, { name: 'Gemini', client: 'cc' }, 'done', undefined),
     ).rejects.toBeInstanceOf(NotVerifierError);
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
-  it('lets the designated verifier mark it done', async () => {
-    installFakeRedis();
+  it('lets the designated verifier mark it done and persists one host-addressed event', async () => {
+    const store = installFakeRedis();
     const client = createClient(ENV);
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdBy: string };
+    room.createdBy = '主持人🧪/Ops';
+    store.set(`room:${CODE}`, JSON.stringify(room));
     const { task } = await createTask(client, CODE, {
-      title: 'X', verifier: VERIFIER.name, verifierClient: VERIFIER.client, createdBy: 'Claude',
+      title: '验证房间消息 "状态"', verifier: VERIFIER.name, verifierClient: VERIFIER.client, createdBy: 'Claude',
     });
     await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
-    const { task: verified } = await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'looks good');
+    const { board, task: verified } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'done', '复核通过。\nAuthorization: Bearer test-secret-value', 1_800_000_000_000,
+    );
     expect(verified.state).toBe('done');
     expect(verified.verdict?.by).toBe('GPT');
+    const messages = await listMessages(client, CODE, 0);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: 'sys',
+      name: 'system',
+      metadata: { eventType: 'task_update', taskId: task.id },
+    });
+    expect(messages[0]!.metadata?.eventId).toBe(`task-verification:${task.id}:1800000000000:cc:GPT`);
+    expect(messages[0]!.text).toContain('@主持人🧪/Ops');
+    expect(messages[0]!.text).toContain('审核者：GPT');
+    expect(messages[0]!.text).toContain('Authorization: Bearer [REDACTED]');
+    expect(messages[0]!.text).not.toContain('test-secret-value');
+    expect(messages[0]!.text).not.toContain('\n');
+
+    const report = buildRoomReport(
+      JSON.parse(store.get(`room:${CODE}`)!) as Parameters<typeof buildRoomReport>[0],
+      messages,
+      board,
+    );
+    expect(report.transcript).toHaveLength(1);
+    expect(report.transcript[0]!.text).toBe(messages[0]!.text);
+    expect(report.retro.sysEventCount).toBe(1);
+    expect(report.retro.tasks?.[0]?.state).toBe('done');
   });
 
   it('cannot verify a task that is not awaiting_review', async () => {
-    installFakeRedis();
+    const store = installFakeRedis();
     const client = createClient(ENV);
     const { task } = await createTask(client, CODE, { title: 'X', createdBy: 'Claude' });
     // still in todo
     await expect(
       verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined),
     ).rejects.toBeInstanceOf(TaskStateError);
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
   it('a rejected task can be resubmitted and then verified', async () => {
-    installFakeRedis();
+    const store = installFakeRedis();
     const client = createClient(ENV);
     const { task } = await createTask(client, CODE, {
       title: 'X', verifier: VERIFIER.name, verifierClient: VERIFIER.client, createdBy: 'Claude',
@@ -239,10 +384,177 @@ describe('task board evidence gate', () => {
     await submitTask(client, CODE, task.id, OWNER, { ...FULL_EVIDENCE, exitCode: 1 });
     const { task: rejected } = await verifyTask(client, CODE, task.id, VERIFIER, 'rejected', 'tests fail');
     expect(rejected.state).toBe('rejected');
+    const rejectionMessages = await listMessages(client, CODE, 0);
+    expect(rejectionMessages).toHaveLength(1);
+    expect(rejectionMessages[0]!.text).toContain('验收未通过');
+    expect(rejectionMessages[0]!.text).toContain('原因：tests fail');
     await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
     const { task: done } = await verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined);
     expect(done.state).toBe('done');
+    expect(await listMessages(client, CODE, 0)).toHaveLength(2);
+    expect(store.get(`room-msg-count:${CODE}`)).toBe('2');
   });
+
+  it('does not emit a second event when a completed verification is retried', async () => {
+    installFakeRedis();
+    const client = createClient(ENV);
+    const { task } = await createTask(client, CODE, { title: 'Retry safety', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked');
+
+    await expect(verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked again'))
+      .rejects.toBeInstanceOf(TaskDoneImmutableError);
+    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+  });
+
+  it('allows only one concurrent verifier to commit one event', async () => {
+    installFakeRedis();
+    const client = createClient(ENV);
+    const { task } = await createTask(client, CODE, { title: 'Concurrent review', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+
+    const results = await Promise.allSettled([
+      verifyTask(client, CODE, task.id, VERIFIER, 'done', 'winner one'),
+      verifyTask(client, CODE, task.id, VERIFIER, 'done', 'winner two'),
+    ]);
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+    expect(await getMessageTotalCount(client, CODE)).toBe(1);
+  });
+
+  it('reports a storage failure without changing the task or adding an event', async () => {
+    const store = installFakeRedis();
+    const client = createClient(ENV);
+    const { task } = await createTask(client, CODE, { title: 'Storage failure', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    failNextTaskVerificationCommit = true;
+
+    await expect(verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked'))
+      .rejects.toMatchObject({ name: 'NetworkError' });
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
+  });
+
+  it('rejects invalid room expiry metadata before issuing the atomic write', async () => {
+    const store = installFakeRedis();
+    const client = createClient(ENV);
+    const { task } = await createTask(client, CODE, { title: 'Invalid room expiry', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
+    room.createdAt = 1.5;
+    store.set(`room:${CODE}`, JSON.stringify(room));
+    const priorCalls = vi.mocked(fetch).mock.calls.length;
+
+    await expect(verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked'))
+      .rejects.toMatchObject({ name: 'UpstashError' });
+    const attemptedCommands = vi.mocked(fetch).mock.calls.slice(priorCalls)
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[])
+      .filter(command => command[0] === 'EVAL');
+    expect(attemptedCommands).toHaveLength(0);
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+  });
+
+  it('keeps absolute cursors, the 500-message cap, and the fixed seven-day message expiry', async () => {
+    const store = installFakeRedis();
+    const client = createClient(ENV);
+    const oldMessages = Array.from({ length: MAX_MESSAGES_PER_ROOM }, (_, index) => JSON.stringify({
+      id: index,
+      type: 'msg',
+      name: 'Earlier agent',
+      initials: 'EA',
+      color: '#000000',
+      role: 'Agent',
+      text: `earlier ${index}`,
+      client: 'cc',
+      time: index,
+    }));
+    store.set(`room-msgs:${CODE}`, JSON.stringify(oldMessages));
+    store.set(`room-msg-count:${CODE}`, '700');
+    const { task } = await createTask(client, CODE, { title: 'Cursor boundary', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked', 1_800_000_000_000);
+
+    expect(JSON.parse(store.get(`room-msgs:${CODE}`)!).length).toBe(MAX_MESSAGES_PER_ROOM);
+    expect(await getMessageTotalCount(client, CODE)).toBe(701);
+    const unread = await listMessages(client, CODE, 700);
+    expect(unread).toHaveLength(1);
+    expect(unread[0]!.metadata?.eventType).toBe('task_update');
+
+    const commitCommand = vi.mocked(fetch).mock.calls
+      .map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[])
+      .find(command => command[0] === 'EVAL' && command[2] === '4');
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as { createdAt: number };
+    expect(commitCommand?.[10]).toBe(String(Math.floor(room.createdAt / 1000) + ROOM_TTL_SECONDS));
+    expect(commitCommand?.[12]).toBe(String(MAX_MESSAGES_PER_ROOM));
+    expect(commitCommand?.[1]).toContain("'SET', KEYS[1], ARGV[3], 'KEEPTTL'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[1], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[2], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'EXPIREAT', KEYS[3], expireAt, 'LT'");
+    expect(commitCommand?.[1]).toContain("'SET', KEYS[3], legacyCount, 'KEEPTTL'");
+  });
+
+  it('initializes a legacy room counter from its retained list before adding the event', async () => {
+    const store = installFakeRedis();
+    const client = createClient(ENV);
+    const oldMessages = Array.from({ length: 8 }, (_, index) => JSON.stringify({
+      id: index,
+      type: 'msg',
+      name: 'Earlier agent',
+      initials: 'EA',
+      color: '#000000',
+      role: 'Agent',
+      text: `earlier ${index}`,
+      client: 'cc',
+      time: index,
+    }));
+    store.set(`room-msgs:${CODE}`, JSON.stringify(oldMessages));
+    const { task } = await createTask(client, CODE, { title: 'Legacy counter', createdBy: 'Host' });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    await verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined);
+
+    expect(await getMessageTotalCount(client, CODE)).toBe(9);
+    const unread = await listMessages(client, CODE, 8);
+    expect(unread).toHaveLength(1);
+    expect(unread[0]!.metadata?.taskId).toBe(task.id);
+  });
+
+  it.each(['open', 'sequential', 'moderator'] as const)(
+    'posts verification as a system event in %s mode without claiming the turn or speaker seat',
+    async (replyMode) => {
+      const store = installFakeRedis();
+      const client = createClient(ENV);
+      const room = JSON.parse(store.get(`room:${CODE}`)!) as Record<string, unknown>;
+      room.replyMode = replyMode;
+      room.participants = [{
+        name: VERIFIER.name,
+        client: VERIFIER.client,
+        role: 'Reviewer',
+        color: '#000000',
+        initials: 'RV',
+        joinedAt: 1,
+        lastSeenAt: 1,
+        canSpeak: false,
+      }];
+      store.set(`room:${CODE}`, JSON.stringify(room));
+
+      const { task } = await createTask(client, CODE, {
+        title: `${replyMode} verification`, owner: OWNER.name, ownerClient: OWNER.client,
+        verifier: VERIFIER.name, verifierClient: VERIFIER.client, createdBy: 'Host',
+      });
+      await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+      await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'reviewed');
+
+      const messages = await listMessages(client, CODE, 0);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.type).toBe('sys');
+      expect(messages[0]!.metadata?.eventType).toBe('task_update');
+      expect(store.has(`turn-state:${CODE}`)).toBe(false);
+      expect((JSON.parse(store.get(`room:${CODE}`)!) as { replyMode: string }).replyMode).toBe(replyMode);
+    },
+  );
 
   it('stamps lastProgressAt on each meaningful change', async () => {
     installFakeRedis();
@@ -1096,5 +1408,250 @@ describe('task board CAS (no lost updates / no blanking)', () => {
     ]);
     const board = (await getTaskBoard(client, CODE))!;
     expect(board.tasks).toHaveLength(3);
+  });
+});
+
+describe('verifyTask structured follow-up', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function pendingReview(participants: unknown[] = []) {
+    const store = installFakeRedis();
+    const room = JSON.parse(store.get(`room:${CODE}`)!) as Record<string, unknown>;
+    room.participants = participants;
+    store.set(`room:${CODE}`, JSON.stringify(room));
+    const client = createClient(ENV);
+    const { task } = await createTask(client, CODE, {
+      title: 'Follow-up verification',
+      owner: OWNER.name,
+      ownerClient: OWNER.client,
+      verifier: VERIFIER.name,
+      verifierClient: VERIFIER.client,
+      createdBy: 'Host',
+    });
+    await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
+    return { store, client, task };
+  }
+
+  it('records one system notice for a legacy verification without follow-up', async () => {
+    const { client, task } = await pendingReview();
+    const { task: verified } = await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'Acceptance passed.');
+
+    expect(verified.state).toBe('done');
+    expect(verified.verdict?.followUp).toBeUndefined();
+    const messages = await listMessages(client, CODE, 0);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain('Acceptance passed.');
+    expect(messages[0]!.text).not.toContain('后续处理：');
+    expect(await getMessageTotalCount(client, CODE)).toBe(1);
+  });
+
+  it('persists a validated participant request and appends it to the same notice', async () => {
+    const { client, task } = await pendingReview([
+      { name: 'Build Agent', client: 'cc', role: '', color: '#000000', initials: 'BA', joinedAt: 1, lastSeenAt: 1 },
+    ]);
+    const { task: verified } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'done', 'Passes acceptance.', 1_800_000_000_000,
+      { target: '  Build Agent  ', request: '  Check the deployment window.  ' },
+    );
+
+    expect(verified.verdict?.followUp).toEqual({
+      target: 'Build Agent',
+      request: 'Check the deployment window.',
+      targetClient: 'cc',
+    });
+    const messages = await listMessages(client, CODE, 0);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain('@Build Agent Check the deployment window.');
+    expect(messages[0]!.metadata).toMatchObject({
+      eventType: 'task_update',
+      targetAgentName: 'Build Agent',
+      targetAgentClient: 'cc',
+    });
+    expect(await getMessageTotalCount(client, CODE)).toBe(1);
+  });
+
+  it('records a rejection reason and requested rework in one notification', async () => {
+    const { client, task } = await pendingReview([
+      { name: 'Producer', client: 'cc', role: '', color: '#000000', initials: 'PR', joinedAt: 1, lastSeenAt: 1 },
+    ]);
+    const { task: rejected } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'rejected', 'Reconnect repeats the last message.', Date.now(),
+      { target: 'Producer', request: 'Fix reconnect idempotency and submit new evidence.' },
+    );
+
+    expect(rejected.state).toBe('rejected');
+    expect(rejected.verdict?.followUp?.target).toBe('Producer');
+    const messages = await listMessages(client, CODE, 0);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain('原因：Reconnect repeats the last message.');
+    expect(messages[0]!.text).toContain('@Producer Fix reconnect idempotency and submit new evidence.');
+  });
+
+  it('rejects missing, invisible, and overlong rejection reasons without any write, then permits a valid retry', async () => {
+    const invalidNotes: Array<{ label: string; note: string | undefined }> = [
+      { label: 'missing', note: undefined },
+      { label: 'empty', note: '' },
+      { label: 'whitespace only', note: '  \t  ' },
+      { label: 'control characters only', note: '\n\r\u0000\u0008\u007f' },
+      { label: 'over 600 characters', note: 'x'.repeat(601) },
+    ];
+    const { store, client, task } = await pendingReview();
+    const pendingBoardRaw = store.get(`task-board:${CODE}`);
+
+    for (const { label, note } of invalidNotes) {
+      await expect(
+        verifyTask(client, CODE, task.id, VERIFIER, 'rejected', note),
+        label,
+      ).rejects.toBeInstanceOf(TaskVerifyReasonError);
+      expect((await getTaskBoard(client, CODE))?.tasks[0]?.state, label).toBe('awaiting_review');
+      expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict, label).toBeUndefined();
+      expect(await listMessages(client, CODE, 0), label).toHaveLength(0);
+      expect(await getMessageTotalCount(client, CODE), label).toBeNull();
+      expect(store.get(`task-board:${CODE}`), label).toBe(pendingBoardRaw);
+      expect(store.has(`room-msgs:${CODE}`), label).toBe(false);
+      expect(store.has(`room-msg-count:${CODE}`), label).toBe(false);
+    }
+
+    const boundaryReason = 'x'.repeat(600);
+    const { task: rejected } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'rejected', boundaryReason,
+    );
+    const messages = await listMessages(client, CODE, 0);
+    expect(rejected.state).toBe('rejected');
+    expect(rejected.verdict?.note).toBe(boundaryReason);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.text).toContain(`原因：${boundaryReason}`);
+    expect(await getMessageTotalCount(client, CODE)).toBe(1);
+  });
+
+  it('stores and announces the same normalized rejection reason', async () => {
+    const { client, task } = await pendingReview();
+    const { task: rejected } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'rejected', '  Inspect\tbecause\nretry  ',
+    );
+
+    expect(rejected.verdict?.note).toBe('Inspect because retry');
+    const [message] = await listMessages(client, CODE, 0);
+    expect(message!.text).toContain(`原因：${rejected.verdict?.note}`);
+  });
+
+  it('resolves the host seat even before it joins the participants array', async () => {
+    const { client, task } = await pendingReview();
+    const { task: verified } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'done', undefined, Date.now(),
+      { target: 'Room Host', request: 'Please approve the rollout window.' },
+    );
+
+    expect(verified.verdict?.followUp).toMatchObject({ target: 'Room Host', targetClient: 'web' });
+    expect((await listMessages(client, CODE, 0))[0]!.metadata).toMatchObject({
+      targetAgentName: 'Room Host',
+      targetAgentClient: 'web',
+    });
+  });
+
+  it('uses targetClient to resolve a real same-name participant', async () => {
+    const { client, task } = await pendingReview([
+      { name: 'Shared', client: 'web', role: '', color: '#000000', initials: 'SH', joinedAt: 1, lastSeenAt: 1 },
+      { name: 'Shared', client: 'cc', role: '', color: '#000000', initials: 'SH', joinedAt: 2, lastSeenAt: 2 },
+    ]);
+    const { task: verified } = await verifyTask(
+      client, CODE, task.id, VERIFIER, 'done', undefined, Date.now(),
+      { target: 'Shared', request: 'Please verify the data.', targetClient: 'cc' },
+    );
+
+    expect(verified.verdict?.followUp).toEqual({
+      target: 'Shared',
+      request: 'Please verify the data.',
+      targetClient: 'cc',
+    });
+    expect((await listMessages(client, CODE, 0))[0]!.metadata?.targetAgentClient).toBe('cc');
+  });
+
+  it('rejects invalid or ambiguous follow-ups without changing state or messages', async () => {
+    const ambiguousParticipants = [
+      { name: 'Shared', client: 'web', role: '', color: '#000000', initials: 'SH', joinedAt: 1, lastSeenAt: 1 },
+      { name: 'Shared', client: 'cc', role: '', color: '#000000', initials: 'SH', joinedAt: 2, lastSeenAt: 2 },
+    ];
+    const cases: Array<{ label: string; followUp: unknown; participants?: unknown[] }> = [
+      { label: 'empty target', followUp: { target: ' ', request: 'do something' } },
+      { label: 'empty request', followUp: { target: 'Room Host', request: '  ' } },
+      { label: 'long request', followUp: { target: 'Room Host', request: 'x'.repeat(241) } },
+      { label: 'non-string target', followUp: { target: 7, request: 'do something' } },
+      { label: 'non-string request', followUp: { target: 'Room Host', request: false } },
+      { label: 'long target', followUp: { target: 'x'.repeat(121), request: 'do something' } },
+      { label: 'non-object', followUp: ['Room Host', 'do something'] },
+      { label: 'unknown field', followUp: { target: 'Room Host', request: 'do something', extra: true } },
+      { label: 'unknown target', followUp: { target: 'Ghost', request: 'do something' } },
+      { label: 'control character in target', followUp: { target: 'Room\nHost', request: 'do something' } },
+      { label: 'invalid target client', followUp: { target: 'Room Host', request: 'do something', targetClient: 'desktop' } },
+      { label: 'ambiguous target', followUp: { target: 'Shared', request: 'do something' }, participants: ambiguousParticipants },
+    ];
+
+    for (const { label, followUp, participants } of cases) {
+      const { store, client, task } = await pendingReview(participants);
+      await expect(
+        verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked', Date.now(), followUp as never),
+        label,
+      ).rejects.toBeInstanceOf(TaskVerifyFollowUpError);
+      expect((await getTaskBoard(client, CODE))?.tasks[0]?.state, label).toBe('awaiting_review');
+      expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict, label).toBeUndefined();
+      expect(await listMessages(client, CODE, 0), label).toHaveLength(0);
+      expect(await getMessageTotalCount(client, CODE), label).toBeNull();
+      expect(store.has(`room-msgs:${CODE}`), label).toBe(false);
+    }
+  });
+
+  it('allows only one concurrent follow-up verification and one recorded action', async () => {
+    const { client, task } = await pendingReview([
+      { name: 'Producer', client: 'cc', role: '', color: '#000000', initials: 'PR', joinedAt: 1, lastSeenAt: 1 },
+    ]);
+    const followUp = { target: 'Producer', request: 'Submit the missing reconnect evidence.' };
+    const results = await Promise.allSettled([
+      verifyTask(client, CODE, task.id, VERIFIER, 'rejected', 'Reconnect behavior failed.', 1_800_000_000_000, followUp),
+      verifyTask(client, CODE, task.id, VERIFIER, 'rejected', 'Reconnect behavior failed.', 1_800_000_000_001, followUp),
+    ]);
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp?.target).toBe('Producer');
+    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+    expect(await getMessageTotalCount(client, CODE)).toBe(1);
+  });
+
+  it('does not persist a follow-up or report success when the atomic commit fails', async () => {
+    const { store, client, task } = await pendingReview([
+      { name: 'Producer', client: 'cc', role: '', color: '#000000', initials: 'PR', joinedAt: 1, lastSeenAt: 1 },
+    ]);
+    failNextTaskVerificationCommit = true;
+    await expect(
+      verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined, Date.now(), {
+        target: 'Producer', request: 'Confirm receipt.' as string,
+      }),
+    ).rejects.toMatchObject({ name: 'NetworkError' });
+
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp).toBeUndefined();
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(await getMessageTotalCount(client, CODE)).toBeNull();
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
+  });
+
+  it('fails closed at the Redis counter limit before writing the board or notice', async () => {
+    const { store, client, task } = await pendingReview([
+      { name: 'Producer', client: 'cc', role: '', color: '#000000', initials: 'PR', joinedAt: 1, lastSeenAt: 1 },
+    ]);
+    store.set(`room-msg-count:${CODE}`, '9223372036854775807');
+
+    await expect(
+      verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined, Date.now(), {
+        target: 'Producer', request: 'Confirm receipt.',
+      }),
+    ).rejects.toMatchObject({ name: 'UpstashError' });
+
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
+    expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp).toBeUndefined();
+    expect(store.get(`room-msg-count:${CODE}`)).toBe('9223372036854775807');
+    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 });

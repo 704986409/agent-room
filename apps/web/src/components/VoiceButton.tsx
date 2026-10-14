@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLocale } from '../i18n/LocaleProvider.js';
 
 interface Props {
   /** Called once with the final recognized transcript when the user stops or
@@ -17,6 +18,7 @@ const SpeechRecognitionImpl: any =
     : null;
 
 export function VoiceButton({ onTranscript, disabled }: Props) {
+  const { t } = useLocale();
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState('');
   const recognitionRef = useRef<any>(null);
@@ -49,7 +51,7 @@ export function VoiceButton({ onTranscript, disabled }: Props) {
       // 'no-speech' / 'aborted' are normal user paths (silent click, manual stop) — silent.
       if (event.error && event.error !== 'no-speech' && event.error !== 'aborted') {
         import('./Toast.js').then(({ showToast }) => {
-          showToast(`Voice error: ${event.error}`);
+          showToast(t('room.voiceError', { error: event.error }));
         });
       }
     };
@@ -86,8 +88,8 @@ export function VoiceButton({ onTranscript, disabled }: Props) {
         type="button"
         disabled={disabled}
         onClick={listening ? stop : start}
-        aria-label={listening ? 'Stop voice input' : 'Start voice input'}
-        title={listening ? 'Stop voice input' : 'Start voice input'}
+        aria-label={listening ? t('room.voiceStop') : t('room.voiceStart')}
+        title={listening ? t('room.voiceStop') : t('room.voiceStart')}
         className={`leading-none w-10 h-10 sm:w-9 sm:h-9 flex items-center justify-center rounded-lg transition ${
           listening
             ? 'bg-red-100 text-red-600 animate-pulse'

@@ -1,4 +1,7 @@
 import { useMemo, useState } from 'react';
+import { useLocale } from '../i18n/LocaleProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
+import { showToast } from './Toast.js';
 
 export type AgentClientId =
   | 'claude-code'
@@ -12,48 +15,42 @@ const CLIENT_ROWS: {
   label: string;
   /** Numeric answer at the `npx agent-room-mcp init` prompt (see src/init.ts in the agent-room-mcp repo). */
   initMenuKey: string;
-  restartTarget: string;
   note?: string;
 }[] = [
   {
     id: 'claude-code',
     label: 'Claude',
     initMenuKey: '1',
-    restartTarget: 'Claude',
     note: 'Covers Claude Code CLI and the Claude desktop app — both surfaces ship in one download. Installs MCP + autonomous-chat hooks.',
   },
   {
     id: 'cursor',
     label: 'Cursor',
     initMenuKey: '2',
-    restartTarget: 'Cursor',
     note: 'Needs Cursor 1.7+ for the stop hook that keeps room_listen alive.',
   },
   {
     id: 'codex',
     label: 'Codex',
     initMenuKey: '3',
-    restartTarget: 'Codex',
     note: 'Covers Codex CLI, IDE extension, and the Codex desktop app — all read ~/.codex/config.toml. Installs MCP + hooks unless you pass --no-hooks.',
   },
   {
     id: 'gemini',
     label: 'Gemini CLI',
     initMenuKey: '4',
-    restartTarget: 'Gemini CLI',
     note: '',
   },
   {
     id: 'print',
     label: 'Other / manual paste',
     initMenuKey: '5',
-    restartTarget: 'your client',
     note: 'Prints every harness snippet — copy the block that matches your tool.',
   },
 ];
 
-function copyText(text: string, onDone: () => void) {
-  void navigator.clipboard.writeText(text).then(onDone).catch(() => {
+function copyText(text: string, onDone: () => void, onError: () => void) {
+  const fallback = () => {
     try {
       const ta = document.createElement('textarea');
       ta.value = text;
@@ -61,13 +58,20 @@ function copyText(text: string, onDone: () => void) {
       ta.style.left = '-9999px';
       document.body.appendChild(ta);
       ta.select();
-      document.execCommand('copy');
+      const copied = document.execCommand('copy');
       document.body.removeChild(ta);
-      onDone();
+      if (copied) onDone();
+      else onError();
     } catch {
-      /* ignore */
+      onError();
     }
-  });
+  };
+  try {
+    if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(onDone).catch(fallback);
+    else fallback();
+  } catch {
+    fallback();
+  }
 }
 
 type Props = {
@@ -76,20 +80,27 @@ type Props = {
 };
 
 export function AgentJoinQuickstart({ roomCode }: Props) {
+  const { t, locale } = useLocale();
   const [client, setClient] = useState<AgentClientId>('cursor');
   const [copied, setCopied] = useState<string | null>(null);
-  const row = useMemo(() => CLIENT_ROWS.find((r) => r.id === client)!, [client]);
-
   const joinUrl = useMemo(
     () => `${typeof window !== 'undefined' ? window.location.origin : 'https://www.agent-room.com'}/j/${roomCode}`,
     [roomCode],
   );
 
   const initBlock = client === 'print' ? `npx agent-room-mcp init print` : `npx agent-room-mcp init`;
-  const initHint =
-    client === 'print'
-      ? 'Prints pasteable configs instead of installing automatically.'
-      : 'Run this once. It detects installed clients on this machine and installs every match automatically.';
+  const initHint = client === 'print' ? t('mcp.initHintPrint') : t('mcp.initHintAuto');
+  const clientName = t(`mcp.client.${client}` as MessageKey);
+  const restartClient = client === 'print' ? t('mcp.yourClient') : clientName;
+  const noteKey: Partial<Record<AgentClientId, MessageKey>> = {
+    'claude-code': 'mcp.note.claude', cursor: 'mcp.note.cursor', codex: 'mcp.note.codex', print: 'mcp.note.print',
+  };
+  const note = noteKey[client] ? t(noteKey[client]!) : '';
+  const extra = client === 'cursor'
+    ? (locale === 'en' ? ' and the stop hook' : ' 和停止 Hook')
+    : client === 'claude-code' || client === 'codex'
+      ? (locale === 'en' ? ' and hooks' : ' 和 Hooks')
+      : '';
 
   // Two lines. Everything else an agent needs to know is in the server's own
   // instructions and tool descriptions, which its client reads at connect —
@@ -100,15 +111,14 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
   return (
     <div className="mb-5 border border-border-faint rounded-lg overflow-hidden">
       <div className="px-3 py-2 bg-surface-soft border-b border-border-faint">
-        <div className="text-[11px] font-semibold text-ink-muted">Bring an AI agent into this room</div>
+        <div className="text-[11px] font-semibold text-ink-muted">{t('mcp.quickstartTitle')}</div>
         <p className="text-[10px] text-ink-faint mt-0.5 leading-relaxed">
-          One-time setup on the machine that runs the agent. Never paste API keys, tokens, or private data into the
-          room — use env files and your host’s normal secret stores.
+          {t('mcp.quickstartWarning')}
         </p>
       </div>
       <div className="p-3 space-y-3">
         <label className="block">
-          <span className="text-[10px] font-semibold text-ink-muted block mb-1">Your agent tool</span>
+          <span className="text-[10px] font-semibold text-ink-muted block mb-1">{t('mcp.agentTool')}</span>
           <select
             value={client}
             onChange={(e) => setClient(e.target.value as AgentClientId)}
@@ -116,60 +126,60 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
           >
             {CLIENT_ROWS.map((r) => (
               <option key={r.id} value={r.id}>
-                {r.label}
+                {t(`mcp.client.${r.id}` as MessageKey)}
               </option>
             ))}
           </select>
         </label>
-        {row.note && <p className="text-[10px] text-ink-soft leading-relaxed">{row.note}</p>}
+        {note && <p className="text-[10px] text-ink-soft leading-relaxed">{note}</p>}
 
         <ol className="list-decimal pl-4 space-y-2 text-[10px] text-ink-muted leading-relaxed">
           <li>
-            <span className="text-ink">Install the Agent Room MCP server</span>
+            <span className="text-ink">{t('mcp.installServer')}</span>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <code className="px-1.5 py-0.5 bg-surface-soft border border-border-faint rounded text-[10px] font-mono break-all">
                 {initBlock}
               </code>
               <button
                 type="button"
-                onClick={() => copyText(initBlock, () => { setCopied('init'); setTimeout(() => setCopied(null), 1500); })}
+                onClick={() => copyText(initBlock, () => { setCopied('init'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
                 className="shrink-0 text-[10px] font-medium text-accent hover:underline"
               >
-                {copied === 'init' ? 'Copied' : 'Copy'}
+                {copied === 'init' ? t('common.copied') : t('common.copy')}
               </button>
             </div>
             <p className="mt-1 text-ink-faint">{initHint}</p>
           </li>
           <li>
-            <span className="text-ink">Restart {row.restartTarget}</span> so it loads MCP{client === 'cursor' ? ' and the stop hook' : client === 'claude-code' || client === 'codex' ? ' and hooks' : ''}.
+            {t('mcp.restartClient', { client: restartClient, extra })}
           </li>
           <li>
-            <span className="text-ink">Share this join link with the agent</span> (or paste it in the chat where you drive the agent):
+            <span className="text-ink">{t('mcp.shareJoinLink')}</span> {t('mcp.shareJoinLinkHelp')}
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <code className="px-1.5 py-0.5 bg-surface-soft border border-border-faint rounded text-[10px] font-mono break-all">
                 {joinUrl}
               </code>
               <button
                 type="button"
-                onClick={() => copyText(joinUrl, () => { setCopied('url'); setTimeout(() => setCopied(null), 1500); })}
+                onClick={() => copyText(joinUrl, () => { setCopied('url'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
                 className="shrink-0 text-[10px] font-medium text-accent hover:underline"
               >
-                {copied === 'url' ? 'Copied' : 'Copy URL'}
+                {copied === 'url' ? t('common.copied') : t('mcp.copyUrl')}
               </button>
             </div>
           </li>
           <li>
-            <span className="text-ink">Optional prompt to paste</span> (tune the name):
+            <span className="text-ink">{t('mcp.optionalPrompt')}</span> {t('mcp.tuneName')}
             <div className="mt-1 flex flex-col gap-1">
               <pre className="p-2 bg-surface-soft border border-border-faint rounded text-[9px] font-mono whitespace-pre-wrap break-words text-ink-muted max-h-28 overflow-y-auto">
                 {agentPrompt}
               </pre>
               <button
                 type="button"
-                onClick={() => copyText(agentPrompt, () => { setCopied('prompt'); setTimeout(() => setCopied(null), 1500); })}
+                onClick={() => copyText(agentPrompt, () => { setCopied('prompt'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
                 className="self-start text-[10px] font-medium text-accent hover:underline"
               >
-                {copied === 'prompt' ? 'Copied prompt' : 'Copy prompt'}
+                {copied === 'prompt' ? t('mcp.copiedPrompt') : t('mcp.copyPrompt')}
               </button>
             </div>
           </li>

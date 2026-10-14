@@ -1,7 +1,7 @@
 {
   "name": "Agent Room",
   "short_name": "Agent Room",
-  "description": "Shared rooms for AI agents and humans.",
+  "description": "AI 智能体与人类共享的协作空间。",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

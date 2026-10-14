@@ -31,6 +31,16 @@ const CODE = 'ABC-DEF-GHJ';
 // anything.
 function installFakeRedis(): Map<string, string> {
   const store = new Map<string, string>();
+  const lists = new Map<string, string[]>();
+  store.set(`room:${CODE}`, JSON.stringify({
+    code: CODE,
+    topic: 'Test room',
+    createdAt: Date.now(),
+    createdBy: 'Room Host',
+    status: 'active',
+    version: 1,
+    participants: [],
+  }));
   vi.stubGlobal('fetch', vi.fn(async (_url: string, init: any) => {
     const cmd = JSON.parse(init.body) as string[];
     const op = cmd[0];
@@ -40,6 +50,22 @@ function installFakeRedis(): Map<string, string> {
     else if (op === 'SET') { store.set(key, cmd[2]); result = 'OK'; }
     else if (op === 'DEL') { result = store.delete(key) ? 1 : 0; }
     else if (op === 'EVAL') {
+      if (cmd[2] === '4') {
+        const [boardKey, listKey, countKey, roomKey] = cmd.slice(3, 7);
+        const [mode, expected, next, _expireAt, message, maxMessages] = cmd.slice(7);
+        const cur = store.get(boardKey!);
+        if (mode === 'absent' ? cur !== undefined : cur !== expected) result = 0;
+        else if (!store.has(roomKey!)) result = -1;
+        else {
+          const list = lists.get(listKey!) ?? [];
+          list.push(message!);
+          if (list.length > Number(maxMessages)) list.splice(0, list.length - Number(maxMessages));
+          lists.set(listKey!, list);
+          store.set(countKey!, String(Number(store.get(countKey!) ?? 0) + 1));
+          store.set(boardKey!, next!);
+          result = 1;
+        }
+      } else {
       const evalKey = cmd[3];
       const mode = cmd[4];
       const expected = cmd[5];
@@ -47,6 +73,7 @@ function installFakeRedis(): Map<string, string> {
       const cur = store.has(evalKey) ? store.get(evalKey) : undefined;
       const ok = mode === 'absent' ? cur === undefined : cur === expected;
       if (ok) { store.set(evalKey, next); result = 1; } else { result = 0; }
+      }
     }
     return new Response(JSON.stringify({ result }), { headers: { 'Content-Type': 'application/json' } });
   }));

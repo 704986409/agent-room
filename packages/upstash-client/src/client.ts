@@ -12,19 +12,13 @@ export interface UpstashClient {
 
 export function createClient(env: UpstashEnv): UpstashClient {
   const base = env.url.replace(/\/$/, '');
-  // We hammer this endpoint from polling loops with identical request
-  // bodies (e.g. [GET counter, LLEN list] every 3 seconds). Browsers and
-  // some CDNs honor Cache-Control on POST responses → identical body =
-  // served from cache for the response TTL, even though new writes have
-  // landed in Redis. Symptom Robin caught: polling logged `fresh: 0`
-  // for ~30 seconds while messages had clearly been written, then
-  // suddenly caught up when the cache expired. Forcing `no-store` on
-  // every request short-circuits any layer that might be caching us.
+  // Polling calls repeat request bodies, so skip the browser HTTP cache.
+  // Browser requests through /redis use this client cross-origin. That proxy's
+  // CORS allowlist accepts Content-Type and Authorization, so avoid explicit
+  // Cache-Control/Pragma request headers that would fail its preflight.
   const headers = {
     'Authorization': `Bearer ${env.token}`,
     'Content-Type': 'application/json',
-    'Cache-Control': 'no-cache, no-store, must-revalidate',
-    'Pragma': 'no-cache',
   };
 
   async function post(path: string, body: unknown): Promise<unknown> {

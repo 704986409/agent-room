@@ -233,6 +233,9 @@ export interface MessageMetadata {
   // Used by the UI to render skips/timeouts/mode-changes differently than
   // a free-text system message.
   eventType?: SystemEventType;
+  // Stable task-verification event identity for deduplication and reporting.
+  taskId?: string;
+  eventId?: string;
   // For host_directed / moderator_assigned / event messages: the participant
   // this message is about. e.g. "Moderator assigned this to Claude" stores
   // targetAgentName='Claude'. For timed_out events, the agent that timed out.
@@ -369,9 +372,18 @@ export interface TaskEvidence {
   at: number;            // epoch ms
 }
 
+/** A post-verification request addressed to an existing room participant. */
+export interface TaskVerifyFollowUp {
+  target: string;
+  request: string;
+  /** Required only to distinguish same-name web and cc participants. */
+  targetClient?: ClientKind;
+}
+
 export interface TaskVerdict {
   verdict: 'done' | 'rejected';
   note?: string;         // verifier's reasoning / what to fix on reject
+  followUp?: TaskVerifyFollowUp;
   by: string;            // verifier display name
   byClient: ClientKind;
   at: number;            // epoch ms

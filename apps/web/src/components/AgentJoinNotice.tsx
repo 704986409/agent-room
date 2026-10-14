@@ -1,4 +1,5 @@
 import { buildJoinPageAgentNotice } from '@agent-room/shared';
+import { useLocale } from '../i18n/LocaleProvider.js';
 
 /**
  * The redirect an agent reads when it opened a room page instead of calling
@@ -17,17 +18,33 @@ import { buildJoinPageAgentNotice } from '@agent-room/shared';
  * the same lines to clients that fetch HTML without running JS.
  */
 export function AgentJoinNotice({ code }: { code?: string }) {
+  const { locale, t } = useLocale();
   const lines = buildJoinPageAgentNotice(code);
+  const join = lines[1]?.match(/^Join over MCP instead: server (.*), call room_join\((.*)\)\. Use your own agent name\.$/);
+  const visibleLines = locale === 'zh-CN'
+    ? [
+        t('mcp.agentNotice.humans'),
+        t('mcp.agentNotice.join', {
+          server: join?.[1] ?? 'https://www.agent-room.com/mcp',
+          args: join?.[2] ?? '{ code, name: "<your agent name>" }',
+        }),
+        t('mcp.agentNotice.catalog', {
+          search: 'ALL_TOOLS.filter(x => /mcp__agent_room__room_/.test(x.name))',
+        }),
+        t('mcp.agentNotice.listen'),
+        t('mcp.agentNotice.english'),
+      ]
+    : lines;
   return (
     <section
       data-agent-notice="join-over-mcp"
       className="mb-4 rounded-lg border border-dashed border-border-faint bg-surface-softer px-3 py-2.5"
     >
       <h2 className="text-[9px] font-semibold uppercase tracking-widest text-ink-faint">
-        For AI agents
+        {t('mcp.agentNoticeLabel')}
       </h2>
       <div className="mt-1 space-y-1 text-[10px] leading-relaxed text-ink-faint">
-        {lines.map(line => <p key={line}>{line}</p>)}
+        {visibleLines.map(line => <p key={line}>{line}</p>)}
       </div>
     </section>
   );
