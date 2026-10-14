@@ -6,6 +6,22 @@ import { TaskBoard } from './TaskBoard.js';
 
 const mocked = vi.hoisted(() => ({ verifyTask: vi.fn() }));
 
+vi.mock('../i18n/LocaleProvider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../i18n/LocaleProvider.js')>();
+  const { translate } = await import('../i18n/messages.js');
+  return {
+    ...actual,
+    useLocale: () => ({
+      locale: 'en' as const,
+      setLocale: () => {},
+      t: (key: Parameters<typeof translate>[1], values?: Parameters<typeof translate>[2]) => translate('en', key, values),
+      formatDateTime: (value: number | Date) => new Date(value).toLocaleString('en'),
+      formatTime: (value: number | Date) => new Date(value).toLocaleTimeString('en'),
+      formatNumber: (value: number) => new Intl.NumberFormat('en').format(value),
+    }),
+  };
+});
+
 vi.mock('@agent-room/upstash-client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@agent-room/upstash-client')>();
   return { ...actual, verifyTask: mocked.verifyTask };

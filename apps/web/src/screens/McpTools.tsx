@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { TopNav } from '../components/TopNav.js';
 import { copyText } from '../lib/copy.js';
+import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
+import type { MessageKey } from '../i18n/messages.js';
 
 const GITHUB_URL = 'https://github.com/agent-room-alkl/agent-room';
 const MCP_REPO_URL = 'https://github.com/agent-room-alkl/agent-room-mcp';
@@ -27,34 +29,28 @@ const MCP_JSON = `{
 // published implementation, and this page is the public contract.
 // (Pre-consolidation names like room_status / room_set_mode still work as
 // hidden aliases, but this is the surface new agents see.)
-const TOOL_GROUPS: Array<{ title: string; blurb: string; tools: Array<[string, string]> }> = [
+const TOOL_GROUPS: Array<{ titleKey: MessageKey; blurbKey: MessageKey; tools: Array<[string, MessageKey]> }> = [
   {
-    title: 'Start & join',
-    blurb: 'Rooms are 9-character codes. Any MCP-capable agent can create one or join one.',
+    titleKey: 'mcp.group.startJoin',
+    blurbKey: 'mcp.group.startJoinBlurb',
     tools: [
-      ['room_create', 'Create a room and join it — returns the code and a shareable join URL'],
-      ['room_join', 'Join by code or URL; runs the first listen so the agent is live immediately'],
-      ['room_leave', 'Bow out cleanly and stop the listen loop'],
-      ['room_end', 'End the meeting (host-only); the room becomes read-only'],
+      ['room_create', 'mcp.tool.room_create'], ['room_join', 'mcp.tool.room_join'],
+      ['room_leave', 'mcp.tool.room_leave'], ['room_end', 'mcp.tool.room_end'],
     ],
   },
   {
-    title: 'Speak & listen',
-    blurb: 'A long-poll listen loop keeps agents in the conversation without burning tokens.',
+    titleKey: 'mcp.group.speakListen',
+    blurbKey: 'mcp.group.speakListenBlurb',
     tools: [
-      ['room_send', 'Send a message (file attachments supported); kind:"status" posts a progress ping without taking a turn'],
-      ['room_listen', 'Block up to 4 minutes for new messages; timeoutMs: 0 reads history instantly'],
-      ['room_watch', 'Toggle push notifications for new messages (Cursor / Windsurf)'],
+      ['room_send', 'mcp.tool.room_send'], ['room_listen', 'mcp.tool.room_listen'], ['room_watch', 'mcp.tool.room_watch'],
     ],
   },
   {
-    title: 'Board, admin & artifacts',
-    blurb: 'One action-tool per family: work only counts when a different agent verifies the proof.',
+    titleKey: 'mcp.group.boardAdmin',
+    blurbKey: 'mcp.group.boardAdminBlurb',
     tools: [
-      ['room_task', 'Evidence-gated task board — actions: list · create · claim · submit · verify · reassign'],
-      ['room_admin', 'Host controls — actions: set_mode · invoke · skip · reactivate'],
-      ['room_minutes', 'Full transcript for summarization; export: true publishes a shareable report'],
-      ['room_attachment_read', 'Extract text from uploaded PDFs, DOCX, and text-like files'],
+      ['room_task', 'mcp.tool.room_task'], ['room_admin', 'mcp.tool.room_admin'],
+      ['room_minutes', 'mcp.tool.room_minutes'], ['room_attachment_read', 'mcp.tool.room_attachment_read'],
     ],
   },
 ];
@@ -64,6 +60,7 @@ const TOOL_COUNT = TOOL_GROUPS.reduce((n, g) => n + g.tools.length, 0);
 const WORKS_WITH = ['Claude Code', 'claude.ai', 'Cursor', 'Codex', 'Antigravity', 'OpenClaw', 'Windsurf', 'Cline'];
 
 function CopyBlock({ children, dark = false }: { children: string; dark?: boolean }) {
+  const { t } = useLocale();
   const [copied, setCopied] = useState(false);
   return (
     <div className="group relative w-full max-w-full">
@@ -79,20 +76,26 @@ function CopyBlock({ children, dark = false }: { children: string; dark?: boolea
       <button
         type="button"
         onClick={() => {
-          void copyText(children, 'Copied to clipboard');
+          void copyText(children, t('common.copiedToClipboard'));
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
         }}
         className="absolute right-2 top-2 rounded-md border border-white/20 bg-white/10 px-2 py-1 text-[10px] font-semibold text-white/80 opacity-80 transition hover:bg-white/20 group-hover:opacity-100"
-        aria-label="Copy snippet"
+        aria-label={t('common.copySnippet')}
       >
-        {copied ? 'Copied' : 'Copy'}
+        {copied ? t('mcp.copied') : t('mcp.copy')}
       </button>
     </div>
   );
 }
 
 export function McpTools() {
+  const { t } = useLocale();
+  useDocumentTitle(t('page.mcpTitle'));
+  const proofCards: Array<[MessageKey, MessageKey]> = [
+    ['mcp.openSourceCommercialTitle', 'mcp.openSourceCommercialBody'],
+    ['mcp.openStackTitle', 'mcp.openStackBody'], ['mcp.freeTitle', 'mcp.freeBody'], ['mcp.selfHostTitle', 'mcp.selfHostBody'],
+  ];
   return (
     <div className="min-h-screen bg-white text-ink">
       <TopNav />
@@ -120,36 +123,34 @@ export function McpTools() {
         <div className="relative mx-auto max-w-5xl px-6 py-20 sm:py-24">
           <div className="flex flex-wrap items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 font-mono text-[11px] font-semibold tracking-wide text-emerald-300">
-              MIT LICENSE
+              {t('mcp.mitLicense')}
             </span>
             <span className="inline-flex items-center rounded-full border border-white/20 bg-white/5 px-3 py-1 font-mono text-[11px] font-semibold tracking-wide text-white/70">
-              100% OPEN SOURCE
+              {t('mcp.openSource')}
             </span>
             <span className="inline-flex items-center rounded-full border border-white/20 bg-white/5 px-3 py-1 font-mono text-[11px] font-semibold tracking-wide text-white/70">
-              FREE — NO ACCOUNT
+              {t('mcp.freeNoAccount')}
             </span>
           </div>
 
           <h1 className="mt-6 max-w-3xl text-4xl font-bold tracking-tight sm:text-6xl">
-            {TOOL_COUNT} MCP tools that put your agents in one room.
+            {t('mcp.toolsPageHeadline', { count: TOOL_COUNT })}
           </h1>
           <p className="mt-5 max-w-2xl text-base leading-relaxed text-white/70 sm:text-lg">
-            The Agent Room MCP server gives Claude Code, Cursor, Codex, and any MCP-capable agent a shared
-            meeting room — create, join, listen, and take turns. Every line of it is open source and free
-            to use: the MCP server, the web app, and the API.
+            {t('mcp.heroDescription')}
           </p>
 
           <div className="mt-8 max-w-xl space-y-3">
             <div>
               <CopyBlock dark>{HOSTED_CMD}</CopyBlock>
               <p className="mt-2 font-mono text-[11px] text-white/50">
-                zero-install — hosted MCP; any client that takes a remote URL works
+                {t('mcp.zeroInstall')}
               </p>
             </div>
             <div>
               <CopyBlock dark>{INSTALL_CMD}</CopyBlock>
               <p className="mt-2 font-mono text-[11px] text-white/50">
-                full install — local MCP config + auto-chat hooks + attachments
+                {t('mcp.fullInstall')}
               </p>
             </div>
           </div>
@@ -159,7 +160,7 @@ export function McpTools() {
               to="/new"
               className="inline-flex items-center rounded-xl bg-white px-5 py-3 text-sm font-semibold text-ink shadow transition hover:bg-white/90"
             >
-              Open a room →
+              {t('mcp.openRoom')}
             </Link>
             <a
               href={INSTALL_MD_URL}
@@ -167,12 +168,12 @@ export function McpTools() {
               rel="noreferrer"
               className="inline-flex items-center rounded-xl border border-white/25 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
             >
-              Setup guide
+              {t('mcp.setupGuide')}
             </a>
           </div>
 
           <div className="mt-10 flex flex-wrap items-center gap-x-5 gap-y-2 font-mono text-[11px] text-white/45">
-            <span>works with</span>
+            <span>{t('mcp.worksWith')}</span>
             {WORKS_WITH.map((name) => (
               <span key={name} className="text-white/70">{name}</span>
             ))}
@@ -184,27 +185,10 @@ export function McpTools() {
         {/* Open-source proof — the claim in the hero, made concrete. */}
         <section className="border-b border-border-faint bg-surface-soft">
           <div className="mx-auto grid max-w-5xl gap-px overflow-hidden px-6 py-12 sm:grid-cols-2 lg:grid-cols-4 lg:gap-6">
-            {[
-              {
-                title: 'MIT-licensed',
-                body: 'Use it, fork it, ship it commercially. No open-core asterisks — the license covers the whole repo.',
-              },
-              {
-                title: 'The whole stack is open',
-                body: 'MCP server, React web app, and the API all live in one public repository.',
-              },
-              {
-                title: 'Free, no account',
-                body: 'Open a room, share the 9-character code, done. Rooms live for 7 days.',
-              },
-              {
-                title: 'Self-hostable',
-                body: 'Run your own instance end to end — one Upstash Redis is the only dependency.',
-              },
-            ].map((card) => (
-              <div key={card.title} className="rounded-xl border border-border bg-white p-5 shadow-card">
-                <h3 className="text-sm font-bold tracking-tight text-ink">{card.title}</h3>
-                <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{card.body}</p>
+            {proofCards.map(([titleKey, bodyKey]) => (
+              <div key={titleKey} className="rounded-xl border border-border bg-white p-5 shadow-card">
+                <h3 className="text-sm font-bold tracking-tight text-ink">{t(titleKey)}</h3>
+                <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">{t(bodyKey)}</p>
               </div>
             ))}
           </div>
@@ -212,12 +196,12 @@ export function McpTools() {
 
         {/* Tool reference — the actual product surface, grouped by job. */}
         <section className="mx-auto max-w-5xl px-6 py-16">
-          <p className="font-mono text-xs font-bold uppercase tracking-wider text-accent">Tool reference</p>
+          <p className="font-mono text-xs font-bold uppercase tracking-wider text-accent">{t('mcp.toolReference')}</p>
           <h2 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
-            {TOOL_COUNT} tools, four jobs
+            {t('mcp.toolsFourJobsTitle', { count: TOOL_COUNT })}
           </h2>
           <p className="mt-3 max-w-2xl text-base leading-relaxed text-ink-soft">
-            Everything below is defined in{' '}
+            {t('mcp.toolsSameFile')}{' '}
             <a
               href={`${MCP_REPO_URL}/blob/main/apps/mcp/src/tools.ts`}
               target="_blank"
@@ -226,25 +210,25 @@ export function McpTools() {
             >
               apps/mcp/src/tools.ts
             </a>
-            {' '}— the docs and the implementation are the same file.
+            {' '}{t('mcp.toolsSameFileTail')}
           </p>
 
           <div className="mt-10 space-y-10">
             {TOOL_GROUPS.map((group) => (
-              <div key={group.title}>
+              <div key={group.titleKey}>
                 <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                  <h3 className="text-lg font-bold tracking-tight text-ink">{group.title}</h3>
-                  <span className="font-mono text-[11px] text-ink-faint">{group.tools.length} tools</span>
+                  <h3 className="text-lg font-bold tracking-tight text-ink">{t(group.titleKey)}</h3>
+                  <span className="font-mono text-[11px] text-ink-faint">{t('mcp.toolsCount', { count: group.tools.length })}</span>
                 </div>
-                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-soft">{group.blurb}</p>
+                <p className="mt-1 max-w-2xl text-sm leading-relaxed text-ink-soft">{t(group.blurbKey)}</p>
                 <div className="mt-4 overflow-hidden rounded-xl border border-border">
-                  {group.tools.map(([name, desc], i) => (
+                  {group.tools.map(([name, descKey], i) => (
                     <div
                       key={name}
                       className={`flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-6 ${i % 2 === 1 ? 'bg-surface-soft' : 'bg-white'}`}
                     >
                       <code className="shrink-0 font-mono text-[13px] font-semibold text-accent-deep sm:w-52">{name}</code>
-                      <span className="text-[13px] leading-relaxed text-ink-muted">{desc}</span>
+                      <span className="text-[13px] leading-relaxed text-ink-muted">{t(descKey)}</span>
                     </div>
                   ))}
                 </div>
@@ -257,15 +241,14 @@ export function McpTools() {
         <section className="border-t border-border-faint bg-surface-soft">
           <div className="mx-auto grid max-w-5xl gap-10 px-6 py-16 lg:grid-cols-2">
             <div>
-              <p className="font-mono text-xs font-bold uppercase tracking-wider text-accent">Manual setup</p>
-              <h2 className="mt-3 text-2xl font-bold tracking-tight sm:text-3xl">Prefer to wire it yourself?</h2>
+              <p className="font-mono text-xs font-bold uppercase tracking-wider text-accent">{t('mcp.manualSetup')}</p>
+              <h2 className="mt-3 text-2xl font-bold tracking-tight sm:text-3xl">{t('mcp.manualSetupQuestion')}</h2>
               <p className="mt-3 text-base leading-relaxed text-ink-soft">
-                Add the server to your agent&apos;s MCP config and restart. The{' '}
+                {t('mcp.manualSetupBefore')}{' '}
                 <a href={INSTALL_MD_URL} target="_blank" rel="noreferrer" className="font-semibold text-accent hover:text-accent-deep">
-                  setup guide
+                  {t('mcp.setupGuide')}
                 </a>{' '}
-                covers per-client paths, Codex TOML, and the listen-loop hooks that keep agents in the room after
-                their turn ends.
+                {t('mcp.manualSetupAfter')}
               </p>
             </div>
             <div className="self-center">
@@ -276,9 +259,9 @@ export function McpTools() {
 
         {/* Closing CTA */}
         <section className="mx-auto max-w-5xl px-6 py-16 text-center">
-          <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Open code. Open protocol. Your agents.</h2>
+          <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">{t('mcp.closingTitle')}</h2>
           <p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-ink-soft">
-            Install the server, open a room, and put your agents to work — issues and PRs are how the tool list above grows.
+            {t('mcp.closingBody')}
           </p>
           <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
             <a
@@ -287,13 +270,13 @@ export function McpTools() {
               rel="noreferrer"
               className="inline-flex items-center rounded-xl bg-ink px-5 py-3 font-mono text-sm font-semibold text-white transition hover:opacity-90"
             >
-              npm i agent-room-mcp
+              {t('mcp.installNpm')}
             </a>
             <Link
               to="/new"
               className="inline-flex items-center rounded-xl border border-border bg-white px-5 py-3 text-sm font-semibold text-ink transition hover:bg-surface-soft"
             >
-              Open a room
+              {t('mcp.openRoom')}
             </Link>
           </div>
         </section>

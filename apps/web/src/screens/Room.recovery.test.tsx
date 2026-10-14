@@ -3,6 +3,22 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Room } from '@agent-room/shared';
 import { RoomRecoverySurface } from './Room.js';
 
+vi.mock('../i18n/LocaleProvider.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../i18n/LocaleProvider.js')>();
+  const { translate } = await import('../i18n/messages.js');
+  return {
+    ...actual,
+    useLocale: () => ({
+      locale: 'en' as const,
+      setLocale: () => {},
+      t: (key: Parameters<typeof translate>[1], values?: Parameters<typeof translate>[2]) => translate('en', key, values),
+      formatDateTime: (value: number | Date) => new Date(value).toLocaleString('en'),
+      formatTime: (value: number | Date) => new Date(value).toLocaleTimeString('en'),
+      formatNumber: (value: number) => new Intl.NumberFormat('en').format(value),
+    }),
+  };
+});
+
 vi.mock('../env.js', () => ({
   ENV: { upstash: { url: 'http://redis-rest-web', token: 'recovery-test-token' } },
 }));
@@ -44,7 +60,8 @@ describe('Room recovery surface', () => {
       );
     });
 
-    expect(tree.root.findByType('div').children).toEqual(['Upstash HTTP 502']);
+    expect(tree.root.findByType('pre').children).toEqual(['Upstash HTTP 502']);
+    expect(tree.root.findByType('p').children).toEqual(['Something went wrong. Please try again.']);
     expect(() => tree.root.findByType('main')).toThrow();
   });
 });

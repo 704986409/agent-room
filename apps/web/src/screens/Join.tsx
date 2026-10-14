@@ -9,11 +9,16 @@ import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinQuickstart } from '../components/AgentJoinQuickstart.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
+import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
+import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
+import { localizedRoleLabel } from '../lib/templates.js';
 
 function stripDashes(s: string) { return s.replace(/-/g, ''); }
 function withDashes(s: string) { return s.match(/.{1,3}/g)?.join('-') ?? s; }
 
 export function Join() {
+  const { locale, t } = useLocale();
+  useDocumentTitle(t('join.title'));
   const { code: codeParam = '' } = useParams();
   const navigate = useNavigate();
   const [raw, setRaw] = useState(stripDashes(codeParam));
@@ -71,7 +76,7 @@ export function Join() {
       navigate(`/r/${room.code}`);
     } catch (e) {
       if (e instanceof HostNameTakenError) {
-        setErr(`The name "${name.trim()}" is reserved for the host of this room. Pick a different display name.`);
+        setErr('host-name-reserved');
       } else {
         setErr(String(e));
       }
@@ -80,26 +85,45 @@ export function Join() {
     }
   }
 
+  const knownError = err === 'Invalid code' || err === 'Room not found' || err === 'host-name-reserved';
+
   return (
     <>
       <div className="bg-white px-6 py-5">
-        <div className="mx-auto max-w-6xl">
-          <Link to="/" aria-label="Agent Room home" className="inline-block hover:opacity-85 transition">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3">
+          <Link to="/" aria-label={t('common.agentRoomHome')} className="inline-block hover:opacity-85 transition">
             <AgentRoomLogo markClassName="h-7 w-7" wordmarkClassName="text-base" />
           </Link>
+          <LocaleSwitcher />
         </div>
       </div>
       <div className="max-w-md mx-auto mt-10 p-8 bg-surface border border-border rounded-xl shadow-card">
-      <h1 className="text-lg font-semibold tracking-tight">Join a meeting</h1>
-      <p className="text-xs text-ink-soft mt-1 mb-6">Enter the 9-character code from your invite.</p>
+      <h1 className="text-lg font-semibold tracking-tight">{t('join.title')}</h1>
+      <p className="text-xs text-ink-soft mt-1 mb-6">{t('join.instructions')}</p>
 
       <AgentJoinNotice code={raw.length === CODE_LEN ? withDashes(raw) : undefined} />
 
       <div className="mb-4">
-        <CodeInput value={raw} onChange={setRaw} />
+        <CodeInput value={raw} onChange={setRaw} ariaLabel={digit => t('accessibility.codeDigit', { digit })} />
       </div>
 
-      {err && <div className="text-xs text-red-600 mb-3">{err}</div>}
+      {err && (
+        <div role="alert" className="text-xs text-red-600 mb-3">
+          {knownError ? (
+            err === 'Invalid code' ? t('common.invalidCode')
+              : err === 'Room not found' ? t('common.roomNotFound')
+                : t('join.hostNameReserved', { name: name.trim() })
+          ) : (
+            <>
+              <p>{t('common.somethingWentWrong')}</p>
+              <details className="mt-1">
+                <summary className="cursor-pointer">{t('common.errorDetails')}</summary>
+                <pre className="mt-1 whitespace-pre-wrap break-words">{err}</pre>
+              </details>
+            </>
+          )}
+        </div>
+      )}
 
       {room && (
         <>
@@ -107,33 +131,33 @@ export function Join() {
             <div className="w-7 h-7 rounded-md bg-accent-tint text-accent flex items-center justify-center text-sm">◇</div>
             <div>
               <div className="text-xs font-semibold">{room.topic}</div>
-              <div className="text-[9px] text-ink-soft">Hosted by {room.createdBy} · {room.participants.length} here</div>
+              <div className="text-[9px] text-ink-soft">{t('join.hostedBy', { name: room.createdBy, count: room.participants.length })}</div>
             </div>
           </div>
 
           <AgentJoinQuickstart roomCode={room.code} />
 
           <label className="block mb-3">
-            <span className="text-[11px] font-semibold text-ink-muted block mb-1">Your name</span>
+            <span className="text-[11px] font-semibold text-ink-muted block mb-1">{t('common.yourName')}</span>
             <input value={name} onChange={e => setName(e.target.value)}
               className="w-full px-3 py-2 bg-surface border border-border rounded-lg outline-none text-sm focus:border-accent focus:ring-4 focus:ring-accent-tint" />
           </label>
           <label className="block mb-5">
-            <span className="text-[11px] font-semibold text-ink-muted block mb-1">Your role <span className="text-ink-faint font-medium">optional</span></span>
+            <span className="text-[11px] font-semibold text-ink-muted block mb-1">{t('common.yourRole')} <span className="text-ink-faint font-medium">{t('common.optional')}</span></span>
             <select
               value={ROLE_PRESETS.some(p => p.role === role) ? role : ''}
               onChange={e => setRole(e.target.value)}
               className="w-full mb-2 px-3 py-2 bg-surface border border-border rounded-lg outline-none text-sm focus:border-accent focus:ring-4 focus:ring-accent-tint"
             >
-              <option value="">Custom role</option>
-              {ROLE_PRESETS.map(p => <option key={p.id} value={p.role}>{p.label}</option>)}
+              <option value="">{t('common.customRole')}</option>
+              {ROLE_PRESETS.map(p => <option key={p.id} value={p.role}>{localizedRoleLabel(p.id, locale)}</option>)}
             </select>
             <input value={role} onChange={e => setRole(e.target.value)}
               className="w-full px-3 py-2 bg-surface border border-border rounded-lg outline-none text-sm focus:border-accent focus:ring-4 focus:ring-accent-tint" />
           </label>
 
           <button disabled={busy} onClick={join} className="w-full bg-accent text-white py-2.5 rounded-lg text-sm font-semibold disabled:opacity-50">
-            {busy ? 'Joining…' : 'Join meeting →'}
+            {busy ? t('join.joining') : t('join.submit')}
           </button>
         </>
       )}

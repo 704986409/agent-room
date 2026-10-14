@@ -1,15 +1,20 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { artifactLabel, extractArtifacts, normalizeEscapedWhitespace, ROOM_TTL_SECONDS, type ArtifactKind, type Message, type RoomArtifact, type RoomReport } from '@agent-room/shared';
+import { extractArtifacts, normalizeEscapedWhitespace, ROOM_TTL_SECONDS, type ArtifactKind, type Message, type RoomArtifact, type RoomReport } from '@agent-room/shared';
 import { createClient, createRoomReport, getRoom, getRoomReport, listMessages } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
+import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
+import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
+import type { Locale, MessageKey, MessageValues } from '../i18n/messages.js';
 
 export function Report() {
+  const { locale, t, formatDateTime } = useLocale();
   const { code = '' } = useParams();
   const [report, setReport] = useState<RoomReport | null>(null);
   const [missing, setMissing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  useDocumentTitle(report ? t('report.title', { code: report.code }) : `Agent Room · ${code}`);
 
   useEffect(() => {
     const client = createClient(ENV.upstash);
@@ -38,32 +43,41 @@ export function Report() {
     }
   }
 
-  if (error) return <div className="p-10 text-red-600">{error}</div>;
+  if (error) return (
+    <div className="mx-auto max-w-3xl p-6 sm:p-10 text-red-700">
+      <div className="mb-4 flex justify-end"><LocaleSwitcher compact /></div>
+      <p>{t('common.somethingWentWrong')}</p>
+      <pre className="mt-2 whitespace-pre-wrap break-words text-xs text-ink-soft">{error}</pre>
+    </div>
+  );
   if (missing) {
     return (
       <div className="min-h-full bg-surface-soft px-6 py-12">
         <div className="max-w-3xl mx-auto bg-white border border-border rounded-xl p-8">
-          <h1 className="text-2xl font-bold mb-3">Report not found</h1>
-          <p className="text-sm text-ink-soft mb-5">This room has not been exported yet.</p>
-          <Link to={`/r/${code}`} className="text-sm font-semibold text-accent">Back to room</Link>
+          <div className="mb-6 flex justify-end"><LocaleSwitcher compact /></div>
+          <h1 className="text-2xl font-bold mb-3">{t('report.notFound')}</h1>
+          <p className="text-sm text-ink-soft mb-5">{t('report.notExported')}</p>
+          <Link to={`/r/${code}`} className="text-sm font-semibold text-accent">{t('common.backToRoom')}</Link>
         </div>
       </div>
     );
   }
-  if (!report) return <div className="p-10 text-ink-soft">Loading…</div>;
+  if (!report) return <div className="p-6 text-ink-soft"><div className="mb-4 flex justify-end"><LocaleSwitcher compact /></div>{t('report.loading')}</div>;
   const artifacts = report.artifacts ?? extractArtifacts(report.transcript);
 
   return (
     <div className="min-h-full bg-surface-soft">
       <header className="bg-slate-950 text-white px-6 py-10">
         <div className="max-w-5xl mx-auto">
-          <div className="text-xs font-semibold text-emerald-300 mb-3">Agent Room Report · {report.code}</div>
+          <div className="mb-3 flex items-center justify-between gap-3 text-xs font-semibold text-emerald-300">
+            <span>{t('report.title', { code: report.code })}</span><LocaleSwitcher compact />
+          </div>
           <h1 className="text-4xl font-bold tracking-tight mb-4">{report.topic}</h1>
           <p className="text-slate-300 max-w-3xl">{report.summary}</p>
           <div className="mt-6 flex flex-wrap gap-3 text-xs text-slate-300">
-            <span>{report.messageCount} messages</span>
-            <span>{report.participants.length} participants</span>
-            <span>Exported {new Date(report.exportedAt).toLocaleString()}</span>
+            <span>{t('report.messages', { count: report.messageCount })}</span>
+            <span>{t('report.participants', { count: report.participants.length })}</span>
+            <span>{t('report.exported', { date: formatDateTime(report.exportedAt) })}</span>
           </div>
           <div className="mt-6 flex flex-wrap gap-3">
             <button
@@ -71,16 +85,16 @@ export function Report() {
               disabled={refreshing}
               className="rounded-lg bg-white text-slate-950 px-4 py-2 text-xs font-semibold disabled:opacity-60"
             >
-              {refreshing ? 'Refreshing…' : 'Refresh from latest'}
+              {refreshing ? t('report.refreshing') : t('report.refreshLatest')}
             </button>
             <button
-              onClick={() => downloadMarkdown(report, artifacts)}
+              onClick={() => downloadMarkdown(report, artifacts, locale, t)}
               className="rounded-lg border border-white/25 bg-white/5 px-4 py-2 text-xs font-semibold text-white hover:bg-white/10"
             >
-              Download Markdown
+              {t('report.downloadMarkdown')}
             </button>
             <Link to={`/r/${report.code}`} className="rounded-lg border border-white/25 px-4 py-2 text-xs font-semibold text-white">
-              Open room
+              {t('report.openRoom')}
             </Link>
           </div>
         </div>
@@ -91,12 +105,12 @@ export function Report() {
           {report.participants.map(p => (
             <div key={`${p.name}-${p.client}`} className="bg-white border border-border rounded-lg p-4">
               <div className="text-sm font-semibold">{p.name}</div>
-              <div className="text-xs text-ink-soft">{[p.role, p.client].filter(Boolean).join(' · ')}</div>
+              <div className="text-xs text-ink-soft">{[p.role, p.client === 'web' ? t('room.browser') : p.client === 'cc' ? t('room.cli') : p.client].filter(Boolean).join(' · ')}</div>
             </div>
           ))}
         </section>
 
-        <ReportSection title="Highlights" items={report.highlights} />
+        <ReportSection title={t('report.highlights')} items={report.highlights} />
 
         {/* A5: replaces the old "Decisions / Action Items / Structured
             Artifacts" trio with a single 决议链 + 证据 + action items 三栏视图.
@@ -114,8 +128,8 @@ export function Report() {
 
         <section className="bg-white border border-border rounded-xl p-5">
           <div className="flex items-center justify-between gap-4 mb-4">
-            <h2 className="text-lg font-semibold">Transcript</h2>
-            <Link to={`/r/${report.code}`} className="text-xs font-semibold text-accent">Open room</Link>
+            <h2 className="text-lg font-semibold">{t('report.transcript')}</h2>
+            <Link to={`/r/${report.code}`} className="text-xs font-semibold text-accent">{t('report.openRoom')}</Link>
           </div>
           <div className="space-y-3">
             {report.transcript.map(m => (
@@ -125,7 +139,7 @@ export function Report() {
                 <div className="text-[11px] text-ink-soft mb-1">
                   <span className="font-semibold text-ink">{m.name}</span>
                   {m.role && <span> · {m.role}</span>}
-                  <span> · {new Date(m.time).toLocaleString()}</span>
+                  <span> · {formatDateTime(m.time)}</span>
                 </div>
                 <p className="whitespace-pre-wrap text-sm leading-relaxed">{normalizeEscapedWhitespace(m.text)}</p>
               </article>
@@ -154,6 +168,7 @@ export function Report() {
 // preserved purely for downstream attribution / debugging, no behavior
 // depends on it today.
 function CreateYourOwnCTA({ report }: { report: RoomReport }) {
+  const { t } = useLocale();
   const agentParticipants = report.participants.filter(
     p => p.client && p.client !== 'web'
   );
@@ -167,18 +182,18 @@ function CreateYourOwnCTA({ report }: { report: RoomReport }) {
       <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4 justify-between">
         <div className="flex-1 min-w-0">
           <div className="text-[11px] uppercase tracking-widest font-semibold text-accent-deep mb-1">
-            Want to run your own session like this?
+            {t('report.wantOwnSession')}
           </div>
           <p className="text-sm text-ink leading-relaxed">
-            Open a room about <strong>{report.topic}</strong>
-            {agentNames ? <> — invite agents like <strong>{agentNames}</strong> the same way the host did here.</> : ' and bring your own agents.'}
+            {t('report.openRoomAbout')} <strong>{report.topic}</strong>
+            {agentNames ? <> {t('report.inviteAgentsLike')} <strong>{agentNames}</strong> {t('report.sameHostFlow')}</> : ` ${t('report.bringAgents')}`}
           </p>
         </div>
         <Link
           to={newUrl}
           className="inline-flex items-center justify-center bg-accent text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:opacity-90 transition shrink-0"
         >
-          Create your own room →
+          {t('report.createOwn')}
         </Link>
       </div>
     </section>
@@ -188,25 +203,26 @@ function CreateYourOwnCTA({ report }: { report: RoomReport }) {
 // "Made with Agent Room" credit + next-step nudge at the bottom of the
 // report — the open-source equivalent of the "Made with Notion" footer.
 function ReportFooter({ report }: { report: RoomReport }) {
+  const { t } = useLocale();
   // Exported reports have the same seven-day retention window as rooms.
   const expiresAt = report.exportedAt + ROOM_TTL_SECONDS * 1000;
   const hoursLeft = Math.max(0, Math.round((expiresAt - Date.now()) / (60 * 60 * 1000)));
 
   return (
     <section className="bg-white border border-border rounded-xl p-6 text-center">
-      <div className="text-[11px] uppercase tracking-widest font-semibold text-ink-faint mb-2">Exported report · expires in {hoursLeft}h</div>
+      <div className="text-[11px] uppercase tracking-widest font-semibold text-ink-faint mb-2">{t('report.expiresIn', { hours: hoursLeft })}</div>
       <p className="text-base font-semibold text-ink mb-1">
-        Made with <a href="https://www.agent-room.com" target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2">Agent Room</a>
+        {t('report.madeWith')} <a href="https://www.agent-room.com" target="_blank" rel="noreferrer" className="text-accent underline underline-offset-2">Agent Room</a>
       </p>
       <p className="text-sm text-ink-soft max-w-md mx-auto mb-5 leading-relaxed">
-        Self-host the open-source room protocol, or create a fresh room and keep working from the same flow.
+        {t('report.selfHostBlurb')}
       </p>
       <div className="flex flex-col sm:flex-row gap-2 justify-center">
         <Link
           to="/new"
           className="inline-flex items-center justify-center bg-accent text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:opacity-90 transition"
         >
-          Create another room
+          {t('report.createAnother')}
         </Link>
         <a
           href="https://github.com/ebin198351-akl/agent-room/blob/main/docs/AGENT_ROOM_PROTOCOL.md"
@@ -214,7 +230,7 @@ function ReportFooter({ report }: { report: RoomReport }) {
           rel="noreferrer"
           className="inline-flex items-center justify-center bg-white border border-border px-5 py-2.5 rounded-lg text-sm font-semibold text-ink-muted hover:bg-surface-soft transition"
         >
-          Protocol docs
+          {t('report.protocolDocs')}
         </a>
       </div>
     </section>
@@ -252,6 +268,7 @@ function DecisionBoard({
   fallbackActionItems: string[];
   transcript: Message[];
 }) {
+  const { t } = useLocale();
   const messageById = new Map(transcript.map(m => [m.id, m]));
 
   const decisions = artifacts.filter(a => a.kind === 'decision');
@@ -261,24 +278,24 @@ function DecisionBoard({
   const cols: BoardColumn[] = [
     {
       kind: 'decision',
-      title: 'Decisions',
+      title: t('report.decisions'),
       cards: decisions,
       fallbackText: decisions.length ? [] : fallbackDecisions,
-      fallbackHint: 'Tag with [DECISION] in a message to surface a decision here.',
+      fallbackHint: t('report.tagDecision'),
     },
     {
       kind: 'todo',
-      title: 'Action Items',
+      title: t('report.actionItems'),
       cards: todos,
       fallbackText: todos.length ? [] : fallbackActionItems,
-      fallbackHint: 'Tag with [TODO] in a message to surface an action item here.',
+      fallbackHint: t('report.tagTodo'),
     },
     {
       kind: 'status',
-      title: 'Status & Results',
+      title: t('report.statusResults'),
       cards: statusResults,
       fallbackText: [],
-      fallbackHint: 'Tag with [STATUS] or [RESULT] to surface progress / outcomes here.',
+      fallbackHint: t('report.tagStatusResult'),
     },
   ];
 
@@ -287,18 +304,18 @@ function DecisionBoard({
   return (
     <section className="bg-white border border-border rounded-xl p-5">
       <div className="flex items-baseline justify-between gap-4 mb-4">
-        <h2 className="text-lg font-semibold">Outcome Board</h2>
+        <h2 className="text-lg font-semibold">{t('report.outcomeBoard')}</h2>
         <span className="text-[11px] text-ink-faint">
-          Decisions, action items, and status — backed by evidence from the transcript.
+          {t('report.boardDescription')}
         </span>
       </div>
       {visible.length === 0 ? (
         <p className="text-sm text-ink-soft">
-          No decisions, action items, status, or results were captured for this room. Tag messages with{' '}
+          {t('report.noOutcome')}{' '}
           <code className="text-[11px] bg-surface-softer px-1 py-0.5 rounded">[DECISION]</code>,{' '}
           <code className="text-[11px] bg-surface-softer px-1 py-0.5 rounded">[TODO]</code>,{' '}
           <code className="text-[11px] bg-surface-softer px-1 py-0.5 rounded">[STATUS]</code>, or{' '}
-          <code className="text-[11px] bg-surface-softer px-1 py-0.5 rounded">[RESULT]</code> to populate this board.
+          <code className="text-[11px] bg-surface-softer px-1 py-0.5 rounded">[RESULT]</code>{t('report.toPopulate')}
         </p>
       ) : (
         <div className="grid md:grid-cols-3 gap-4">
@@ -366,6 +383,7 @@ function ArtifactCard({
   artifact: RoomArtifact;
   sourceMessage: Message | null;
 }) {
+  const { t, formatDateTime } = useLocale();
   const evidence = sourceMessage ? buildEvidence(sourceMessage.text, artifact.text) : null;
   const anchor = `#msg-${artifact.sourceMessageId}`;
 
@@ -374,7 +392,7 @@ function ArtifactCard({
       <div className="text-sm leading-relaxed text-ink">{artifact.text}</div>
       <div className="text-[11px] text-ink-soft">
         <span className="font-semibold">{artifact.author}</span>
-        <span> · {new Date(artifact.time).toLocaleString()}</span>
+        <span> · {formatDateTime(artifact.time)}</span>
       </div>
       {evidence && (
         <blockquote className="text-[12px] leading-relaxed text-ink-soft border-l-2 border-border pl-2 italic">
@@ -386,7 +404,7 @@ function ArtifactCard({
           href={anchor}
           className="text-[11px] font-semibold text-accent hover:underline self-start"
         >
-          Jump to transcript →
+          {t('report.jumpTranscript')}
         </a>
       )}
     </li>
@@ -450,9 +468,9 @@ function artifactTone(kind: ArtifactKind): string {
 // file slots cleanly into delivery emails / git repos. Order matches the
 // on-screen sections so the printed and downloaded artifact tell the same
 // story.
-function buildMarkdown(report: RoomReport, artifacts: RoomArtifact[], unlocked: boolean = false): string {
+function buildMarkdown(report: RoomReport, artifacts: RoomArtifact[], locale: Locale, t: (key: MessageKey, values?: MessageValues) => string, unlocked: boolean = false): string {
   const lines: string[] = [];
-  const fmt = (t: number) => new Date(t).toLocaleString();
+  const fmt = (time: number) => new Date(time).toLocaleString(locale);
 
   lines.push('---');
   lines.push(`title: ${escapeYaml(report.topic)}`);
@@ -464,12 +482,12 @@ function buildMarkdown(report: RoomReport, artifacts: RoomArtifact[], unlocked: 
   lines.push('');
   lines.push(`# ${report.topic}`);
   lines.push('');
-  lines.push(`> Agent Room Report · \`${report.code}\` · exported ${fmt(report.exportedAt)}`);
+  lines.push(`> ${t('report.markdown.title')} · \`${report.code}\` · ${t('report.exported', { date: fmt(report.exportedAt) })}`);
   lines.push('');
   lines.push(report.summary || '_(no summary)_');
   lines.push('');
 
-  lines.push('## Participants');
+  lines.push(t('report.markdown.participants'));
   lines.push('');
   for (const p of report.participants) {
     const meta = [p.role, p.client].filter(Boolean).join(' · ');
@@ -478,34 +496,37 @@ function buildMarkdown(report: RoomReport, artifacts: RoomArtifact[], unlocked: 
   lines.push('');
 
   if (report.highlights.length) {
-    lines.push('## Highlights');
+    lines.push(t('report.markdown.highlights'));
     lines.push('');
     for (const h of report.highlights) lines.push(`- ${h}`);
     lines.push('');
   }
 
   if (report.decisions.length) {
-    lines.push('## Decisions');
+    lines.push(t('report.markdown.decisions'));
     lines.push('');
     for (const d of report.decisions) lines.push(`- ${d}`);
     lines.push('');
   }
 
   if (report.actionItems.length) {
-    lines.push('## Action Items');
+    lines.push(t('report.markdown.actionItems'));
     lines.push('');
     for (const a of report.actionItems) lines.push(`- [ ] ${a}`);
     lines.push('');
   }
 
   if (artifacts.length) {
-    lines.push('## Structured Artifacts');
+    lines.push(t('report.markdown.artifacts'));
     lines.push('');
     const kinds: ArtifactKind[] = ['decision', 'todo', 'status', 'result'];
     for (const k of kinds) {
       const group = artifacts.filter(a => a.kind === k);
       if (!group.length) continue;
-      lines.push(`### ${artifactLabel(k)}`);
+      const artifactTitle: Record<ArtifactKind, MessageKey> = {
+        decision: 'report.decisions', todo: 'report.actionItems', status: 'report.statusResults', result: 'report.statusResults',
+      };
+      lines.push(`### ${t(artifactTitle[k])}`);
       lines.push('');
       for (const a of group) {
         lines.push(`- ${a.text} _(${a.author} · ${fmt(a.time)})_`);
@@ -514,7 +535,7 @@ function buildMarkdown(report: RoomReport, artifacts: RoomArtifact[], unlocked: 
     }
   }
 
-  lines.push('## Transcript');
+  lines.push(t('report.markdown.transcript'));
   lines.push('');
   for (const m of report.transcript) {
     const who = `${m.name}${m.role ? ` · ${m.role}` : ''}`;
@@ -547,8 +568,8 @@ function escapeYaml(value: string): string {
   return value;
 }
 
-function downloadMarkdown(report: RoomReport, artifacts: RoomArtifact[], unlocked: boolean = false) {
-  const md = buildMarkdown(report, artifacts, unlocked);
+function downloadMarkdown(report: RoomReport, artifacts: RoomArtifact[], locale: Locale, t: (key: MessageKey, values?: MessageValues) => string, unlocked: boolean = false) {
+  const md = buildMarkdown(report, artifacts, locale, t, unlocked);
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');

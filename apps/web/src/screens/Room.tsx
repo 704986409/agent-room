@@ -6,6 +6,9 @@ import { Bubble } from '../components/Bubble.js';
 import { TaskBoard, canRuleOn } from '../components/TaskBoard.js';
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
+import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
+import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
+import type { MessageKey, MessageValues } from '../i18n/messages.js';
 import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
@@ -14,7 +17,7 @@ import { PRESENCE_STALE_MS, PRESENCE_DISCONNECTED_MS, extractArtifacts, type Mes
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
-import { templateById } from '../lib/templates.js';
+import { localizedTemplate, templateById } from '../lib/templates.js';
 import { ALLOWED_ATTACHMENT_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, deleteRoomBlobs, formatBytes, uploadAttachment } from '../lib/upload.js';
 
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long enough that humans + agents discussing intermittently don't trip it
@@ -36,6 +39,7 @@ const TEXTAREA_MAX_HEIGHT = 200;
 const TEXTAREA_MIN_HEIGHT = 42;
 
 export function Room() {
+  const { locale, t, formatDateTime } = useLocale();
   const { code = '' } = useParams();
   const navigate = useNavigate();
   // Identity is whatever Join wrote into sessionStorage. If it's missing
@@ -48,6 +52,7 @@ export function Room() {
     if (!self) navigate(`/j/${code}`, { replace: true });
   }, [self, code, navigate]);
   const { room, messages, error, sendMessage, refreshRoom, forceRefresh } = useRoom(code, self?.name ?? '');
+  useDocumentTitle(t('page.roomTitle', { topic: room?.topic ?? t('common.loading') }));
   const [text, setText] = useState('');
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [attachBusy, setAttachBusy] = useState(false);
@@ -129,7 +134,8 @@ export function Room() {
     if (messages.length !== 0) return;
     const key = `room:pending-template:${code}`;
     const tplId = sessionStorage.getItem(key);
-    const tpl = templateById(tplId);
+    const rawTpl = templateById(tplId);
+    const tpl = rawTpl ? localizedTemplate(rawTpl, locale) : undefined;
     if (!tpl || !tpl.openingMessage) return;
     openerSentRef.current = true;
     sessionStorage.removeItem(key);
@@ -150,7 +156,7 @@ export function Room() {
       // so they'd need to re-create the room — acceptable miss for v1.
       openerSentRef.current = false;
     });
-  }, [room, self, ended, messages.length, code, sendMessage]);
+  }, [room, self, ended, messages.length, code, sendMessage, locale]);
 
   // Detect being kicked: once we've seen ourselves in the participants list
   // (so we know the room poll is working), if we then disappear from it we
@@ -169,11 +175,11 @@ export function Room() {
       sessionStorage.removeItem(`room:${code}:self`);
       (async () => {
         const { showToast } = await import('../components/Toast.js');
-        showToast('You were removed from the meeting by the host');
+        showToast(t('room.removedByHost'));
       })();
       navigate(`/j/${code}`, { replace: true });
     }
-  }, [room, self, ended, code, navigate]);
+  }, [room, self, ended, code, navigate, t]);
 
   // Track last message time for idle detection
   useEffect(() => {
@@ -251,7 +257,7 @@ export function Room() {
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Mute toggle failed: ${e.message}` : 'Mute toggle failed');
+      showToast(t('room.muteFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     }
   }
 
@@ -261,14 +267,15 @@ export function Room() {
   async function handleKick(p: { name: string; client: 'web' | 'cc' }) {
     if (!room || !self || room.createdBy !== self.name) return;
     if (p.name === self.name && p.client === 'web') return; // host can't kick themselves
-    if (!confirm(`Remove ${p.name} (${p.client}) from the room?`)) return;
+    const clientLabel = t(p.client === 'web' ? 'room.browser' : 'room.cli');
+    if (!confirm(t('room.removeParticipantConfirm', { name: p.name, client: clientLabel }))) return;
     try {
       const client = createClient(ENV.upstash);
       await removeParticipant(client, code, self.name, p.name, p.client);
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Kick failed: ${e.message}` : 'Kick failed');
+      showToast(t('room.kickFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     }
   }
 
@@ -315,11 +322,11 @@ export function Room() {
       // half of "Save & Share". Copy first so the toast lives across the
       // route change (ToastHost is mounted at router level).
       const reportUrl = `${window.location.origin}/r/${code}/report`;
-      await copyText(reportUrl, 'Saved — share link copied to clipboard');
+      await copyText(reportUrl, t('room.linkSaved'));
       navigate(`/r/${code}/report`);
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Export failed: ${e.message}` : 'Export failed');
+      showToast(t('room.exportFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     } finally {
       setReportBusy(false);
     }
@@ -348,12 +355,13 @@ export function Room() {
   if (!self) {
     return (
       <div className="mx-auto max-w-md p-10">
+        <div className="mb-4 flex justify-end"><LocaleSwitcher compact /></div>
         <AgentJoinNotice code={code} />
-        <div className="text-ink-soft">Redirecting to join…</div>
+        <div className="text-ink-soft">{t('room.redirectingToJoin')}</div>
       </div>
     );
   }
-  if (!room) return <div className="p-10 text-ink-soft">Loading…</div>;
+  if (!room) return <div className="p-10 text-ink-soft"><div className="mb-4 flex justify-end"><LocaleSwitcher compact /></div>{t('common.loading')}</div>;
 
   // From here down `self` is non-null (early-returned above). Capture it in a
   // narrowed const so closures inside JSX don't have to re-check.
@@ -383,9 +391,9 @@ export function Room() {
   const currentDeadlineMs = turnState?.deadline ? Math.max(0, turnState.deadline - now) : null;
 
   function modeLabel(mode: ReplyMode): string {
-    if (mode === 'sequential') return 'Sequential';
-    if (mode === 'moderator') return 'Moderator';
-    return 'Open';
+    if (mode === 'sequential') return t('room.modeSequential');
+    if (mode === 'moderator') return t('room.modeModerator');
+    return t('room.modeOpen');
   }
 
   function buildModeConfig(mode: ReplyMode, overrides: Partial<ReplyModeConfig> = {}): ReplyModeConfig | undefined {
@@ -417,7 +425,7 @@ export function Room() {
     const nextConfig = buildModeConfig(mode, overrides);
     if (mode !== 'open' && !fallbackAgent) {
       const { showToast } = await import('../components/Toast.js');
-      showToast('Add an agent before enabling Sequential or Moderator mode.');
+      showToast(t('room.sequentialNeedsAgent'));
       return;
     }
     setModeBusy(true);
@@ -426,10 +434,10 @@ export function Room() {
       await setReplyMode(client, code, me.name, mode, nextConfig);
       await refreshRoom();
       const { showToast } = await import('../components/Toast.js');
-      showToast(`Reply mode set to ${modeLabel(mode)}.`);
+      showToast(t('room.replyModeSet', { mode: modeLabel(mode) }));
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Mode change failed: ${e.message}` : 'Mode change failed');
+      showToast(t('room.modeChangeFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     } finally {
       setModeBusy(false);
     }
@@ -482,7 +490,7 @@ export function Room() {
     }
     if (!turnState) {
       const { showToast } = await import('../components/Toast.js');
-      showToast('Send a message first, then ask an agent inside that turn.');
+      showToast(t('room.sendFirst'));
       return;
     }
     setModeBusy(true);
@@ -491,7 +499,7 @@ export function Room() {
       const added = await directInvoke(client, code, { name: p.name, client: p.client }, 'host');
       if (!added) {
         const { showToast } = await import('../components/Toast.js');
-        showToast(`${p.name} is already queued for a direct reply.`);
+        showToast(t('room.agentQueued', { name: p.name }));
         return;
       }
       await emitTurnSystemMessage(
@@ -503,7 +511,7 @@ export function Room() {
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Ask failed: ${e.message}` : 'Ask failed');
+      showToast(t('room.askFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     } finally {
       setModeBusy(false);
     }
@@ -517,7 +525,7 @@ export function Room() {
       const skipped = await hostSkipCurrent(client, code, activeRoom);
       if (!skipped) {
         const { showToast } = await import('../components/Toast.js');
-        showToast('No active agent to skip.');
+        showToast(t('room.noActiveAgent'));
         return;
       }
       await emitTurnSystemMessage(
@@ -529,7 +537,7 @@ export function Room() {
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Skip failed: ${e.message}` : 'Skip failed');
+      showToast(t('room.skipFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     } finally {
       setModeBusy(false);
     }
@@ -569,7 +577,7 @@ export function Room() {
       await sendMessage(msg);
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Send failed: ${e.message}` : 'Send failed');
+      showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
       setText(body); // restore draft
       setAttachments(attachments);
     }
@@ -584,7 +592,7 @@ export function Room() {
       const selected = incoming.slice(0, slots);
       if (incoming.length > slots) {
         const { showToast } = await import('../components/Toast.js');
-        showToast(`Only ${MAX_ATTACHMENTS_PER_MESSAGE} attachments per message`);
+        showToast(t('room.attachLimit', { count: MAX_ATTACHMENTS_PER_MESSAGE }));
       }
       const prepared: MessageAttachment[] = [];
       for (const file of selected) {
@@ -593,7 +601,7 @@ export function Room() {
       setAttachments(prev => [...prev, ...prepared].slice(0, MAX_ATTACHMENTS_PER_MESSAGE));
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? e.message : 'Attachment failed');
+      showToast(t('room.attachmentFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
     } finally {
       setAttachBusy(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -695,12 +703,12 @@ export function Room() {
               <div className="text-xs sm:text-sm font-semibold truncate text-ink">{room.topic}</div>
               <div className="text-[10px] text-ink-soft flex items-center gap-1.5">
                 {ended ? (
-                  <span className="text-red-500 font-semibold">Meeting ended</span>
+                  <span className="text-red-500 font-semibold">{t('room.meetingEnded')}</span>
                 ) : (
                   <>
                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>{room.participants.length} participants</span>
-                    <span className="hidden lg:inline">· {messages.length} messages</span>
+                    <span>{t('room.participantsCount', { count: room.participants.length })}</span>
+                    <span className="hidden lg:inline">· {t('room.messagesCount', { count: messages.length })}</span>
                   </>
                 )}
               </div>
@@ -714,11 +722,12 @@ export function Room() {
                 </div>
               ))}
             </div>
+            <LocaleSwitcher compact className="border-0 bg-transparent p-0" />
             <button
-              onClick={() => copyText(joinUrl, 'Invite link copied')}
+              onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
               className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition"
             >
-              Share
+              {t('room.share')}
             </button>
             <MeetingCodePill code={code} />
           </div>
@@ -734,9 +743,9 @@ export function Room() {
         */}
         <div className="lg:hidden grid grid-cols-3 gap-1.5 border-b border-border-faint bg-surface-softer p-1.5 shrink-0" role="tablist">
           {([
-            ['chat', 'Chat', messages.length, false],
-            ['tasks', 'Tasks', openTaskCount, reviewTaskCount > 0],
-            ['people', 'People', room.participants.length, false],
+            ['chat', t('room.chat'), messages.length, false],
+            ['tasks', t('room.tasks'), openTaskCount, reviewTaskCount > 0],
+            ['people', t('room.people'), room.participants.length, false],
           ] as const).map(([key, label, count, alert]) => {
             const active = mobilePanel === key;
             return (
@@ -761,7 +770,7 @@ export function Room() {
                         : 'bg-surface-sunken text-ink-faint'
                   }`}
                 >
-                  {alert ? `${reviewTaskCount} review` : count}
+                  {alert ? t('task.toReviewCount', { count: reviewTaskCount }) : count}
                 </span>
               </button>
             );
@@ -776,14 +785,14 @@ export function Room() {
                 <MeetingCodePill code={code} />
               </div>
               <button
-                onClick={() => copyText(joinUrl, 'Invite link copied')}
+                onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
                 className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20"
               >
-                Copy invite link
+                {t('room.copyInviteLink')}
               </button>
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold text-ink-muted">Who replies</span>
+                  <span className="text-[12px] font-semibold text-ink-muted">{t('room.whoReplies')}</span>
                 </div>
                 {canConfigureReplyMode ? (
                   <div className="space-y-2">
@@ -793,9 +802,9 @@ export function Room() {
                       disabled={modeBusy}
                       className="h-11 sm:h-9 w-full rounded-lg border border-border bg-white px-2.5 text-[15px] sm:text-xs font-semibold text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60"
                     >
-                      <option value="open">Open</option>
-                      <option value="sequential">Sequential</option>
-                      <option value="moderator">Moderator</option>
+                      <option value="open">{t('room.modeOpen')}</option>
+                      <option value="sequential">{t('room.modeSequential')}</option>
+                      <option value="moderator">{t('room.modeModerator')}</option>
                     </select>
                     {replyMode === 'sequential' && (
                       <select
@@ -803,12 +812,12 @@ export function Room() {
                         onChange={e => { void updateReplyMode('sequential', { leadAgentName: e.target.value, leadAgentClient: 'cc' }); }}
                         disabled={modeBusy || activeRoomAgents.length === 0}
                         className="h-11 sm:h-9 w-full rounded-lg border border-border bg-white px-2.5 text-[15px] sm:text-xs font-semibold text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60"
-                        aria-label="Lead agent"
+                        aria-label={t('room.leadAgentLabel')}
                       >
                         {activeRoomAgents.length === 0 ? (
-                          <option value="">No agents</option>
+                          <option value="">{t('room.noAgents')}</option>
                         ) : activeRoomAgents.map(agent => (
-                          <option key={`${agent.name}-${agent.client}`} value={agent.name}>Lead: {agent.name}</option>
+                          <option key={`${agent.name}-${agent.client}`} value={agent.name}>{t('room.leadAgent', { name: agent.name })}</option>
                         ))}
                       </select>
                     )}
@@ -818,12 +827,12 @@ export function Room() {
                         onChange={e => { void updateReplyMode('moderator', { moderatorAgentName: e.target.value, moderatorAgentClient: 'cc' }); }}
                         disabled={modeBusy || activeRoomAgents.length === 0}
                         className="h-11 sm:h-9 w-full rounded-lg border border-border bg-white px-2.5 text-[15px] sm:text-xs font-semibold text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60"
-                        aria-label="Moderator agent"
+                        aria-label={t('room.moderatorAgentLabel')}
                       >
                         {activeRoomAgents.length === 0 ? (
-                          <option value="">No agents</option>
+                          <option value="">{t('room.noAgents')}</option>
                         ) : activeRoomAgents.map(agent => (
-                          <option key={`${agent.name}-${agent.client}`} value={agent.name}>Moderator: {agent.name}</option>
+                          <option key={`${agent.name}-${agent.client}`} value={agent.name}>{t('room.moderatorAgent', { name: agent.name })}</option>
                         ))}
                       </select>
                     )}
@@ -832,12 +841,12 @@ export function Room() {
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="truncate text-[12px] font-semibold text-ink">
-                              {currentSpeaker ? `Now: ${currentSpeaker.name}` : 'No active turn'}
+                              {currentSpeaker ? t('room.nowSpeaker', { name: currentSpeaker.name }) : t('room.noActiveTurn')}
                             </div>
                             <div className="text-[11px] text-ink-soft">
                               {currentSpeaker && currentDeadlineMs !== null
-                                ? `${Math.ceil(currentDeadlineMs / 1000)}s left`
-                                : 'Waiting'}
+                                ? t('room.secondsLeft', { count: Math.ceil(currentDeadlineMs / 1000) })
+                                : t('room.waiting')}
                             </div>
                           </div>
                           {currentSpeaker && (
@@ -847,7 +856,7 @@ export function Room() {
                               disabled={modeBusy}
                               className="h-10 sm:h-8 rounded-lg border border-amber-200 bg-amber-50 px-3 text-[12px] sm:text-[11px] font-semibold text-amber-700 transition active:scale-[0.98] hover:bg-amber-100 disabled:opacity-60"
                             >
-                              Skip
+                              {t('room.skip')}
                             </button>
                           )}
                         </div>
@@ -861,7 +870,7 @@ export function Room() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-4">
-              <div className="mb-2.5 text-[13px] font-semibold text-ink">In the room</div>
+              <div className="mb-2.5 text-[13px] font-semibold text-ink">{t('room.inRoom')}</div>
               <div className="space-y-2">
                 {room.participants.map(p => {
                   const isMeHost = room.createdBy === self.name;
@@ -870,7 +879,7 @@ export function Room() {
                   const isMuted = p.canSpeak === false;
                   const canMuteToggle = isMeHost && !isSelf && !ended;
                   const canAsk = canConfigureReplyMode && p.client === 'cc' && !isMuted;
-                  const presence = participantPresence(p, now);
+    const presence = participantPresence(p, now, t);
                   // Whole-row visual fade for participants who haven't been
                   // seen in a while — keeps the row legible but signals
                   // "probably gone" without screaming about it.
@@ -888,11 +897,11 @@ export function Room() {
                       <div className="min-w-0 flex-1">
                         <div className="text-[13px] sm:text-xs font-semibold truncate flex items-center gap-1 flex-wrap">
                           {p.name}
-                          {p.name === room.createdBy && <span className="text-[10px] font-semibold text-accent bg-accent-tint px-1.5 py-0.5 rounded">host</span>}
-                          {isMuted && <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">muted</span>}
+                          {p.name === room.createdBy && <span className="text-[10px] font-semibold text-accent bg-accent-tint px-1.5 py-0.5 rounded">{t('room.host')}</span>}
+                          {isMuted && <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">{t('room.muted')}</span>}
                         </div>
                         <div className="text-[11px] text-ink-soft truncate">
-                          {[p.role, p.client === 'cc' ? 'CLI' : 'browser'].filter(Boolean).join(' · ')}
+                          {[p.role, t(p.client === 'cc' ? 'room.cli' : 'room.browser')].filter(Boolean).join(' · ')}
                         </div>
                         <div className={`mt-1 flex items-center gap-1 text-[11px] font-medium ${presence.className}`}>
                           <span className={`h-1.5 w-1.5 rounded-full ${presence.dotClassName}`} />
@@ -914,19 +923,19 @@ export function Room() {
                           {canAsk && (
                             <button
                               onClick={() => { void handleAskAgent(p); }}
-                              title={`Ask ${p.name}`}
-                              aria-label={`Ask ${p.name}`}
+                              title={t('room.askTitle', { name: p.name })}
+                              aria-label={t('room.askTitle', { name: p.name })}
                               disabled={modeBusy}
                               className="flex h-10 min-w-10 sm:h-8 sm:min-w-8 items-center justify-center rounded-lg border border-accent-tint-border bg-accent-tint px-2.5 text-[12px] sm:text-[11px] font-semibold text-accent transition hover:bg-accent-tint-border active:scale-[0.98] disabled:opacity-60"
                             >
-                              Ask
+                              {t('room.ask')}
                             </button>
                           )}
                           {canMuteToggle && (
                             <button
                               onClick={() => handleToggleMute({ name: p.name, client: p.client, canSpeak: p.canSpeak })}
-                              title={isMuted ? `Unmute ${p.name}` : `Mute ${p.name}`}
-                              aria-label={isMuted ? `Unmute ${p.name}` : `Mute ${p.name}`}
+                              title={t(isMuted ? 'room.unmuteTitle' : 'room.muteTitle', { name: p.name })}
+                              aria-label={t(isMuted ? 'room.unmuteTitle' : 'room.muteTitle', { name: p.name })}
                               className={`flex h-10 w-10 sm:h-8 sm:w-8 items-center justify-center rounded-lg border text-[11px] transition active:scale-[0.98] ${isMuted
                                 ? 'border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
                                 : 'border-border-faint bg-surface text-ink-soft hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700'}`}
@@ -948,8 +957,8 @@ export function Room() {
                           {canKick && (
                             <button
                               onClick={() => handleKick({ name: p.name, client: p.client })}
-                              title={`Remove ${p.name}`}
-                              aria-label={`Remove ${p.name}`}
+                              title={t('room.removeTitle', { name: p.name })}
+                              aria-label={t('room.removeTitle', { name: p.name })}
                               className="flex h-10 w-10 sm:h-8 sm:w-8 items-center justify-center rounded-lg border border-border-faint bg-surface text-ink-soft transition active:scale-[0.98] hover:border-red-300 hover:bg-red-50 hover:text-red-600"
                             >
                               <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" aria-hidden="true">
@@ -971,11 +980,11 @@ export function Room() {
                   onClick={handleEndMeeting}
                   className="flex-1 min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-red-600 bg-red-50 px-3 rounded-lg transition active:scale-[0.98] hover:bg-red-100"
                 >
-                  End
+                  {t('room.end')}
                 </button>
               )}
               <button onClick={() => navigate('/')} className="flex-1 min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-ink-muted bg-surface-softer px-3 rounded-lg transition active:scale-[0.98]">
-                Home
+                {t('common.home')}
               </button>
             </div>
           </aside>
@@ -983,10 +992,10 @@ export function Room() {
           <section className={`${mobilePanel === 'chat' ? 'flex' : 'hidden'} lg:flex min-h-0 min-w-0 flex-col`}>
             <div className="hidden lg:flex px-5 py-3 border-b border-border-faint bg-surface items-center justify-between">
               <div>
-                <div className="text-sm font-semibold">Discussion</div>
-                <div className="text-[10px] text-ink-soft">Live room chat</div>
+                <div className="text-sm font-semibold">{t('room.discussion')}</div>
+                <div className="text-[10px] text-ink-soft">{t('room.liveChat')}</div>
               </div>
-              {ended && <span className="text-[10px] font-semibold text-red-500">Ended</span>}
+              {ended && <span className="text-[10px] font-semibold text-red-500">{t('room.ended')}</span>}
             </div>
 
             <div ref={feedRef} className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3 sm:p-5 flex flex-col gap-3 bg-surface-soft relative">
@@ -1012,19 +1021,19 @@ export function Room() {
 
               {messages.length === 0 && (
                 <div className="m-auto max-w-xs px-2 text-center">
-                  <h2 className="text-[15px] font-semibold text-ink">Nothing said yet</h2>
+                  <h2 className="text-[15px] font-semibold text-ink">{t('room.nothingSaid')}</h2>
                   <p className="mt-2 text-[13px] leading-relaxed text-ink-soft">
                     {roomAgents.length === 0
-                      ? 'Share the room code and tell your agent to join it. Once it is here, tap its name above the message box to hand it work.'
-                      : 'Tap an agent name above the message box to address it, or open Tasks to hand it something with a definition of done.'}
+                      ? t('room.noMessagesNoAgent')
+                      : t('room.noMessagesWithAgent')}
                   </p>
                   {roomAgents.length === 0 && (
                     <button
                       type="button"
-                      onClick={() => copyText(joinUrl, 'Invite link copied')}
+                      onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
                       className="mt-4 min-h-10 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white shadow-sm transition active:scale-[0.98] hover:opacity-90"
                     >
-                      Copy invite link
+                      {t('room.copyInviteLink')}
                     </button>
                   )}
                 </div>
@@ -1032,14 +1041,14 @@ export function Room() {
 
               {showIdlePrompt && !ended && (
                 <div className="sticky bottom-0 mx-auto bg-white border border-border rounded-xl shadow-lg p-4 text-center max-w-sm">
-                  <p className="text-sm font-semibold text-ink mb-1">No activity for 1 hour</p>
-                  <p className="text-xs text-ink-soft mb-3">Meeting will close in <span className="font-bold text-red-600">{countdown}s</span></p>
+                  <p className="text-sm font-semibold text-ink mb-1">{t('room.noActivity')}</p>
+                  <p className="text-xs text-ink-soft mb-3">{t('room.closesIn', { seconds: countdown })}</p>
                   <div className="flex gap-2 justify-center">
                     <button onClick={dismissIdlePrompt} className="px-4 py-1.5 bg-accent text-white text-xs font-semibold rounded-lg">
-                      Keep open
+                      {t('room.keepOpen')}
                     </button>
                     <button onClick={handleEndMeeting} className="px-4 py-1.5 bg-red-50 text-red-600 text-xs font-semibold rounded-lg border border-red-200">
-                      End now
+                      {t('room.endNow')}
                     </button>
                   </div>
                 </div>
@@ -1057,7 +1066,7 @@ export function Room() {
               // the product.
               <div className="border-t border-border-faint p-4 bg-surface-softer">
                 <p className="text-xs text-ink-soft mb-3 text-center">
-                  This meeting has ended. Save a report to share with your team or client for 7 days.
+                  {t('room.endedReportPrompt')}
                 </p>
                 <div className="flex flex-wrap gap-3 justify-center items-center">
                   <button
@@ -1065,7 +1074,7 @@ export function Room() {
                     disabled={reportBusy || messages.length === 0}
                     className="text-xs font-semibold text-white bg-accent px-4 py-1.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {reportBusy ? 'Saving…' : 'Save & Share'}
+                    {reportBusy ? t('task.saving') : t('task.saveReport')}
                   </button>
                   <button
                     onClick={async () => {
@@ -1088,9 +1097,9 @@ export function Room() {
                     }}
                     className="text-xs font-semibold text-ink-muted bg-surface border border-border px-4 py-1.5 rounded-lg hover:border-accent/40 hover:text-accent transition"
                   >
-                    Reactivate
+                    {t('room.reactivate')}
                   </button>
-                  <button onClick={() => navigate('/')} className="text-xs font-semibold text-ink-faint hover:text-ink-muted">Back to home</button>
+                  <button onClick={() => navigate('/')} className="text-xs font-semibold text-ink-faint hover:text-ink-muted">{t('room.backHome')}</button>
                 </div>
               </div>
             ) : !myCanSpeak ? (
@@ -1101,9 +1110,9 @@ export function Room() {
                     <path d="m11 6 3 4M14 6l-3 4" />
                   </svg>
                 </div>
-                <p className="text-sm font-semibold text-amber-900 mb-1">You've been muted by the host</p>
+                <p className="text-sm font-semibold text-amber-900 mb-1">{t('room.mutedByHost')}</p>
                 <p className="text-xs text-amber-800/80 max-w-xs mx-auto">
-                  The host ({room.createdBy}) has muted your messages. You can still read the conversation. Ask them to unmute you when you are ready to speak again.
+                  {t('room.hostMutedMessage', { name: room.createdBy })}
                 </p>
               </div>
             ) : (
@@ -1116,7 +1125,7 @@ export function Room() {
               >
                 {dragActive && (
                   <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-surface/90 text-sm font-semibold text-accent shadow-sm">
-                    Release to attach
+                    {t('room.releaseToAttach')}
                   </div>
                 )}
                 {isHost && mutedCount > 0 && (
@@ -1125,7 +1134,7 @@ export function Room() {
                       <path d="M8 3.5 4.5 6.25H2.5v3.5h2L8 12.5z" />
                       <path d="m11 6 3 4M14 6l-3 4" />
                     </svg>
-                    <span>{mutedCount} {mutedCount === 1 ? 'participant is' : 'participants are'} muted. Open People to unmute.</span>
+                    <span>{t(mutedCount === 1 ? 'room.mutedOne' : 'room.mutedCount', { count: mutedCount })}</span>
                   </div>
                 )}
                 {attachments.length > 0 && (
@@ -1151,7 +1160,7 @@ export function Room() {
                   {roomAgents.length === 0 ? (
                     messages.length > 0 && (
                       <span className="w-full text-[12px] text-ink-soft">
-                        No agents here yet. Share the room code to bring one in.
+                        {t('room.noAgentsHint')}
                       </span>
                     )
                   ) : (
@@ -1163,7 +1172,7 @@ export function Room() {
                           type="button"
                           disabled={modeBusy || muted}
                           onClick={() => { void handleAskAgent(agent); }}
-                          title={muted ? `${agent.name} is muted` : `Ask ${agent.name}`}
+                          title={muted ? t('room.mutedTitle', { name: agent.name }) : t('room.askTitle', { name: agent.name })}
                           className="shrink-0 min-h-10 rounded-full border border-accent-tint-border bg-accent-tint px-3.5 text-[13px] font-semibold text-accent transition hover:bg-accent-tint-border active:scale-[0.98] disabled:opacity-45 disabled:cursor-not-allowed"
                         >
                           @{agent.name}
@@ -1177,14 +1186,14 @@ export function Room() {
                     onClick={() => fillPrompt('minutes')}
                     className="shrink-0 min-h-10 rounded-full border border-border bg-surface-softer px-3.5 text-[13px] font-semibold text-ink-muted transition hover:border-accent/40 hover:text-accent active:scale-[0.98]"
                   >
-                    Minutes
+                    {t('room.minutes')}
                   </button>
                   <button
                     type="button"
                     onClick={() => fillPrompt('reply')}
                     className="shrink-0 min-h-10 rounded-full border border-border bg-surface-softer px-3.5 text-[13px] font-semibold text-ink-muted transition hover:border-accent/40 hover:text-accent active:scale-[0.98]"
                   >
-                    Reply draft
+                    {t('room.replyDraft')}
                   </button>
                   </>)}
                 </div>
@@ -1204,7 +1213,7 @@ export function Room() {
                           send();
                         }
                       }}
-                      placeholder="Message the room…"
+                      placeholder={t('room.messagePlaceholder')}
                       rows={1}
                       style={{ height: TEXTAREA_MIN_HEIGHT, maxHeight: TEXTAREA_MAX_HEIGHT }}
                       className="w-full resize-none overflow-y-auto px-3.5 py-2.5 bg-surface-softer border border-border rounded-xl text-base sm:text-sm leading-relaxed outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint"
@@ -1227,13 +1236,13 @@ export function Room() {
                       <button
                         onClick={() => fileInputRef.current?.click()}
                         disabled={attachBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
-                        title="Attach files"
+                        title={t('room.attachFiles')}
                         className="h-10 w-10 sm:h-9 sm:w-auto justify-center rounded-lg bg-surface-softer border border-border sm:px-2 text-xs font-semibold text-ink-muted disabled:opacity-50 flex items-center gap-1.5 active:scale-95 transition"
                       >
                         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                           <path d="M13 7.5v3a4 4 0 0 1-8 0v-5a2.5 2.5 0 0 1 5 0v5a1 1 0 0 1-2 0v-4.5" />
                         </svg>
-                        <span className="hidden sm:inline sm:text-xs">{attachBusy ? '...' : 'Attach'}</span>
+                        <span className="hidden sm:inline sm:text-xs">{attachBusy ? '...' : t('room.attachFiles')}</span>
                       </button>
                     </div>
                     <button
@@ -1241,7 +1250,7 @@ export function Room() {
                       disabled={!text.trim() && attachments.length === 0}
                       className="min-h-[40px] sm:min-h-[36px] min-w-[78px] sm:min-w-[64px] bg-accent text-white px-5 sm:px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"
                     >
-                      <span>Send</span>
+                      <span>{t('room.send')}</span>
                       <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
                         <path d="M1.5 1.5l13 6.5-13 6.5 2-6.5-2-6.5zm3.2 6.5h5.8-5.8z" />
                       </svg>
@@ -1285,13 +1294,20 @@ export function RoomRecoverySurface({ room, error, children }: {
   error: string | null;
   children?: ReactNode;
 }) {
-  if (error && !room) return <div className="p-10 text-red-600">{error}</div>;
+  const { t } = useLocale();
+  if (error && !room) return (
+    <div className="mx-auto max-w-3xl p-6 sm:p-10 text-red-700">
+      <div className="mb-4 flex justify-end"><LocaleSwitcher compact /></div>
+      <p>{t('common.somethingWentWrong')}</p>
+      <pre className="mt-2 whitespace-pre-wrap break-words text-xs text-ink-soft">{error}</pre>
+    </div>
+  );
 
   return (
     <>
       {room && error && (
         <div role="status" className="border-b border-amber-200 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-          Connection temporarily unavailable. Retrying…
+          {t('room.connectionRetry')}
         </div>
       )}
       {children}
@@ -1300,6 +1316,7 @@ export function RoomRecoverySurface({ room, error, children }: {
 }
 
 function PendingAttachment({ attachment, onRemove }: { attachment: MessageAttachment; onRemove: () => void }) {
+  const { t } = useLocale();
   return (
     <div className="flex max-w-[220px] items-center gap-2 rounded-lg border border-border bg-surface-softer px-2 py-1.5">
       {attachment.type === 'image' && (
@@ -1312,7 +1329,7 @@ function PendingAttachment({ attachment, onRemove }: { attachment: MessageAttach
       <button
         onClick={onRemove}
         className="h-6 w-6 rounded text-xs font-bold text-ink-soft hover:bg-surface"
-        title={`Remove ${attachment.name}`}
+        title={t('room.removeAttachmentTitle', { name: attachment.name })}
       >
         x
       </button>
@@ -1320,11 +1337,11 @@ function PendingAttachment({ attachment, onRemove }: { attachment: MessageAttach
   );
 }
 
-function participantPresence(p: Participant, now: number) {
+function participantPresence(p: Participant, now: number, t: (key: MessageKey, values?: MessageValues) => string) {
   if (p.listenUntil && p.listenUntil > now) {
     return {
       kind: 'listening' as const,
-      label: 'Listening now',
+      label: t('room.listeningNow'),
       detail: '',
       className: 'text-emerald-700',
       dotClassName: 'bg-emerald-500',
@@ -1334,7 +1351,7 @@ function participantPresence(p: Participant, now: number) {
   if (now - p.lastSeenAt <= PRESENCE_STALE_MS) {
     return {
       kind: 'online' as const,
-      label: 'Online',
+      label: t('room.online'),
       detail: '',
       className: 'text-blue-700',
       dotClassName: 'bg-blue-500',
@@ -1350,8 +1367,8 @@ function participantPresence(p: Participant, now: number) {
   if (now - p.lastSeenAt > PRESENCE_DISCONNECTED_MS) {
     return {
       kind: 'disconnected' as const,
-      label: 'Disconnected',
-      detail: p.client === 'cc' ? 'host can remove' : '',
+      label: t('room.disconnected'),
+      detail: p.client === 'cc' ? t('room.hostCanRemove') : '',
       className: 'text-ink-faint',
       dotClassName: 'bg-slate-400',
     };
@@ -1359,8 +1376,8 @@ function participantPresence(p: Participant, now: number) {
 
   return {
     kind: 'idle' as const,
-    label: 'Idle',
-    detail: p.client === 'cc' ? 'not listening' : '',
+    label: t('room.idle'),
+    detail: p.client === 'cc' ? t('room.notListeningDetail') : '',
     className: 'text-ink-faint',
     dotClassName: 'bg-slate-300',
   };

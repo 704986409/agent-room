@@ -26,6 +26,15 @@ describe('AgentJoinNotice', () => {
       expect(src).not.toContain(escape);
     }
   });
+
+  it('shows Chinese instructions with the MCP commands preserved in Chinese mode', () => {
+    expect(src).toContain("locale === 'zh-CN'");
+    expect(src).toContain("t('mcp.agentNotice.humans')");
+    expect(src).toContain("t('mcp.agentNotice.join'");
+    expect(src).toContain("t('mcp.agentNotice.listen')");
+    expect(src).toContain("t('mcp.agentNotice.english')");
+    expect(src).toContain('room_join');
+  });
 });
 
 describe('/j/:code', () => {
@@ -51,7 +60,7 @@ describe('/r/:code', () => {
     const start = src.indexOf('if (!self) {');
     expect(start).toBeGreaterThan(-1);
     // The comment above the branch quotes the same string, so search forward.
-    const branch = src.slice(start, src.indexOf('Redirecting to join', start) + 20);
+    const branch = src.slice(start, src.indexOf("room.redirectingToJoin", start));
     expect(branch).toContain('<AgentJoinNotice code={code} />');
   });
 });

@@ -2,6 +2,8 @@ import { Avatar } from './Avatar.js';
 import { useMemo, type ReactNode } from 'react';
 import type { Message, MessageAttachment } from '@agent-room/shared';
 import { normalizeEscapedWhitespace } from '@agent-room/shared';
+import { useLocale } from '../i18n/LocaleProvider.js';
+import type { MessageKey, MessageValues } from '../i18n/messages.js';
 
 interface Props {
   message: Message;
@@ -13,10 +15,11 @@ interface Props {
 }
 
 export function Bubble({ message, self, ambiguousNames }: Props) {
+  const { t, formatTime } = useLocale();
   if (message.type === 'sys') {
     return (
       <div className="mx-auto max-w-[min(620px,92%)] rounded-full border border-border-faint bg-surface px-3 py-1.5 text-center text-[11px] font-semibold text-ink-soft shadow-sm">
-        {systemEventLabel(message)}
+        {systemEventLabel(message, t)}
       </div>
     );
   }
@@ -33,9 +36,9 @@ export function Bubble({ message, self, ambiguousNames }: Props) {
       <div className="min-w-0">
         <div className={`text-[9px] text-ink-faint font-medium flex gap-1.5 mb-1 ${meta}`}>
           <span className="font-semibold text-ink-muted">{message.name}</span>
-          {ambiguous && <span className="text-ink-faint">· {message.client}</span>}
+          {ambiguous && <span className="text-ink-faint">· {t(message.client === 'cc' ? 'room.cli' : 'room.browser')}</span>}
           {message.role && <span>· {message.role}</span>}
-          <span>· {new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          <span>· {formatTime(message.time)}</span>
         </div>
         <div className={`px-3 py-2 text-[13px] leading-relaxed rounded-t-[14px] break-words ${bubble}`}>
           {message.text.trim() && <MessageText text={message.text} />}
@@ -46,21 +49,21 @@ export function Bubble({ message, self, ambiguousNames }: Props) {
   );
 }
 
-function systemEventLabel(message: Message): string {
+function systemEventLabel(message: Message, t: (key: MessageKey, values?: MessageValues) => string): string {
   const eventType = message.metadata?.eventType;
   const target = message.metadata?.targetAgentName ? `@${message.metadata.targetAgentName}` : '';
   if (eventType === 'mode_changed') {
     const mode = message.metadata?.modeAtSend;
-    return mode ? `Reply mode changed to ${mode}` : message.text;
+    const modeLabel = mode === 'open' ? t('room.modeOpen') : mode === 'sequential' ? t('room.modeSequential') : mode === 'moderator' ? t('room.modeModerator') : null;
+    return modeLabel ? t('room.replyModeChanged', { mode: modeLabel }) : message.text;
   }
-  if (eventType === 'timed_out' && target) return `${target} timed out and was skipped`;
-  if (eventType === 'skipped_by_host' && target) return `${target} was skipped by host`;
-  if (eventType === 'skipped_by_grace' && target) return `${target} was preempted by supplement (lead grace elapsed)`;
-  if (eventType === 'host_invoked' && target) return `${target} was asked by host`;
-  if (eventType === 'moderator_dispatched' && target) return `${target} was assigned by moderator`;
-  if (eventType === 'lead_left' && target) return `${target} left. Switched to Open mode`;
-  if (eventType === 'moderator_left' && target) return `${target} left. Switched to Open mode`;
-  if (eventType === 'moderator_fallback') return 'Moderator unavailable. Switched to Open mode';
+  if (eventType === 'timed_out' && target) return t('room.timedOut', { name: message.metadata?.targetAgentName ?? '' });
+  if (eventType === 'skipped_by_host' && target) return t('room.skippedByHost', { name: message.metadata?.targetAgentName ?? '' });
+  if (eventType === 'skipped_by_grace' && target) return t('room.skippedByGrace', { name: message.metadata?.targetAgentName ?? '' });
+  if (eventType === 'host_invoked' && target) return t('room.hostAsked', { name: message.metadata?.targetAgentName ?? '' });
+  if (eventType === 'moderator_dispatched' && target) return t('room.moderatorAssigned', { name: message.metadata?.targetAgentName ?? '' });
+  if ((eventType === 'lead_left' || eventType === 'moderator_left') && target) return t('room.switchedToOpen', { name: message.metadata?.targetAgentName ?? '' });
+  if (eventType === 'moderator_fallback') return t('room.moderatorUnavailable');
   return message.text;
 }
 
@@ -109,6 +112,7 @@ function FileAttachment({ attachment }: { attachment: MessageAttachment }) {
 }
 
 function AttachmentActions({ attachment }: { attachment: MessageAttachment }) {
+  const { t } = useLocale();
   return (
     <div className="flex shrink-0 items-center gap-1.5">
       <a
@@ -117,14 +121,14 @@ function AttachmentActions({ attachment }: { attachment: MessageAttachment }) {
         rel="noreferrer"
         className="rounded-md border border-black/10 bg-white/70 px-2 py-1 font-semibold hover:bg-white"
       >
-        Open
+        {t('room.openAttachment')}
       </a>
       <a
         href={attachment.url}
         download={attachment.name}
         className="rounded-md bg-ink px-2 py-1 font-semibold text-white hover:bg-ink-soft"
       >
-        Download
+        {t('room.downloadAttachment')}
       </a>
     </div>
   );
