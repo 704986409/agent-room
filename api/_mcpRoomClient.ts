@@ -30,6 +30,9 @@ import {
   getRoom as storeGetRoom,
   joinRoom as storeJoinRoom,
   listMessages as storeListMessages,
+  appendSystemMessage as storeAppendSystemMessage,
+  getMessageTotalCount,
+  sweepTimeouts,
   appendMessage as storeAppendMessage,
   reactivateRoom as storeReactivateRoom,
   removeParticipant as storeRemoveParticipant,
@@ -180,7 +183,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
 
       // ── host / moderator controls ───────────────────────────────────────
       case 'setReplyMode': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const room = await setReplyMode(
           store, code, str(p.requesterName),
           p.mode as Parameters<typeof setReplyMode>[3],
@@ -189,7 +192,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
         return { room };
       }
       case 'directInvoke': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const target = p.target as { name?: string } | undefined;
         const source = p.source === 'moderator' ? 'moderator' : 'host';
         const state = await getTurnState(store, code);
@@ -198,7 +201,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
         return { added: true };
       }
       case 'skipCurrent': {
-        await assertHostFor(store, code, str(p.requesterName), p.hostKey as string | undefined);
+        await assertHostFor(store, code, p.hostKey as string | undefined);
         const state = await getTurnState(store, code);
         if (!state) return { skipped: null };
         const next = skipQueueHead(state);
@@ -220,21 +223,42 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
   }
 }
 
-/** Shared by the admin actions; see assertHost below for why this exists. */
-async function assertHostFor(
-  store: UpstashClient,
-  code: string,
-  requesterName: string,
-  hostKey: string | undefined,
-): Promise<void> {
-  const room = await storeGetRoom(store, code);
-  if (hostKey && await verifyHostKey(store, code, hostKey)) return;
-  if (requesterName === room.createdBy) return;
-  throw new RemoteRoomApiError(
+function notHostError(room: Room): RemoteRoomApiError {
+  return new RemoteRoomApiError(
     `Only the host (${room.createdBy}) can do this. Pass the hostKey you got from room_create.`,
     403,
     'NotHostError',
   );
+}
+
+async function requireHostKey(
+  store: UpstashClient,
+  code: string,
+  hostKey: string | undefined,
+): Promise<void> {
+  const room = await storeGetRoom(store, code);
+
+  if (!hostKey) {
+    throw notHostError(room);
+  }
+
+  try {
+    await verifyHostKey(store, code, hostKey);
+  } catch (error) {
+    if (error instanceof HostNameTakenError) {
+      throw notHostError(room);
+    }
+    throw error;
+  }
+}
+
+/** Shared by the admin actions; requesterName is display data, not auth. */
+async function assertHostFor(
+  store: UpstashClient,
+  code: string,
+  hostKey: string | undefined,
+): Promise<void> {
+  await requireHostKey(store, code, hostKey);
 }
 
 /**
@@ -283,29 +307,38 @@ export async function getRoom(client: RemoteRoomClient, code: string): Promise<R
   return guarded(() => storeGetRoom(client.store, code));
 }
 
-/**
- * Refresh what the room knows about who is present.
- *
- * The hosted server has a dedicated `sweep` action that also expires stale
- * seats. Here the same read is a `getRoom`, which already normalises the
- * stored record; presence expiry is the caller's business via
- * `isParticipantStale`, not a stored mutation.
- */
 export async function sweepRoom(client: RemoteRoomClient, code: string): Promise<Room> {
-  return guarded(() => storeGetRoom(client.store, code));
+  return guarded(async () => {
+    const room = await storeGetRoom(client.store, code);
+
+    // Advance timeout/fallback state without emitting timeout system messages.
+    await sweepTimeouts(client.store, code, room);
+
+    return storeGetRoom(client.store, code);
+  });
 }
 
 export async function joinRoom(
   client: RemoteRoomClient,
   code: string,
   participant: Participant,
-  options: { hostKey?: string; seatKey?: string } = {},
+  options: {
+    hostKey?: string;
+    seatKey?: string;
+    priorIdentity?: { name: string; client: 'web' | 'cc' };
+  } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
   return guarded(async () => {
+    const current = await storeGetRoom(client.store, code);
+    if (participant.name.trim().toLowerCase() === current.createdBy.trim().toLowerCase()) {
+      await verifyHostKey(client.store, code, options.hostKey);
+    }
+
     const result = await storeJoinRoom(client.store, code, participant, {
       ...(options.hostKey ? { hostKey: options.hostKey } : {}),
       ...(options.seatKey ? { seatKey: options.seatKey } : {}),
-      priorIdentity: { name: participant.name, client: 'cc' as const },
+      priorIdentity:
+        options.priorIdentity ?? { name: participant.name, client: 'cc' as const },
     });
     return result as Room & { participant: Participant; seatKey?: string };
   });
@@ -313,6 +346,25 @@ export async function joinRoom(
 
 export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<Message[]> {
   return guarded(() => storeListMessages(client.store, code, since));
+}
+
+export async function getMessagesWithTotal(
+  client: RemoteRoomClient,
+  code: string,
+  since: number,
+): Promise<{ messages: Message[]; total: number | null }> {
+  return guarded(async () => {
+    const messages = await storeListMessages(client.store, code, since);
+    const total = await getMessageTotalCount(client.store, code);
+    return { messages, total };
+  });
+}
+
+export async function getCurrentTurnState(
+  client: RemoteRoomClient,
+  code: string,
+) {
+  return guarded(() => getTurnState(client.store, code));
 }
 
 export async function appendMessage(
@@ -337,6 +389,19 @@ export async function appendMessage(
   return result;
 }
 
+export async function appendSystemMessage(
+  client: RemoteRoomClient,
+  code: string,
+  requesterName: string,
+  hostKey: string | undefined,
+  message: Message,
+): Promise<void> {
+  await guarded(async () => {
+    await assertHost(client, code, hostKey);
+    await storeAppendSystemMessage(client.store, code, message);
+  });
+}
+
 export async function setListenUntil(
   client: RemoteRoomClient,
   code: string,
@@ -354,9 +419,18 @@ export async function removeParticipant(
   code: string,
   requesterName: string,
   targetName: string,
+  targetClient: 'web' | 'cc' = 'cc',
+  hostKey?: string,
 ): Promise<Room> {
-  // MCP agents are always 'cc' seats; the web seats leave through the UI.
-  return guarded(() => storeRemoveParticipant(client.store, code, requesterName, targetName, 'cc'));
+  return guarded(async () => {
+    const isSelfRemoval = requesterName === targetName;
+
+    if (!isSelfRemoval) {
+      await requireHostKey(client.store, code, hostKey);
+    }
+
+    return storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient);
+  });
 }
 
 /**
@@ -372,17 +446,9 @@ export async function removeParticipant(
 async function assertHost(
   client: RemoteRoomClient,
   code: string,
-  requesterName: string,
   hostKey: string | undefined,
 ): Promise<void> {
-  const room = await storeGetRoom(client.store, code);
-  if (hostKey && await verifyHostKey(client.store, code, hostKey)) return;
-  if (requesterName === room.createdBy) return;
-  throw new RemoteRoomApiError(
-    `Only the host (${room.createdBy}) can do this. Pass the hostKey you got from room_create.`,
-    403,
-    'NotHostError',
-  );
+  await requireHostKey(client.store, code, hostKey);
 }
 
 export async function endRoom(
@@ -392,7 +458,7 @@ export async function endRoom(
   hostKey: string | undefined,
 ): Promise<Room> {
   return guarded(async () => {
-    await assertHost(client, code, requesterName, hostKey);
+    await assertHost(client, code, hostKey);
     return storeEndRoom(client.store, code);
   });
 }
@@ -404,7 +470,7 @@ export async function reactivateRoom(
   hostKey: string | undefined,
 ): Promise<Room> {
   return guarded(async () => {
-    await assertHost(client, code, requesterName, hostKey);
+    await assertHost(client, code, hostKey);
     return storeReactivateRoom(client.store, code);
   });
 }
