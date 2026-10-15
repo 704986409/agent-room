@@ -18,11 +18,14 @@ import { createRemoteRoomClient } from '../../api/_mcpRoomClient.js';
 import { detectHarness } from '../../api/_mcpHarness.js';
 import type { McpProfile } from '../../api/_mcpTools.js';
 import deleteRoomBlobsHandler from '../../api/delete-room-blobs.js';
+import elevenlabsTtsHandler from '../../api/elevenlabs-tts.js';
 import installHandler from '../../api/install.js';
+import interviewReplyHandler from '../../api/interview-reply.js';
 import mcpHandler from '../../api/mcp.js';
 import reportOgHandler from '../../api/report-og.js';
 import reportPageHandler from '../../api/report-page.js';
 import roomHandler from '../../api/room.js';
+import sttHandler from '../../api/stt.js';
 import uploadHandler from '../../api/upload.js';
 
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
@@ -60,11 +63,14 @@ export interface VpsApp {
 
 const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   'delete-room-blobs': deleteRoomBlobsHandler,
+  'elevenlabs-tts': elevenlabsTtsHandler,
   install: installHandler,
+  'interview-reply': interviewReplyHandler,
   mcp: mcpHandler,
   'report-og': reportOgHandler,
   'report-page': reportPageHandler,
   room: roomHandler,
+  stt: sttHandler,
   upload: uploadHandler,
 };
 

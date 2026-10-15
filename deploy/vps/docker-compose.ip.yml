@@ -19,6 +19,9 @@ services:
       WEB_PROXY_TOKEN: ${WEB_PROXY_TOKEN:?WEB_PROXY_TOKEN is required}
       SRH_WEB_URL: http://redis-rest-web
       SRH_WEB_TOKEN: ${SRH_WEB_TOKEN:?SRH_WEB_TOKEN is required}
+      # Optional Plan B live-interview demo endpoints (/api/interview-reply, /api/stt, /api/elevenlabs-tts).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
     ports:
       - "127.0.0.1:${HOST_PORT:-3100}:3000"
     depends_on:
