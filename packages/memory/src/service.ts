@@ -46,6 +46,16 @@ export interface MemoryEntrySummary {
   readonly preview: string;
 }
 
+/** Server-authorized structured fields used to render the short join Brief. */
+export interface MemoryBriefSourceEntry {
+  readonly id: string;
+  readonly scope: 'room' | 'persona';
+  readonly title: string;
+  readonly preview: string;
+  readonly searchText: string;
+  readonly updatedAt: Date;
+}
+
 export interface DuplicateCandidatesResult {
   readonly status: 'duplicate_candidates';
   readonly candidates: readonly MemoryEntrySummary[];
@@ -265,6 +275,31 @@ export class MemoryService {
       if (!scope) return [];
       const entries = await this.repository.listEntries(scope, options);
       return entries.map(({ id, title, preview }) => ({ id, title, preview }));
+    });
+  }
+
+  /**
+   * Return only the caller's Room-shared and own Persona entries for Brief
+   * generation. Other Persona scopes are never queried by this method.
+   */
+  async listBriefSourceEntries(caller: TrustedMemoryCaller): Promise<MemoryBriefSourceEntry[]> {
+    return this.execute(async () => {
+      const trusted = validateCaller(caller);
+      const scopes: MemoryScope[] = [{ roomInstanceId: trusted.roomInstanceId, scope: 'room' }];
+      if (trusted.identityType === 'persona') {
+        scopes.push({ roomInstanceId: trusted.roomInstanceId, scope: 'persona', personaId: trusted.personaId });
+      }
+      const pages = await Promise.all(scopes.map(scope =>
+        this.repository.listEntries(scope, { limit: 100, offset: 0 }),
+      ));
+      return pages.flatMap((entries, index) => entries.map(entry => ({
+        id: entry.id,
+        scope: scopes[index]!.scope,
+        title: entry.title,
+        preview: entry.preview,
+        searchText: entry.search_text,
+        updatedAt: entry.updated_at,
+      })));
     });
   }
 

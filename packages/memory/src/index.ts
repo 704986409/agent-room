@@ -2,8 +2,15 @@ export { MEMORY_SEARCH_SQL, PostgresMemoryRepository, applyMemoryMigrations } fr
 export { MemoryService, MemoryServiceError } from './service.js';
 export { MemorySearchService, MEMORY_READ_MAX_CHARS } from './search-service.js';
 export { RedisSearchSessionStore, SearchSessionRateLimitError } from './search-session-store.js';
+export { MemoryBriefService, MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET, renderMemoryBrief } from './brief-service.js';
+export { RedisMemoryBriefSessionStore } from './brief-session-store.js';
 export { RedisUrlCommandClient } from './redis-command-client.js';
 export type { MemoryRepository } from './repository.js';
+export type {
+  MemoryBriefAuthorization,
+  MemoryBriefResult,
+  MemoryBriefRoomContextReader,
+} from './brief-service.js';
 export type {
   MemoryReadInput,
   MemoryReadPage,
@@ -20,10 +27,16 @@ export type {
   SearchSessionInspection,
 } from './search-session-store.js';
 export type {
+  MemoryBriefBinding,
+  MemoryBriefSessionStore,
+  RedisMemoryBriefSessionStoreOptions,
+} from './brief-session-store.js';
+export type {
   DuplicateCandidatesResult,
   MemoryCallerContextResolver,
   MemoryCorePrinciplesReader,
   MemoryEntrySummary,
+  MemoryBriefSourceEntry,
   MemoryScopeKind,
   MemoryServiceErrorCode,
   MemoryServiceMutationResult,
