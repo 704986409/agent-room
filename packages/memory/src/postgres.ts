@@ -8,12 +8,14 @@ import {
   MemorySchemaError,
   type ListMemoryOptions,
   type MemoryContent,
+  type MemoryContentSegment,
   type MemoryEntry,
   type MemoryIdentity,
   type MemoryMutationResult,
   type MemoryProposal,
   type MemoryProposalInput,
   type MemoryReviewDecision,
+  type MemorySearchCandidate,
   type MemoryScope,
   type MemoryUpdate,
 } from './types.js';
@@ -22,6 +24,54 @@ const REQUIRED_SCHEMA_VERSION = 1;
 const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
+
+export const MEMORY_SEARCH_SQL = `
+  WITH scoped AS MATERIALIZED (
+    SELECT id, title, preview, search_text, content, updated_at
+    FROM agent_memory_entries
+    WHERE room_instance_id = $1 AND deleted_at IS NULL
+      AND (($2::boolean AND scope = 'room' AND persona_id IS NULL)
+        OR ($3::text IS NOT NULL AND scope = 'persona' AND persona_id = $3))
+  ),
+  keywords AS MATERIALIZED (
+    SELECT DISTINCT lower(word) AS keyword
+    FROM unnest($4::text[]) AS requested(word)
+  ),
+  metadata_matches AS MATERIALIZED (
+    SELECT e.id, e.title, e.preview, e.updated_at,
+      COUNT(DISTINCT k.keyword) FILTER (
+        WHERE strpos(lower(e.title), k.keyword) > 0
+          OR strpos(lower(e.search_text), k.keyword) > 0
+          OR (char_length(k.keyword) >= 3 AND e.search_text % k.keyword)
+      )::int AS matched_keywords
+    FROM scoped e CROSS JOIN keywords k
+    GROUP BY e.id, e.title, e.preview, e.updated_at
+    HAVING COUNT(DISTINCT k.keyword) FILTER (
+      WHERE strpos(lower(e.title), k.keyword) > 0
+        OR strpos(lower(e.search_text), k.keyword) > 0
+        OR (char_length(k.keyword) >= 3 AND e.search_text % k.keyword)
+    ) > 0
+  ),
+  body_matches AS (
+    SELECT e.id, e.title, e.preview, e.updated_at,
+      COUNT(DISTINCT k.keyword)::int AS matched_keywords
+    FROM scoped e CROSS JOIN keywords k
+    WHERE NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
+      AND strpos(lower(e.content), k.keyword) > 0
+    GROUP BY e.id, e.title, e.preview, e.updated_at
+  ),
+  ranked AS (
+    SELECT id, title, preview, updated_at, 0 AS match_tier, matched_keywords
+    FROM metadata_matches
+    UNION ALL
+    SELECT id, title, preview, updated_at, 1 AS match_tier, matched_keywords
+    FROM body_matches
+  )
+  SELECT id, title, preview
+  FROM ranked
+  ORDER BY match_tier ASC, matched_keywords DESC, updated_at DESC, id ASC
+  LIMIT 5
+`;
 
 type EntryRow = Omit<MemoryEntry, 'version'> & { version: string | number };
 type ProposalRow = Omit<MemoryProposal, 'target_version'> & { target_version: string | number | null };
@@ -92,6 +142,44 @@ function assertValidPage(options: ListMemoryOptions): { limit: number; offset: n
     throw new TypeError('Memory list offset must be a non-negative integer.');
   }
   return { limit, offset };
+}
+
+function assertSearchScopes(scopes: readonly MemoryScope[]): {
+  roomInstanceId: string;
+  includeRoom: boolean;
+  personaId: string | null;
+} {
+  if (!Array.isArray(scopes) || scopes.length < 1 || scopes.length > 2) {
+    throw new TypeError('Memory search requires one or two authorized scopes.');
+  }
+  scopes.forEach(assertScope);
+  const roomInstanceId = scopes[0]!.roomInstanceId;
+  if (scopes.some(scope => scope.roomInstanceId !== roomInstanceId)) {
+    throw new MemoryForbiddenError('Memory search scopes must belong to the same Room instance.');
+  }
+  const roomScopes = scopes.filter(scope => scope.scope === 'room');
+  const personaScopes = scopes.filter(scope => scope.scope === 'persona');
+  if (roomScopes.length > 1 || personaScopes.length > 1) {
+    throw new TypeError('Duplicate memory search scope.');
+  }
+  return {
+    roomInstanceId,
+    includeRoom: roomScopes.length === 1,
+    personaId: personaScopes[0]?.scope === 'persona' ? personaScopes[0].personaId : null,
+  };
+}
+
+function assertSearchKeywords(keywords: readonly string[]): string[] {
+  if (!Array.isArray(keywords) || keywords.length < 1 || keywords.length > 8) {
+    throw new TypeError('Memory search requires 1 to 8 keywords.');
+  }
+  const normalized = keywords.map(keyword => {
+    if (typeof keyword !== 'string') throw new TypeError('Memory search keywords must be strings.');
+    const value = keyword.normalize('NFKC').trim().toLowerCase();
+    if (!value || [...value].length > 64) throw new TypeError('Memory search keyword length is invalid.');
+    return value;
+  });
+  return [...new Set(normalized)];
 }
 
 function contentFields(content: MemoryContent) {
@@ -345,6 +433,42 @@ export class PostgresMemoryRepository implements MemoryRepository {
       [scope.roomInstanceId, id],
     );
     return result.rows[0] ? entryFromRow(result.rows[0]) : null;
+  }
+
+  async readContentSegment(
+    scopes: readonly MemoryScope[],
+    id: string,
+    offset: number,
+    limit: number,
+  ): Promise<MemoryContentSegment | null> {
+    const scope = assertSearchScopes(scopes);
+    if (typeof id !== 'string' || !id.trim()) throw new TypeError('Memory ID is required.');
+    if (!Number.isSafeInteger(offset) || offset < 0) throw new TypeError('Memory offset is invalid.');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 4000) {
+      throw new TypeError('Memory read limit must be from 1 to 4000 characters.');
+    }
+    const result = await this.pool.query<MemoryContentSegment>(
+      `SELECT id, substring(content FROM $5::int FOR $6::int) AS content
+       FROM agent_memory_entries
+       WHERE room_instance_id = $1 AND deleted_at IS NULL
+         AND (($2::boolean AND scope = 'room' AND persona_id IS NULL)
+           OR ($3::text IS NOT NULL AND scope = 'persona' AND persona_id = $3))
+         AND id = $4`,
+      [scope.roomInstanceId, scope.includeRoom, scope.personaId, id, offset + 1, limit + 1],
+    );
+    return result.rows[0] ?? null;
+  }
+
+  async searchEntries(
+    scopes: readonly MemoryScope[],
+    keywords: readonly string[],
+  ): Promise<MemorySearchCandidate[]> {
+    const scope = assertSearchScopes(scopes);
+    const queryWords = assertSearchKeywords(keywords);
+    const result = await this.pool.query<MemorySearchCandidate>(MEMORY_SEARCH_SQL, [
+      scope.roomInstanceId, scope.includeRoom, scope.personaId, queryWords,
+    ]);
+    return result.rows;
   }
 
   async listEntries(scope: MemoryScope, options: ListMemoryOptions = {}): Promise<MemoryEntry[]> {

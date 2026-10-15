@@ -1,6 +1,6 @@
 # Agent Memory PostgreSQL package
 
-This package owns the Memory V1 PostgreSQL schema, repository, and business service. It stores only Memory tables; it does not migrate, recreate, or reference `agent_room_rooms`. Room access must be validated by the calling adapter against the current Room and trusted member context. MCP integration remains a later phase.
+This package owns the Memory V1 PostgreSQL schema, repository, business service, search service, and short-lived search-session storage. It stores only Memory tables; it does not migrate, recreate, or reference `agent_room_rooms`. Room access must be validated by the calling adapter against the current Room and trusted member context. MCP integration remains a later phase.
 
 ## Business service (P2)
 
@@ -14,6 +14,31 @@ This package owns the Memory V1 PostgreSQL schema, repository, and business serv
 - Errors use stable codes (`NOT_FOUND`, `INVALID_INPUT`, `FORBIDDEN`, `PENDING_REVIEW`, `REVIEW_REQUIRED`, `CONFLICT`, `STORAGE_ERROR`). Driver and SQL details are replaced with a generic storage error.
 
 The trusted caller currently requires a Persona ID, including when `identityType` is a server-verified Room member/owner. A host path without a seat Persona must receive a separately trusted principal mapping in a later phase; the service will not synthesize one from a name or role.
+
+## Search and bounded reads (P3)
+
+`MemorySearchService` receives the same server-injected trusted caller plus an injectable `MemorySearchSessionStore`. Persona callers search current Room-shared and their own Persona-private records; non-Persona callers search only Room-shared records. The PostgreSQL repository applies these scopes and `deleted_at IS NULL` before ranking or limiting.
+
+- Search accepts 1–8 non-empty keywords, at most 64 Unicode characters per term and 256 characters total after NFKC normalization. Recall is OR; metadata (title/search keywords) matches rank before body-only matches, hit keyword count ranks within each tier, then `updated_at DESC` and `id ASC` stabilize the result. Short Chinese words and English class/path/underscore tokens use bounded substring matching; terms of at least three characters also use a `pg_trgm` similarity check on search text.
+- Search returns at most five DTOs with exactly `{id,title,preview}`. It never returns body, source, or timestamps.
+- Each user intent has at most two searches. The first no-hit response allows one retry, the second does not, and a third distinct request fails with `CONFLICT`. Replaying the same `requestId` returns the saved response without using another round. Sessions are bound to the trusted Room/Persona/caller type, expire after 10 minutes, and allow at most 10 new sessions per caller per minute. Forged, expired, and other-caller session IDs return `NOT_FOUND`.
+- `RedisSearchSessionStore` stores state only in Redis. `MemorySearchSessionStore` and `RedisCommandClient` are injectable; `RedisUrlCommandClient` supports `redis://` connections, while hosts may adapt their existing Redis client. Redis failures map to `STORAGE_ERROR`.
+- `MemorySearchService.read` rechecks Room and Persona scopes on every page and returns at most 4,000 Unicode characters (2,000 by default). Its opaque cursor is tied to the requested memory ID; deleted or out-of-scope entries return `NOT_FOUND`.
+
+Run the search integration coverage with both local services configured:
+
+```sh
+MEMORY_TEST_DATABASE_URL='postgresql://…/agent_room_memtest' \
+MEMORY_TEST_REDIS_URL='redis://127.0.0.1:6379' \
+npm test -w packages/memory
+```
+
+Both variables are required; the test suite fails rather than skipping if either is missing. Search plan and latency measurements are recorded in [`BENCHMARK.md`](./BENCHMARK.md). Reproduce them against the dedicated PostgreSQL 17 test database with:
+
+```sh
+MEMORY_TEST_DATABASE_URL='postgresql://…/agent_room_memtest' \
+npm run benchmark:search -w packages/memory
+```
 
 ## Requirements
 

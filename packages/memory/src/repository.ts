@@ -1,12 +1,14 @@
 import type {
   ListMemoryOptions,
   MemoryContent,
+  MemoryContentSegment,
   MemoryEntry,
   MemoryIdentity,
   MemoryMutationResult,
   MemoryProposal,
   MemoryProposalInput,
   MemoryReviewDecision,
+  MemorySearchCandidate,
   MemoryScope,
   MemoryUpdate,
 } from './types.js';
@@ -27,7 +29,17 @@ export interface MemoryRepository {
   ): Promise<MemoryMutationResult>;
 
   readEntry(scope: MemoryScope, id: string): Promise<MemoryEntry | null>;
+  readContentSegment(
+    scopes: readonly MemoryScope[],
+    id: string,
+    offset: number,
+    limit: number,
+  ): Promise<MemoryContentSegment | null>;
   listEntries(scope: MemoryScope, options?: ListMemoryOptions): Promise<MemoryEntry[]>;
+  searchEntries(
+    scopes: readonly MemoryScope[],
+    keywords: readonly string[],
+  ): Promise<MemorySearchCandidate[]>;
 
   updatePersonaEntry(
     scope: Extract<MemoryScope, { scope: 'persona' }>,

@@ -1,6 +1,24 @@
-export { PostgresMemoryRepository, applyMemoryMigrations } from './postgres.js';
+export { MEMORY_SEARCH_SQL, PostgresMemoryRepository, applyMemoryMigrations } from './postgres.js';
 export { MemoryService, MemoryServiceError } from './service.js';
+export { MemorySearchService, MEMORY_READ_MAX_CHARS } from './search-service.js';
+export { RedisSearchSessionStore, SearchSessionRateLimitError } from './search-session-store.js';
+export { RedisUrlCommandClient } from './redis-command-client.js';
 export type { MemoryRepository } from './repository.js';
+export type {
+  MemoryReadInput,
+  MemoryReadPage,
+  MemorySearchInput,
+} from './search-service.js';
+export type {
+  MemorySearchBinding,
+  MemorySearchOutcome,
+  MemorySearchResponse,
+  MemorySearchSessionStore,
+  RedisCommandClient,
+  RedisSearchSessionStoreOptions,
+  SearchSessionCommit,
+  SearchSessionInspection,
+} from './search-session-store.js';
 export type {
   DuplicateCandidatesResult,
   MemoryCallerContextResolver,
@@ -23,6 +41,7 @@ export type {
   DeleteMemoryProposal,
   ListMemoryOptions,
   MemoryContent,
+  MemoryContentSegment,
   MemoryEntry,
   MemoryIdentity,
   MemoryIdentityType,
@@ -32,6 +51,7 @@ export type {
   MemoryProposalInput,
   MemoryProposalStatus,
   MemoryReviewDecision,
+  MemorySearchCandidate,
   MemoryScope,
   MemoryUpdate,
   MutationStatus,

@@ -27,6 +27,19 @@ export interface MemoryEntry {
   deleted_at: Date | null;
 }
 
+/** Search repository rows intentionally omit body, source, and timestamps. */
+export interface MemorySearchCandidate {
+  id: string;
+  title: string;
+  preview: string;
+}
+
+/** A bounded database substring, including one lookahead character. */
+export interface MemoryContentSegment {
+  id: string;
+  content: string;
+}
+
 export type MemoryProposalAction = 'create' | 'update' | 'delete';
 export type MemoryProposalStatus = 'pending' | 'approved' | 'rejected';
 export type MemoryReviewDecision = 'approve' | 'reject';
