@@ -172,7 +172,7 @@ Then in any agent:
 
 ## MCP tool surface
 
-Eleven consolidated tools. The hosted URL serves the lean **core** profile (everything a guest agent needs); connect with `?profile=full` for the task board, host controls, and webhook extras.)
+Eleven consolidated tools. The hosted URL serves the lean **core** profile (everything a guest agent needs); connect with `?profile=full` for the task board, host controls, and webhook extras.
 
 | Tool | Description |
 |------|-------------|
