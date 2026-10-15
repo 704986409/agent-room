@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { applyMemoryMigrations, PostgresMemoryRepository } from '../src/postgres.js';
+import {
+  MemoryService,
+  type MemoryServiceMutationResult,
+  type TrustedMemoryCaller,
+} from '../src/service.js';
 import { MemoryConflictError, MemoryForbiddenError, type MemoryContent } from '../src/types.js';
 
 const databaseUrl = process.env.MEMORY_TEST_DATABASE_URL?.trim();
@@ -29,6 +34,20 @@ function roomOwnerIdentity(id = `owner-${randomUUID()}`) {
 
 function roomMemberIdentity(id = `member-${randomUUID()}`) {
   return { type: 'room_member' as const, id };
+}
+
+function trustedCaller(
+  roomInstanceId: string,
+  personaId: string,
+  identityType: TrustedMemoryCaller['identityType'] = 'persona',
+): TrustedMemoryCaller {
+  return { roomInstanceId, personaId, identityType };
+}
+
+function resultId(result: MemoryServiceMutationResult): string {
+  if ('id' in result) return result.id;
+  if ('proposalId' in result) return result.proposalId;
+  throw new Error('Expected a mutation result with an ID.');
 }
 
 describe('Agent Memory PostgreSQL 17 integration', () => {
@@ -147,6 +166,218 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     expect(await repository.deletePersonaEntry(scope, created.id, actor, 'persona-delete-1')).toEqual(deleted);
     expect(await repository.readEntry(scope, created.id)).toBeNull();
     expect(await repository.listEntries(scope)).toEqual([]);
+  });
+
+  it('enforces cross-Persona and cross-Room read/list isolation through the service', async () => {
+    const service = new MemoryService(repository);
+    const roomInstanceId = randomUUID();
+    const personaId = `persona-${randomUUID()}`;
+    const otherPersonaId = `persona-${randomUUID()}`;
+    const owner = trustedCaller(roomInstanceId, personaId);
+    const entry = await service.createEntry(owner, 'persona', content(), 'service-isolation-create');
+    expect(entry).toMatchObject({ status: 'created' });
+    const entryId = resultId(entry);
+
+    await expect(service.readEntry(trustedCaller(roomInstanceId, otherPersonaId), 'persona', entryId))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await service.listEntries(trustedCaller(roomInstanceId, otherPersonaId), 'persona')).toEqual([]);
+    await expect(service.readEntry(trustedCaller(roomInstanceId, `member-${randomUUID()}`, 'room_member'), 'persona', entryId))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await service.listEntries(trustedCaller(roomInstanceId, `member-${randomUUID()}`, 'room_member'), 'persona'))
+      .toEqual([]);
+    await expect(service.readEntry(trustedCaller(randomUUID(), personaId), 'persona', entryId))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await service.listEntries(trustedCaller(randomUUID(), personaId), 'persona')).toEqual([]);
+
+    const shared = await service.createEntry(owner, 'room', content({ title: 'Shared service fact' }), 'service-room-create');
+    expect(shared).toMatchObject({ code: 'PENDING_REVIEW' });
+    const proposalId = resultId(shared);
+    expect(await service.listEntries(owner, 'room')).toEqual([]);
+    await repository.reviewRoomProposal(
+      roomInstanceId,
+      proposalId,
+      roomOwnerIdentity(),
+      'approve',
+      'service-room-review',
+    );
+    expect(await service.listEntries(owner, 'room')).toHaveLength(1);
+    expect(await service.listEntries(trustedCaller(randomUUID(), personaId), 'room')).toEqual([]);
+    const roomScope = { roomInstanceId, scope: 'room' as const };
+    const roomEntry = (await repository.listEntries(roomScope))[0]!;
+    expect(await service.createEntry(
+      owner,
+      'room',
+      content({ title: 'Shared service fact' }),
+      'service-room-duplicate',
+    )).toMatchObject({ status: 'duplicate_candidates', candidates: [{ id: roomEntry.id }] });
+    await expect(service.readEntry(trustedCaller(randomUUID(), personaId), 'room', roomEntry.id))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    const updateProposal = await service.updateEntry(
+      owner,
+      'room',
+      roomEntry.id,
+      { content: 'An explicitly proposed room update.' },
+      'service-room-update',
+    );
+    expect(updateProposal).toMatchObject({ code: 'PENDING_REVIEW' });
+    expect((await repository.readEntry(roomScope, roomEntry.id))?.content).toBe('Full memory content');
+    await repository.reviewRoomProposal(
+      roomInstanceId,
+      resultId(updateProposal),
+      roomOwnerIdentity(),
+      'approve',
+      'service-room-update-review',
+    );
+    expect((await repository.readEntry(roomScope, roomEntry.id))?.content)
+      .toBe('An explicitly proposed room update.');
+
+    const deleteProposal = await service.deleteEntry(owner, 'room', roomEntry.id, 'service-room-delete');
+    expect(deleteProposal).toMatchObject({ code: 'PENDING_REVIEW' });
+    expect(await repository.readEntry(roomScope, roomEntry.id)).not.toBeNull();
+    await repository.reviewRoomProposal(
+      roomInstanceId,
+      resultId(deleteProposal),
+      roomOwnerIdentity(),
+      'approve',
+      'service-room-delete-review',
+    );
+    expect(await service.listEntries(owner, 'room')).toEqual([]);
+  });
+
+  it('returns exact duplicate candidates, requires explicit updates, and preserves distinct facts', async () => {
+    const service = new MemoryService(repository);
+    const roomInstanceId = randomUUID();
+    const personaId = `persona-${randomUUID()}`;
+    const caller = trustedCaller(roomInstanceId, personaId);
+    const firstContent = content({
+      title: 'Fallback rollout schedule',
+      preview: 'Friday rollout',
+      content: 'The fallback rollout happens Friday after the risk review.',
+      sourceMessageId: 'message-42',
+    });
+    const created = await service.createEntry(caller, 'persona', firstContent, 'dedup-create');
+    expect(created).toMatchObject({ status: 'created' });
+    const createdId = resultId(created);
+    const createReplay = await service.createEntry(
+      caller,
+      'persona',
+      content({ title: 'A retry with a changed payload' }),
+      'dedup-create',
+    );
+    expect(createReplay).toEqual(created);
+    expect((await repository.readEntry(
+      { roomInstanceId, scope: 'persona', personaId }, createdId,
+    ))?.source_message_id).toBe('message-42');
+
+    const [concurrentCreateA, concurrentCreateB] = await Promise.all([
+      service.createEntry(caller, 'persona', content({ title: 'Concurrent idempotent entry' }), 'dedup-concurrent'),
+      service.createEntry(caller, 'persona', content({ title: 'Concurrent idempotent entry' }), 'dedup-concurrent'),
+    ]);
+    expect(concurrentCreateA).toEqual(concurrentCreateB);
+    expect(concurrentCreateA).toMatchObject({ status: 'created' });
+
+    const sameTitleDifferentFact = await service.createEntry(
+      caller,
+      'persona',
+      content({ title: 'Fallback rollout schedule', content: 'The fallback rollout happens Monday after the risk review.' }),
+      'dedup-same-title',
+    );
+    expect(sameTitleDifferentFact).toMatchObject({
+      status: 'duplicate_candidates',
+      candidates: [{ id: createdId }],
+      guidance: 'update_existing_or_clarify',
+    });
+    expect((await service.readEntry(caller, 'persona', createdId)).content)
+      .toBe('The fallback rollout happens Friday after the risk review.');
+
+    const sameNormalizedContent = await service.createEntry(
+      caller,
+      'persona',
+      content({ title: 'A differently cased title', content: '  THE FALLBACK ROLLOUT HAPPENS FRIDAY AFTER THE RISK REVIEW.  ' }),
+      'dedup-normalized-content',
+    );
+    expect(sameNormalizedContent).toMatchObject({ status: 'duplicate_candidates', candidates: [{ id: createdId }] });
+
+    const updated = await service.updateEntry(
+      caller,
+      'persona',
+      createdId,
+      { content: 'The fallback rollout happens Wednesday after the risk review.', preview: 'Wednesday rollout' },
+      'dedup-explicit-update',
+    );
+    expect(updated).toMatchObject({ status: 'updated', id: createdId, version: 2 });
+    const updatedId = resultId(updated);
+    const replayedUpdate = await service.updateEntry(
+      caller,
+      'persona',
+      createdId,
+      { content: 'A retry must not replace the Wednesday fact.' },
+      'dedup-explicit-update',
+    );
+    expect(replayedUpdate).toEqual(updated);
+    expect((await service.readEntry(caller, 'persona', updatedId)).content)
+      .toBe('The fallback rollout happens Wednesday after the risk review.');
+
+    const differentFact = await service.createEntry(
+      caller,
+      'persona',
+      content({
+        title: 'Fallback rollout date',
+        preview: 'Tuesday rollout',
+        content: 'The fallback rollout happens Tuesday after the risk review.',
+      }),
+      'dedup-distinct-fact',
+    );
+    expect(differentFact).toMatchObject({ status: 'created' });
+    expect(await service.listEntries(caller, 'persona')).toHaveLength(3);
+    expect((await service.readEntry(caller, 'persona', createdId)).content)
+      .toBe('The fallback rollout happens Wednesday after the risk review.');
+  });
+
+  it('maps an unavailable PostgreSQL connection to STORAGE_ERROR without a fake mutation result', async () => {
+    const unavailablePool = new Pool({
+      host: '127.0.0.1',
+      port: 1,
+      user: 'memory-test',
+      database: 'memory-test',
+      connectionTimeoutMillis: 100,
+      max: 1,
+    });
+    const unavailableRepository = await PostgresMemoryRepository.fromPool(unavailablePool, false);
+    const service = new MemoryService(unavailableRepository);
+    try {
+      await expect(service.createEntry(
+        trustedCaller(randomUUID(), `persona-${randomUUID()}`),
+        'persona',
+        content(),
+        'database-down-create',
+      )).rejects.toMatchObject({
+        code: 'STORAGE_ERROR',
+        message: 'Memory storage is temporarily unavailable.',
+      });
+    } finally {
+      await unavailableRepository.close();
+      await unavailablePool.end();
+    }
+  });
+
+  it('maps invalid input and Persona-scope authorization failures to stable safe codes', async () => {
+    const service = new MemoryService(repository);
+    const roomInstanceId = randomUUID();
+    await expect(service.createEntry(
+      trustedCaller(roomInstanceId, `persona-${randomUUID()}`, 'room_member'),
+      'persona',
+      content(),
+      'forbidden-private-write',
+    )).rejects.toMatchObject({ code: 'FORBIDDEN', message: 'Memory access is not allowed.' });
+
+    await expect(service.createEntry(
+      trustedCaller(roomInstanceId, `persona-${randomUUID()}`),
+      'persona',
+      content({ title: 'x'.repeat(201) }),
+      'invalid-title',
+    )).rejects.toMatchObject({ code: 'INVALID_INPUT', message: 'Invalid memory request.' });
   });
 
   it('isolates Room entries by room_instance_id and creates without a Room row', async () => {

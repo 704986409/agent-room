@@ -251,6 +251,23 @@ export class PostgresMemoryRepository implements MemoryRepository {
     }
   }
 
+  async getRequestResult(
+    roomInstanceId: string,
+    actor: MemoryIdentity,
+    requestId: string,
+  ): Promise<MemoryMutationResult | null> {
+    assertIdentity(actor);
+    assertRequestId(requestId);
+    if (!roomInstanceId.trim()) throw new TypeError('room_instance_id is required.');
+    const result = await this.pool.query<RequestRow>(
+      `SELECT result_json FROM agent_memory_requests
+       WHERE room_instance_id = $1 AND actor_identity_type = $2
+         AND actor_identity_id = $3 AND request_id = $4`,
+      [roomInstanceId, actor.type, actor.id, requestId],
+    );
+    return result.rows[0]?.result_json ?? null;
+  }
+
   private async withRequest<T extends MemoryMutationResult>(context: RequestContext, operation: (client: PoolClient) => Promise<T>): Promise<T> {
     assertIdentity(context.actor);
     assertRequestId(context.requestId);

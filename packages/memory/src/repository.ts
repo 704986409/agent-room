@@ -13,6 +13,12 @@ import type {
 
 /** PostgreSQL persistence contract. Every read/write carries a trusted scope. */
 export interface MemoryRepository {
+  getRequestResult(
+    roomInstanceId: string,
+    actor: MemoryIdentity,
+    requestId: string,
+  ): Promise<MemoryMutationResult | null>;
+
   createPersonaEntry(
     scope: Extract<MemoryScope, { scope: 'persona' }>,
     content: MemoryContent,
