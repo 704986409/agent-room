@@ -71,7 +71,7 @@ try {
     `, [roomInstanceId, personaId, count]);
     await scoped.query('ANALYZE agent_memory_entries');
 
-    const params = [roomInstanceId, false, personaId, ['needle'], ['%needle%']];
+    const params = [roomInstanceId, false, personaId, ['needle'], ['%needle%'], []];
     await scoped.query(MEMORY_SEARCH_SQL, params); // warm up the query path
     const latencies = [];
     for (let run = 0; run < sampleRuns; run += 1) {

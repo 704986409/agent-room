@@ -25,80 +25,110 @@ const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
 
-export const MEMORY_SEARCH_SQL = `
-  WITH keywords AS MATERIALIZED (
-    SELECT DISTINCT lower(word) AS keyword, pattern
-    FROM unnest($4::text[], $5::text[]) AS requested(word, pattern)
-  ),
-  metadata_hit_rows AS MATERIALIZED (
+export function buildMemorySearchSql(includeShortKeywordPath: boolean): string {
+  const shortMetadataHits = includeShortKeywordPath ? `
+    UNION ALL
     SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
-    FROM keywords k
+    FROM short_keywords k
     CROSS JOIN LATERAL (
       SELECT e.id, e.title, e.preview, e.updated_at
       FROM agent_memory_entries e
       WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
         AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
           OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
-        AND char_length(k.keyword) >= 3
-        AND (lower(e.title) LIKE k.pattern
-          OR lower(e.search_text) LIKE k.pattern
-          OR lower(e.search_text) % k.keyword)
-      UNION ALL
-      SELECT e.id, e.title, e.preview, e.updated_at
-      FROM agent_memory_entries e
-      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
-        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
-          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
-        AND char_length(k.keyword) < 3
         AND (strpos(lower(e.title), k.keyword) > 0
           OR strpos(lower(e.search_text), k.keyword) > 0)
-    ) e
-  ),
-  metadata_matches AS MATERIALIZED (
-    SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
-    FROM metadata_hit_rows
-    GROUP BY id, title, preview, updated_at
-  ),
-  body_hit_rows AS MATERIALIZED (
+    ) e` : '';
+  const shortBodyHits = includeShortKeywordPath ? `
+    UNION ALL
     SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
-    FROM keywords k
+    FROM short_keywords k
     CROSS JOIN LATERAL (
       SELECT e.id, e.title, e.preview, e.updated_at
       FROM agent_memory_entries e
       WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
         AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
           OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
-        AND char_length(k.keyword) >= 3
-        AND lower(e.content) LIKE k.pattern
-        AND NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
-      UNION ALL
-      SELECT e.id, e.title, e.preview, e.updated_at
-      FROM agent_memory_entries e
-      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
-        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
-          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
-        AND char_length(k.keyword) < 3
         AND strpos(lower(e.content), k.keyword) > 0
         AND NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
-    ) e
-  ),
-  body_matches AS MATERIALIZED (
-    SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
-    FROM body_hit_rows
-    GROUP BY id, title, preview, updated_at
-  ),
-  ranked AS (
-    SELECT id, title, preview, updated_at, 0 AS match_tier, matched_keywords
-    FROM metadata_matches
-    UNION ALL
-    SELECT id, title, preview, updated_at, 1 AS match_tier, matched_keywords
-    FROM body_matches
-  )
-  SELECT id, title, preview
-  FROM ranked
-  ORDER BY match_tier ASC, matched_keywords DESC, updated_at DESC, id ASC
-  LIMIT 5
-`;
+    ) e` : '';
+
+  return `
+    WITH long_keywords AS MATERIALIZED (
+      SELECT DISTINCT lower(word) AS keyword, pattern
+      FROM unnest($4::text[], $5::text[]) AS requested(word, pattern)
+    ),
+    short_keywords AS MATERIALIZED (
+      SELECT DISTINCT lower(word) AS keyword
+      FROM unnest($6::text[]) AS requested(word)
+    ),
+    metadata_hit_rows AS MATERIALIZED (
+      SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
+      FROM long_keywords k
+      CROSS JOIN LATERAL (
+        SELECT e.id, e.title, e.preview, e.updated_at
+        FROM agent_memory_entries e
+        WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+          AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+            OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+          AND lower(e.title) LIKE k.pattern
+        UNION ALL
+        SELECT e.id, e.title, e.preview, e.updated_at
+        FROM agent_memory_entries e
+        WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+          AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+            OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+          AND lower(e.search_text) LIKE k.pattern
+        UNION ALL
+        SELECT e.id, e.title, e.preview, e.updated_at
+        FROM agent_memory_entries e
+        WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+          AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+            OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+          AND lower(e.search_text) % k.keyword
+      ) e
+      ${shortMetadataHits}
+    ),
+    metadata_matches AS MATERIALIZED (
+      SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
+      FROM metadata_hit_rows
+      GROUP BY id, title, preview, updated_at
+    ),
+    body_hit_rows AS MATERIALIZED (
+      SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
+      FROM long_keywords k
+      CROSS JOIN LATERAL (
+        SELECT e.id, e.title, e.preview, e.updated_at
+        FROM agent_memory_entries e
+        WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+          AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+            OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+          AND lower(e.content) LIKE k.pattern
+          AND NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
+      ) e
+      ${shortBodyHits}
+    ),
+    body_matches AS MATERIALIZED (
+      SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
+      FROM body_hit_rows
+      GROUP BY id, title, preview, updated_at
+    ),
+    ranked AS (
+      SELECT id, title, preview, updated_at, 0 AS match_tier, matched_keywords
+      FROM metadata_matches
+      UNION ALL
+      SELECT id, title, preview, updated_at, 1 AS match_tier, matched_keywords
+      FROM body_matches
+    )
+    SELECT id, title, preview
+    FROM ranked
+    ORDER BY match_tier ASC, matched_keywords DESC, updated_at DESC, id ASC
+    LIMIT 5
+  `;
+}
+
+/** Long-keyword query shape used by the standalone benchmark. */
+export const MEMORY_SEARCH_SQL = buildMemorySearchSql(false);
 
 type EntryRow = Omit<MemoryEntry, 'version'> & { version: string | number };
 type ProposalRow = Omit<MemoryProposal, 'target_version'> & { target_version: string | number | null };
@@ -492,10 +522,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
   ): Promise<MemorySearchCandidate[]> {
     const scope = assertSearchScopes(scopes);
     const queryWords = assertSearchKeywords(keywords);
-    const patterns = queryWords.map(word => `%${word.replace(/[\\%_]/g, '\\$&')}%`);
-    const result = await this.pool.query<MemorySearchCandidate>(MEMORY_SEARCH_SQL, [
-      scope.roomInstanceId, scope.includeRoom, scope.personaId, queryWords, patterns,
-    ]);
+    const longKeywords = queryWords.filter(word => [...word].length >= 3);
+    const shortKeywords = queryWords.filter(word => [...word].length < 3);
+    const patterns = longKeywords.map(word => `%${word.replace(/[\\%_]/g, '\\$&')}%`);
+    const result = await this.pool.query<MemorySearchCandidate>(
+      buildMemorySearchSql(shortKeywords.length > 0),
+      [scope.roomInstanceId, scope.includeRoom, scope.personaId, longKeywords, patterns, shortKeywords],
+    );
     return result.rows;
   }
 

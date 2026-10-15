@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { MEMORY_SEARCH_SQL } from '../src/postgres.js';
+import { buildMemorySearchSql, MEMORY_SEARCH_SQL } from '../src/postgres.js';
 
 describe('Agent Memory migration source', () => {
   it('defines the approved isolated schema, limits, snapshots, and idempotency constraints', () => {
@@ -33,10 +33,14 @@ describe('Agent Memory migration source', () => {
     expect(MEMORY_SEARCH_SQL).toContain('lower(e.search_text) LIKE k.pattern');
     expect(MEMORY_SEARCH_SQL).toContain('lower(e.search_text) % k.keyword');
     expect(MEMORY_SEARCH_SQL).toContain('lower(e.content) LIKE k.pattern');
-    expect(MEMORY_SEARCH_SQL).toContain('char_length(k.keyword) >= 3');
-    expect(MEMORY_SEARCH_SQL).toContain('strpos(lower(e.content), k.keyword) > 0');
+    expect(MEMORY_SEARCH_SQL).not.toContain('strpos(');
     expect(MEMORY_SEARCH_SQL).toContain('e.room_instance_id = $1 AND e.deleted_at IS NULL');
     expect(MEMORY_SEARCH_SQL).toContain('ORDER BY match_tier ASC, matched_keywords DESC, updated_at DESC, id ASC');
     expect(MEMORY_SEARCH_SQL).toMatch(/LIMIT\s+5\s*$/);
+
+    const shortKeywordSql = buildMemorySearchSql(true);
+    expect(shortKeywordSql).toContain('strpos(lower(e.title), k.keyword) > 0');
+    expect(shortKeywordSql).toContain('strpos(lower(e.search_text), k.keyword) > 0');
+    expect(shortKeywordSql).toContain('strpos(lower(e.content), k.keyword) > 0');
   });
 });
