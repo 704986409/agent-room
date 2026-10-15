@@ -14,6 +14,7 @@ import type { MessageKey, MessageValues } from '../i18n/messages.js';
 import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
+import { MemoryReviewPanel } from '../components/MemoryReviewPanel.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
 import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, onDeliverHostMessage, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
@@ -906,6 +907,7 @@ export function Room() {
               ))}
             </div>
             <LocaleSwitcher compact className="border-0 bg-transparent p-0" />
+            <MemoryReviewPanel roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
             <button
               onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
               className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition"

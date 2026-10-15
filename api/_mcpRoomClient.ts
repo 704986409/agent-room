@@ -153,7 +153,7 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           p.verdict === 'done' ? 'done' : 'rejected',
           typeof p.note === 'string' ? p.note : undefined,
           Date.now(),
-          p.followUp as Parameters<typeof verifyRoomTask>[7],
+          p.followUp as Parameters<typeof verifyRoomTask>[8],
         );
       case 'taskReassign':
         return await reassignTaskRoles(store, code, str(p.id), {

@@ -218,6 +218,7 @@ describe('createRoom', () => {
     });
 
     expect(room.code).toBe('ABC-DEF-GHJ');
+    expect(room.roomInstanceId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     expect(room.ownerId).toBe('user_123');
     expect(room.version).toBe(1);
     expect(room.participants).toEqual([]);
@@ -228,12 +229,23 @@ describe('createRoom', () => {
     expect(cmd[1]).toBe('room:ABC-DEF-GHJ');
     const stored = JSON.parse(cmd[2]);
     expect(stored.topic).toBe('Q3');
+    expect(stored.roomInstanceId).toBe(room.roomInstanceId);
     expect(stored.ownerId).toBe('user_123');
     expect(stored.ownerEmail).toBe('alex@example.com');
     expect(stored.ownerName).toBe('Alex Host');
     expect(cmd).toContain('EX');
     expect(cmd).toContain(ROOM_TTL_SECONDS);
     expect(ROOM_TTL_SECONDS).toBe(604800);
+  });
+
+  it('assigns a fresh Room instance UUID when a code is reused for a new lifetime', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResp({ result: 'OK' })));
+    const client = createClient(ENV);
+    const first = await createRoom(client, { code: 'ABC-DEF-GHJ', topic: 'first', createdBy: 'Alex' });
+    const second = await createRoom(client, { code: 'ABC-DEF-GHJ', topic: 'second', createdBy: 'Alex' });
+    expect(first.roomInstanceId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(second.roomInstanceId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(second.roomInstanceId).not.toBe(first.roomInstanceId);
   });
 });
 

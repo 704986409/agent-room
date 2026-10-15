@@ -21,6 +21,7 @@ import deleteRoomBlobsHandler from '../../api/delete-room-blobs.js';
 import elevenlabsTtsHandler from '../../api/elevenlabs-tts.js';
 import installHandler from '../../api/install.js';
 import interviewReplyHandler from '../../api/interview-reply.js';
+import memoryReviewHandler from '../../api/memory-review.js';
 import mcpHandler from '../../api/mcp.js';
 import reportOgHandler from '../../api/report-og.js';
 import reportPageHandler from '../../api/report-page.js';
@@ -66,6 +67,7 @@ const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   'elevenlabs-tts': elevenlabsTtsHandler,
   install: installHandler,
   'interview-reply': interviewReplyHandler,
+  'memory-review': memoryReviewHandler,
   mcp: mcpHandler,
   'report-og': reportOgHandler,
   'report-page': reportPageHandler,

@@ -22,6 +22,16 @@ function generateHostKey(): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function generateRoomInstanceId(): string {
+  const bytes = new Uint8Array(16);
+  const cryptoObj: Crypto = (globalThis as unknown as { crypto: Crypto }).crypto;
+  cryptoObj.getRandomValues(bytes);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Array.from(bytes, value => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 // Hashing goes through sha256.ts, which falls back to a pure-JS SHA-256 when
 // `crypto.subtle` is missing. That happens on any non-secure origin, notably
 // the dev server opened on a phone at http://<lan-ip>:5173, where this used to
@@ -60,6 +70,7 @@ export async function createRoom(client: UpstashClient, input: CreateRoomInput):
   const hostKey = generateHostKey();
   const room: Room = {
     code: input.code,
+    roomInstanceId: generateRoomInstanceId(),
     topic: input.topic,
     createdAt: now,
     createdBy: input.createdBy,

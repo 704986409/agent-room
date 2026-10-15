@@ -189,6 +189,8 @@ export interface ReplyModeConfig {
 
 export interface Room {
   code: string;
+  /** Immutable UUID for one Room lifetime; absent only on legacy Redis records. */
+  roomInstanceId?: string;
   topic: string;
   createdAt: number;
   createdBy: string;

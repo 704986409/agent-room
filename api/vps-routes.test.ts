@@ -29,7 +29,7 @@ describe('VPS API routing', () => {
   it('returns route-level not_found for unknown handlers (control)', async () => {
     expect((await probe('/api/definitely-not-a-handler')).routeMissing).toBe(true);
   });
-  for (const path of ['/api/interview-reply', '/api/stt', '/api/elevenlabs-tts']) {
+  for (const path of ['/api/interview-reply', '/api/stt', '/api/elevenlabs-tts', '/api/memory-review']) {
     it(`routes ${path} to a handler`, async () => {
       expect((await probe(path)).routeMissing).toBe(false);
     });

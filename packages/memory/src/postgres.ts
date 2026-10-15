@@ -611,6 +611,23 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return result.rows[0] ? proposalFromRow(result.rows[0]) : null;
   }
 
+  async listPendingRoomProposals(roomInstanceId: string, options: ListMemoryOptions = {}): Promise<MemoryProposal[]> {
+    if (!roomInstanceId.trim()) throw new TypeError('room_instance_id is required.');
+    const { limit, offset } = assertValidPage(options);
+    const result = await this.pool.query<ProposalRow>(
+      `SELECT id, room_instance_id, action, target_memory_id, target_version,
+         target_updated_at, payload, proposer_persona_id, proposer_identity_type,
+         proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
+         request_id, created_at, reviewed_at
+       FROM agent_memory_proposals
+       WHERE room_instance_id = $1 AND status = 'pending'
+       ORDER BY created_at DESC, id ASC
+       LIMIT $2 OFFSET $3`,
+      [roomInstanceId, limit, offset],
+    );
+    return result.rows.map(proposalFromRow);
+  }
+
   async reviewRoomProposal(
     roomInstanceId: string,
     proposalId: string,

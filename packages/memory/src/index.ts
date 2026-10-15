@@ -1,6 +1,11 @@
 export { MEMORY_SEARCH_SQL, PostgresMemoryRepository, applyMemoryMigrations } from './postgres.js';
 export { MemoryService, MemoryServiceError } from './service.js';
 export { MemorySearchService, MEMORY_READ_MAX_CHARS } from './search-service.js';
+export {
+  MemoryReviewService,
+  ReviewerPolicy,
+  memoryReviewNotificationAdapter,
+} from './review-service.js';
 export { RedisSearchSessionStore, SearchSessionRateLimitError } from './search-session-store.js';
 export { MemoryBriefService, MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET, renderMemoryBrief } from './brief-service.js';
 export { RedisMemoryBriefSessionStore } from './brief-session-store.js';
@@ -11,6 +16,15 @@ export type {
   MemoryBriefResult,
   MemoryBriefRoomContextReader,
 } from './brief-service.js';
+export type {
+  MemoryReviewMentionNotification,
+  MemoryReviewNotificationAdapter,
+  MemoryReviewProposalView,
+  MemoryReviewResult,
+  ReviewerDirectory,
+  ReviewProvider,
+  TrustedMemoryReviewer,
+} from './review-service.js';
 export type {
   MemoryReadInput,
   MemoryReadPage,
