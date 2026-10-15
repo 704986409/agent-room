@@ -1,5 +1,7 @@
 # Agent Memory PostgreSQL package
 
+See [`API.md`](./API.md) for MCP shapes and [`OPERATIONS.md`](./OPERATIONS.md) for deployment, migration, rollback, backup, and restore procedures. Search measurements and the P7 measurement status are in [`BENCHMARK.md`](./BENCHMARK.md). Known limitations and V2 follow-ups are listed in [`V2-TODO.md`](./V2-TODO.md).
+
 This package owns the Memory V1 PostgreSQL schema, repository, business service, search service, Brief, and short-lived session storage. It stores only Memory tables; it does not migrate, recreate, or reference `agent_room_rooms`. The API adapter resolves Room membership from a server-issued seatKey before it creates a trusted Memory caller.
 
 ## Business service (P2)
@@ -29,7 +31,7 @@ MCP review maps the server-configured `MEMORY_REVIEWER_ROLE` (default `project-a
 
 `MemorySearchService` receives the same server-injected trusted caller plus an injectable `MemorySearchSessionStore`. Persona callers search current Room-shared and their own Persona-private records; non-Persona callers search only Room-shared records. The PostgreSQL repository applies these scopes and `deleted_at IS NULL` before ranking or limiting.
 
-- Search accepts 1–8 non-empty keywords, at most 64 Unicode characters per term and 256 characters total after NFKC normalization. Recall is OR; metadata (title/search keywords) matches rank before body-only matches, hit keyword count ranks within each tier, then `updated_at DESC` and `id ASC` stabilize the result. Short Chinese words and English class/path/underscore tokens use bounded substring matching; terms of at least three characters also use a `pg_trgm` similarity check on search text.
+- Search accepts 1–8 non-empty keywords, at most 64 Unicode characters per term and 256 characters total after NFKC normalization. Recall is OR; metadata (title/search keywords) matches rank before body-only matches, hit keyword count ranks within each tier, then `updated_at DESC` and `id ASC` stabilize the result. One- and two-character terms use exact substring checks after Room/Persona filtering. Terms of at least three characters use literal substring `LIKE` predicates eligible for the `pg_trgm` indexes; search text also keeps a trigram similarity candidate path. Planner index selection depends on data distribution and must be confirmed with the supplied benchmark before capacity planning.
 - Search returns at most five DTOs with exactly `{id,title,preview}`. It never returns body, source, or timestamps.
 - Each user intent has at most two searches. The first no-hit response allows one retry, the second does not, and a third distinct request fails with `CONFLICT`. Replaying the same `requestId` returns the saved response without using another round. Sessions are bound to the trusted Room/Persona/caller type, expire after 10 minutes, and allow at most 10 new sessions per caller per minute. Forged, expired, and other-caller session IDs return `NOT_FOUND`.
 - `RedisSearchSessionStore` stores state only in Redis. `MemorySearchSessionStore` and `RedisCommandClient` are injectable; `RedisUrlCommandClient` supports `redis://` connections, while hosts may adapt their existing Redis client. Redis failures map to `STORAGE_ERROR`.
@@ -90,7 +92,7 @@ Restore into a separate, empty PostgreSQL 17 validation database first (do not p
 pg_restore --no-owner --dbname="$MEMORY_RESTORE_URL" agent-memory-before.dump
 ```
 
-Validate the restored schema version, table/index definitions, row counts for `agent_memory_entries`, `agent_memory_proposals`, `agent_memory_briefs`, and `agent_memory_requests`, and representative row reads. Record the source/target PostgreSQL versions and validation results before relying on a production restore.
+Validate schema version 2, table/index definitions, row counts for `agent_memory_entries`, `agent_memory_proposals`, `agent_memory_briefs`, and `agent_memory_requests`, and representative row reads. Record the source/target PostgreSQL versions and validation results before relying on a production restore.
 
 There is deliberately no destructive down migration. To roll back application code, disable the Memory feature entry point and deploy the previous application version while preserving Memory tables and rows. Dropping the tables is a separate, explicitly approved data-destruction operation and is not part of normal rollback.
 

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { MEMORY_SEARCH_SQL } from '../src/postgres.js';
 
 describe('Agent Memory migration source', () => {
   it('defines the approved isolated schema, limits, snapshots, and idempotency constraints', () => {
@@ -15,5 +16,27 @@ describe('Agent Memory migration source', () => {
     expect(sql).toContain('proposer_identity_type');
     expect(sql).toContain('PRIMARY KEY (room_instance_id, actor_identity_type, actor_identity_id, request_id)');
     expect(sql).not.toMatch(/REFERENCES\s+agent_room_rooms/i);
+
+    const searchIndexes = readFileSync(
+      fileURLToPath(new URL('../migrations/002_search_candidate_indexes.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(searchIndexes).toContain('idx_memory_title_lower_trgm_active');
+    expect(searchIndexes).toContain('idx_memory_search_lower_trgm_active');
+    expect(searchIndexes).toContain('idx_memory_content_lower_trgm_active');
+    expect(searchIndexes).toContain('idx_memory_scope_first_active');
+  });
+
+  it('uses scoped indexable predicates for long search terms and keeps short-term fallback', () => {
+    expect(MEMORY_SEARCH_SQL).toContain('CROSS JOIN LATERAL');
+    expect(MEMORY_SEARCH_SQL).toContain('lower(e.title) LIKE k.pattern');
+    expect(MEMORY_SEARCH_SQL).toContain('lower(e.search_text) LIKE k.pattern');
+    expect(MEMORY_SEARCH_SQL).toContain('lower(e.search_text) % k.keyword');
+    expect(MEMORY_SEARCH_SQL).toContain('lower(e.content) LIKE k.pattern');
+    expect(MEMORY_SEARCH_SQL).toContain('char_length(k.keyword) >= 3');
+    expect(MEMORY_SEARCH_SQL).toContain('strpos(lower(e.content), k.keyword) > 0');
+    expect(MEMORY_SEARCH_SQL).toContain('e.room_instance_id = $1 AND e.deleted_at IS NULL');
+    expect(MEMORY_SEARCH_SQL).toContain('ORDER BY match_tier ASC, matched_keywords DESC, updated_at DESC, id ASC');
+    expect(MEMORY_SEARCH_SQL).toMatch(/LIMIT\s+5\s*$/);
   });
 });

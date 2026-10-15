@@ -14,6 +14,12 @@ The synthetic profile places metadata matches at approximately 0.2% and body-onl
 
 The plans selected sequential scans at all three sizes; the `pg_trgm` index was not selected for this scoped aggregation query. Metadata rows observed before the final limit were 3, 30, and 300 respectively; body-only rows were 1, 10, and 100. There is no promised latency ceiling. Revisit the query shape and indexes against representative production data before making a capacity claim.
 
+## P7 query and measurement status
+
+P7 changes the candidate query to a per-keyword lateral scan. For terms of at least three characters, its literal `LIKE '%term%'` predicates can use the partial `pg_trgm` GIN indexes; the search-text similarity predicate can use the expression GIN index. One- and two-character terms retain the exact scoped substring path. Migration 002 also adds an active-row Room/scope B-tree index so PostgreSQL can combine scope and text candidates where the planner finds that beneficial.
+
+**After-change measurement: pending.** No after-change latency or index-use claim is made. The P3 results above remain the only measured baseline until the reproduction command below is run on the dedicated PostgreSQL 17.11 test database. Keep this section pending rather than treating the expected index path as proven.
+
 ## Reproduction
 
 ```sh

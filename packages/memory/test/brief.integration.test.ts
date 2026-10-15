@@ -192,7 +192,7 @@ describe('P4 Memory Brief with PostgreSQL 17 and Redis', () => {
     const sessionKey = `seat-session-${randomUUID()}`;
     await expect(briefs.loadOnce(caller(roomId, personaId), sessionKey))
       .rejects.toMatchObject({ code: 'STORAGE_ERROR' });
-    await scopedPool.query('DELETE FROM agent_memory_schema_migrations WHERE version = 1');
+    await scopedPool.query('DELETE FROM agent_memory_schema_migrations');
     await applyMemoryMigrations(scopedPool);
     const result = await briefs.loadOnce(caller(roomId, personaId), sessionKey);
     expect(result.loaded).toBe(true);

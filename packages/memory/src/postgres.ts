@@ -20,45 +20,72 @@ import {
   type MemoryUpdate,
 } from './types.js';
 
-const REQUIRED_SCHEMA_VERSION = 1;
+const REQUIRED_SCHEMA_VERSION = 2;
 const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
 
 export const MEMORY_SEARCH_SQL = `
-  WITH scoped AS MATERIALIZED (
-    SELECT id, title, preview, search_text, content, updated_at
-    FROM agent_memory_entries
-    WHERE room_instance_id = $1 AND deleted_at IS NULL
-      AND (($2::boolean AND scope = 'room' AND persona_id IS NULL)
-        OR ($3::text IS NOT NULL AND scope = 'persona' AND persona_id = $3))
+  WITH keywords AS MATERIALIZED (
+    SELECT DISTINCT lower(word) AS keyword, pattern
+    FROM unnest($4::text[], $5::text[]) AS requested(word, pattern)
   ),
-  keywords AS MATERIALIZED (
-    SELECT DISTINCT lower(word) AS keyword
-    FROM unnest($4::text[]) AS requested(word)
+  metadata_hit_rows AS MATERIALIZED (
+    SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
+    FROM keywords k
+    CROSS JOIN LATERAL (
+      SELECT e.id, e.title, e.preview, e.updated_at
+      FROM agent_memory_entries e
+      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+        AND char_length(k.keyword) >= 3
+        AND (lower(e.title) LIKE k.pattern
+          OR lower(e.search_text) LIKE k.pattern
+          OR lower(e.search_text) % k.keyword)
+      UNION ALL
+      SELECT e.id, e.title, e.preview, e.updated_at
+      FROM agent_memory_entries e
+      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+        AND char_length(k.keyword) < 3
+        AND (strpos(lower(e.title), k.keyword) > 0
+          OR strpos(lower(e.search_text), k.keyword) > 0)
+    ) e
   ),
   metadata_matches AS MATERIALIZED (
-    SELECT e.id, e.title, e.preview, e.updated_at,
-      COUNT(DISTINCT k.keyword) FILTER (
-        WHERE strpos(lower(e.title), k.keyword) > 0
-          OR strpos(lower(e.search_text), k.keyword) > 0
-          OR (char_length(k.keyword) >= 3 AND e.search_text % k.keyword)
-      )::int AS matched_keywords
-    FROM scoped e CROSS JOIN keywords k
-    GROUP BY e.id, e.title, e.preview, e.updated_at
-    HAVING COUNT(DISTINCT k.keyword) FILTER (
-      WHERE strpos(lower(e.title), k.keyword) > 0
-        OR strpos(lower(e.search_text), k.keyword) > 0
-        OR (char_length(k.keyword) >= 3 AND e.search_text % k.keyword)
-    ) > 0
+    SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
+    FROM metadata_hit_rows
+    GROUP BY id, title, preview, updated_at
   ),
-  body_matches AS (
-    SELECT e.id, e.title, e.preview, e.updated_at,
-      COUNT(DISTINCT k.keyword)::int AS matched_keywords
-    FROM scoped e CROSS JOIN keywords k
-    WHERE NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
-      AND strpos(lower(e.content), k.keyword) > 0
-    GROUP BY e.id, e.title, e.preview, e.updated_at
+  body_hit_rows AS MATERIALIZED (
+    SELECT k.keyword, e.id, e.title, e.preview, e.updated_at
+    FROM keywords k
+    CROSS JOIN LATERAL (
+      SELECT e.id, e.title, e.preview, e.updated_at
+      FROM agent_memory_entries e
+      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+        AND char_length(k.keyword) >= 3
+        AND lower(e.content) LIKE k.pattern
+        AND NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
+      UNION ALL
+      SELECT e.id, e.title, e.preview, e.updated_at
+      FROM agent_memory_entries e
+      WHERE e.room_instance_id = $1 AND e.deleted_at IS NULL
+        AND (($2::boolean AND e.scope = 'room' AND e.persona_id IS NULL)
+          OR ($3::text IS NOT NULL AND e.scope = 'persona' AND e.persona_id = $3))
+        AND char_length(k.keyword) < 3
+        AND strpos(lower(e.content), k.keyword) > 0
+        AND NOT EXISTS (SELECT 1 FROM metadata_matches m WHERE m.id = e.id)
+    ) e
+  ),
+  body_matches AS MATERIALIZED (
+    SELECT id, title, preview, updated_at, COUNT(DISTINCT keyword)::int AS matched_keywords
+    FROM body_hit_rows
+    GROUP BY id, title, preview, updated_at
   ),
   ranked AS (
     SELECT id, title, preview, updated_at, 0 AS match_tier, matched_keywords
@@ -465,8 +492,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
   ): Promise<MemorySearchCandidate[]> {
     const scope = assertSearchScopes(scopes);
     const queryWords = assertSearchKeywords(keywords);
+    const patterns = queryWords.map(word => `%${word.replace(/[\\%_]/g, '\\$&')}%`);
     const result = await this.pool.query<MemorySearchCandidate>(MEMORY_SEARCH_SQL, [
-      scope.roomInstanceId, scope.includeRoom, scope.personaId, queryWords,
+      scope.roomInstanceId, scope.includeRoom, scope.personaId, queryWords, patterns,
     ]);
     return result.rows;
   }
