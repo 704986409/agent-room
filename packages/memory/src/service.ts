@@ -26,8 +26,10 @@ export type MemoryServiceErrorCode =
 /** Trusted context injected by the server after resolving the caller's seat. */
 export interface TrustedMemoryCaller {
   readonly roomInstanceId: string;
-  readonly personaId: string;
   readonly identityType: MemoryIdentityType;
+  readonly personaId?: string;
+  /** Stable server-assigned identity for room_member / room_owner callers. */
+  readonly principalId?: string;
 }
 
 /** P6 adapter seam: verify an opaque seatKey and return server-stored seat context. */
@@ -104,28 +106,30 @@ function isIdentityType(value: unknown): value is MemoryIdentityType {
 }
 
 function validateCaller(caller: TrustedMemoryCaller): TrustedMemoryCaller {
+  const validPersona = typeof caller?.personaId === 'string' && Boolean(caller.personaId.trim());
+  const validPrincipal = typeof caller?.principalId === 'string' && Boolean(caller.principalId.trim());
   if (!caller || typeof caller !== 'object'
     || typeof caller.roomInstanceId !== 'string'
     || !UUID_PATTERN.test(caller.roomInstanceId)
-    || typeof caller.personaId !== 'string'
-    || !caller.personaId.trim()
-    || !isIdentityType(caller.identityType)) {
+    || !isIdentityType(caller.identityType)
+    || (caller.identityType === 'persona'
+      ? !validPersona
+      : !validPrincipal || caller.personaId !== undefined)) {
     throw new MemoryForbiddenError('A trusted Room seat context is required.');
   }
   // Copy only server-derived fields. Agent-controlled name, role, or IDs are never read.
   return {
     roomInstanceId: caller.roomInstanceId,
-    personaId: caller.personaId,
     identityType: caller.identityType,
+    ...(caller.identityType === 'persona' ? { personaId: caller.personaId } : { principalId: caller.principalId }),
   };
 }
 
 function identityFor(caller: TrustedMemoryCaller): MemoryIdentity {
   if (caller.identityType === 'persona') {
-    return { type: 'persona', id: caller.personaId, personaId: caller.personaId };
+    return { type: 'persona', id: caller.personaId!, personaId: caller.personaId! };
   }
-  // The identity type is server-derived; the associated seat Persona is its stable caller key.
-  return { type: caller.identityType, id: caller.personaId };
+  return { type: caller.identityType, id: caller.principalId! };
 }
 
 function scopeFor(caller: TrustedMemoryCaller, kind: MemoryScopeKind): MemoryScope {
@@ -133,7 +137,7 @@ function scopeFor(caller: TrustedMemoryCaller, kind: MemoryScopeKind): MemorySco
     if (caller.identityType !== 'persona') {
       throw new MemoryForbiddenError('Persona memory requires the matching Persona seat.');
     }
-    return { roomInstanceId: caller.roomInstanceId, scope: 'persona', personaId: caller.personaId };
+    return { roomInstanceId: caller.roomInstanceId, scope: 'persona', personaId: caller.personaId! };
   }
   if (kind === 'room') return { roomInstanceId: caller.roomInstanceId, scope: 'room' };
   throw new TypeError('Invalid memory scope.');
@@ -287,7 +291,7 @@ export class MemoryService {
       const trusted = validateCaller(caller);
       const scopes: MemoryScope[] = [{ roomInstanceId: trusted.roomInstanceId, scope: 'room' }];
       if (trusted.identityType === 'persona') {
-        scopes.push({ roomInstanceId: trusted.roomInstanceId, scope: 'persona', personaId: trusted.personaId });
+        scopes.push({ roomInstanceId: trusted.roomInstanceId, scope: 'persona', personaId: trusted.personaId! });
       }
       const pages = await Promise.all(scopes.map(scope =>
         this.repository.listEntries(scope, { limit: 100, offset: 0 }),

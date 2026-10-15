@@ -20,6 +20,7 @@
 // error where it expected an instruction, which is exactly the kind of result
 // that makes a model stop calling tools.
 
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { generateCode } from '@agent-room/shared';
 import type { Message, Participant, Room, RoomReport } from '@agent-room/shared';
 import {
@@ -349,23 +350,68 @@ export async function joinRoom(
   options: {
     hostKey?: string;
     seatKey?: string;
+    personaId?: string;
     priorIdentity?: { name: string; client: 'web' | 'cc' };
   } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
   return guarded(async () => {
     const current = await storeGetRoom(client.store, code);
-    if (participant.name.trim().toLowerCase() === current.createdBy.trim().toLowerCase()) {
+    const isHostClaim = participant.name.trim().toLowerCase() === current.createdBy.trim().toLowerCase();
+    if (isHostClaim) {
       await verifyHostKey(client.store, code, options.hostKey);
     }
 
-    const result = await storeJoinRoom(client.store, code, participant, {
+    const previous = current.participants.find(p => p.name === participant.name && p.client === participant.client);
+    const validResume = Boolean(previous?.seatKeyHash && options.seatKey
+      && seatKeyMatches(previous.seatKeyHash, options.seatKey));
+    if (validResume && options.personaId !== undefined
+      && options.personaId !== previous?.memoryPersonaId) {
+      throw new RemoteRoomApiError('The seat identity cannot be changed during resume.', 403, 'seat_identity_mismatch');
+    }
+
+    const roomInstanceId = current.roomInstanceId ?? randomUUID();
+    const seatKey = randomBytes(32).toString('base64url');
+    const personaId = validResume ? previous?.memoryPersonaId : options.personaId;
+    if (personaId !== undefined && (!personaId.trim() || [...personaId].length > 128)) {
+      throw new RemoteRoomApiError('Invalid Persona ID.', 400, 'invalid_persona_id');
+    }
+    const identityType = personaId
+      ? 'persona'
+      : isHostClaim ? 'room_owner' : 'room_member';
+    const principalId = identityType === 'room_owner' ? roomInstanceId : validResume
+      ? previous?.memoryPrincipalId ?? randomUUID()
+      : randomUUID();
+    const boundParticipant: Participant = {
+      ...participant,
+      ...(validResume && previous ? { name: previous.name } : {}),
+      seatKeyHash: hashSeatKey(seatKey),
+      memoryIdentityType: identityType,
+      memoryPrincipalId: principalId,
+      ...(personaId ? { memoryPersonaId: personaId } : {}),
+      ...(identityType === 'room_owner' ? { memoryIsRoomOwner: true } : {}),
+    };
+
+    const result = await storeJoinRoom(client.store, code, boundParticipant, {
       ...(options.hostKey ? { hostKey: options.hostKey } : {}),
-      ...(options.seatKey ? { seatKey: options.seatKey } : {}),
-      priorIdentity:
-        options.priorIdentity ?? { name: participant.name, client: 'cc' as const },
+      priorIdentity: validResume
+        ? { name: previous!.name, client: previous!.client }
+        : previous && !previous.seatKeyHash
+          ? { name: previous.name, client: previous.client }
+          : options.priorIdentity,
     });
-    return result as Room & { participant: Participant; seatKey?: string };
+    return { ...result, seatKey } as Room & { participant: Participant; seatKey: string };
   });
+}
+
+function hashSeatKey(seatKey: string): string {
+  return createHash('sha256').update(seatKey, 'utf8').digest('hex');
+}
+
+function seatKeyMatches(storedHash: string, seatKey: string): boolean {
+  if (!/^[0-9a-f]{64}$/i.test(storedHash) || typeof seatKey !== 'string' || !seatKey) return false;
+  const expected = Buffer.from(storedHash, 'hex');
+  const actual = Buffer.from(hashSeatKey(seatKey), 'hex');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<Message[]> {

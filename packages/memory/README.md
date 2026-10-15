@@ -1,10 +1,10 @@
 # Agent Memory PostgreSQL package
 
-This package owns the Memory V1 PostgreSQL schema, repository, business service, search service, and short-lived search-session storage. It stores only Memory tables; it does not migrate, recreate, or reference `agent_room_rooms`. Room access must be validated by the calling adapter against the current Room and trusted member context. MCP integration remains a later phase.
+This package owns the Memory V1 PostgreSQL schema, repository, business service, search service, Brief, and short-lived session storage. It stores only Memory tables; it does not migrate, recreate, or reference `agent_room_rooms`. The API adapter resolves Room membership from a server-issued seatKey before it creates a trusted Memory caller.
 
 ## Business service (P2)
 
-`MemoryService` is the business boundary above `MemoryRepository`. Every operation receives a server-injected `TrustedMemoryCaller` containing `roomInstanceId`, `personaId`, and `identityType`; request payloads do not supply caller IDs, Room IDs, Persona IDs, names, or roles. The `MemoryCallerContextResolver` seam is reserved for the P6 adapter to validate a seatKey against server-stored seat bindings. The service does not treat a display name or role string as identity.
+`MemoryService` is the business boundary above `MemoryRepository`. Every operation receives a server-injected `TrustedMemoryCaller` containing `roomInstanceId`, `identityType`, and either `personaId` or `principalId`; request payloads do not supply caller IDs, Room IDs, Persona IDs, names, or roles. The MCP adapter hashes the supplied seatKey and matches it to the server-stored Room seat before building this caller. The service does not treat a display name or role string as identity.
 
 - Persona read/list/write operations use the caller's Persona scope; only `identityType: 'persona'` can access that private scope. An out-of-scope read returns the same `NOT_FOUND` error as an unknown ID, and a list returns no rows.
 - Room reads/lists are limited to the caller's current `roomInstanceId`. Room create/update/delete operations create a Proposal and return `PENDING_REVIEW`; they never write shared entries directly.
@@ -13,7 +13,17 @@ This package owns the Memory V1 PostgreSQL schema, repository, business service,
 - `MemoryCorePrinciplesReader` is a read-only adapter seam for developer-owned file/configuration. The service has no API to create, update, or delete core principles.
 - Errors use stable codes (`NOT_FOUND`, `INVALID_INPUT`, `FORBIDDEN`, `PENDING_REVIEW`, `REVIEW_REQUIRED`, `CONFLICT`, `STORAGE_ERROR`). Driver and SQL details are replaced with a generic storage error.
 
-The trusted caller currently requires a Persona ID, including when `identityType` is a server-verified Room member/owner. A host path without a seat Persona must receive a separately trusted principal mapping in a later phase; the service will not synthesize one from a name or role.
+Non-Persona callers use the server-assigned `principalId`; their context does not reuse or require a Persona ID. Persona IDs select a private scope only after the matching Room seatKey has been validated.
+
+## MCP seat and feature gate (P6)
+
+`room_create` and `room_join` issue 256-bit opaque seat keys. The Room record contains only each key's SHA-256 hash plus the server-owned Room instance, assigned name, optional Persona, identity type, and principal binding. A valid resume rotates the key and retains the existing identity; an invalid key cannot claim a stored seat. The old Room Code TTL is unchanged.
+
+The eight `memory_*` tools are listed only when `MEMORY_ENABLED=true` (or `1`) and `MEMORY_DATABASE_URL` or `DATABASE_URL` is configured. Every tool call supplies `code` as a Room locator and `seatKey` as the credential. Name, role, and Persona fields in memory tool arguments are ignored. Missing or invalid seat keys return the same `FORBIDDEN` code. PostgreSQL and Redis errors map to `STORAGE_ERROR` and do not prevent regular Room tools from running.
+
+Join-time Brief loading uses the new seat key as the session key in the existing Redis one-time marker. A repeated `memory_brief` call on that key returns `loaded: false`; a newly issued key gets a new Brief. `room_listen` never carries a Brief. A Brief query reads only Room-shared records and the current Persona's private records.
+
+MCP review maps the server-configured `MEMORY_REVIEWER_ROLE` (default `project-analyst`) to a Room participant with a server-issued seat binding and recent server-recorded activity. When none is available, `ReviewerPolicy` can select the verified Room owner seat. The review notification is an adapter result; it does not write directly to the Room transcript.
 
 ## Search and bounded reads (P3)
 

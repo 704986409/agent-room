@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message, Participant, Room } from '@agent-room/shared';
+import { createHash, randomUUID } from 'node:crypto';
 import { HostNameTakenError } from '@agent-room/upstash-client';
 import type { RemoteRoomClient } from './_mcpRoomClient.js';
 
@@ -146,15 +147,54 @@ describe('_mcpRoomClient HTTP helpers', () => {
 
   it('passes priorIdentity through to the storage join', async () => {
     const priorIdentity = { name: 'Codex Web', client: 'web' as const };
-    await joinRoom(client, room.code, participant, {
+    const result = await joinRoom(client, room.code, participant, {
       hostKey: 'host-key',
       seatKey: 'seat-key',
       priorIdentity,
     });
-    expect(storeMocks.joinRoom).toHaveBeenCalledWith(client.store, room.code, participant, {
+    const [storedClient, storedCode, storedParticipant, storedOptions] = storeMocks.joinRoom.mock.calls[0]!;
+    expect(storedClient).toBe(client.store);
+    expect(storedCode).toBe(room.code);
+    expect(storedParticipant).toMatchObject({
+      ...participant,
+      memoryIdentityType: 'room_member',
+      memoryPrincipalId: expect.any(String),
+      seatKeyHash: expect.any(String),
+    });
+    expect(storedParticipant.seatKeyHash).toBe(createHash('sha256').update(result.seatKey!).digest('hex'));
+    expect(storedOptions).toMatchObject({
       hostKey: 'host-key',
-      seatKey: 'seat-key',
       priorIdentity,
+    });
+    expect(storedOptions).not.toHaveProperty('roomInstanceId');
+    expect(storedOptions).not.toHaveProperty('seatKey');
+    expect(result.seatKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
+  it('rotates a valid returning seat key while preserving its stored Persona', async () => {
+    const oldKey = 'old-server-issued-seat-key';
+    const previous = {
+      ...participant,
+      memoryIdentityType: 'persona' as const,
+      memoryPersonaId: 'persona-stable',
+      memoryPrincipalId: randomUUID(),
+      seatKeyHash: createHash('sha256').update(oldKey).digest('hex'),
+    };
+    storeMocks.getRoom.mockResolvedValueOnce({ ...room, roomInstanceId: randomUUID(), participants: [previous] });
+    storeMocks.joinRoom.mockImplementationOnce(async (_client, _code, next) => ({
+      ...room,
+      roomInstanceId: randomUUID(),
+      participant: next,
+      participants: [next],
+    }));
+
+    const result = await joinRoom(client, room.code, participant, { seatKey: oldKey });
+    expect(result.seatKey).not.toBe(oldKey);
+    expect(storeMocks.joinRoom.mock.calls[0]![2]).toMatchObject({
+      memoryIdentityType: 'persona', memoryPersonaId: 'persona-stable',
+    });
+    expect(storeMocks.joinRoom.mock.calls[0]![3]).toMatchObject({
+      priorIdentity: { name: participant.name, client: 'cc' },
     });
   });
 

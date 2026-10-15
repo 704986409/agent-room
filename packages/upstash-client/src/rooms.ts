@@ -323,6 +323,7 @@ export async function joinRoom(
     const isOwnerReclaim = Boolean(
       options.authedUserId && current.ownerId && options.authedUserId === current.ownerId,
     );
+    const roomInstanceId = current.roomInstanceId ?? generateRoomInstanceId();
     // Host claim: exact/case-insensitive createdBy match, or signed-in room owner.
     const isClaimingHost = isOwnerReclaim || namesEqualIgnoreCase(participant.name, current.createdBy);
 
@@ -379,6 +380,10 @@ export async function joinRoom(
     if (next.canSpeak === undefined) {
       next = { ...next, canSpeak: true };
     }
+    // The owner principal shares the Room's existing P5 identity on migrated Rooms.
+    if (next.memoryIsRoomOwner === true) {
+      next = { ...next, memoryPrincipalId: roomInstanceId };
+    }
     // Assigned AFTER the canSpeak materialization so the returned
     // `outParticipant` reflects the final stored row, including its
     // approval state (callers like the MCP room_join handler look at this
@@ -396,7 +401,11 @@ export async function joinRoom(
       return !(p.name === next.name && p.client === next.client);
     });
 
-    return { ...current, participants: [...keep, next] };
+    return {
+      ...current,
+      roomInstanceId,
+      participants: [...keep, next],
+    };
   });
 
   return { ...room, participant: outParticipant };

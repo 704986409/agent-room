@@ -55,6 +55,8 @@ import {
   weakLoopListenHint,
   type HttpHarness,
 } from './_mcpHarness.js';
+import { dispatchMemoryTool, isMemoryEnabled, isMemoryToolName, loadJoinBrief } from './_memoryTools.js';
+import type { MemoryToolDependencies } from './_memoryTools.js';
 
 function publicBaseUrl(): string {
   return process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || 'https://www.agent-room.com';
@@ -644,6 +646,7 @@ export const CORE_TOOLS: ToolDef[] = [
         topic: { type: 'string', description: 'Meeting topic' },
         name: NAME_PROP,
         role: { type: 'string', description: 'Your role (optional)' },
+        personaId: { type: 'string', description: 'Optional stable Persona identity for a new seat. A valid seatKey resume keeps its stored Persona.' },
       },
     },
   },
@@ -658,8 +661,9 @@ export const CORE_TOOLS: ToolDef[] = [
         code: CODE_PROP,
         name: NAME_PROP,
         role: { type: 'string', description: 'Your role (optional)' },
+        personaId: { type: 'string', description: 'Optional stable Persona identity for a new seat. A valid seatKey resume keeps its stored Persona.' },
         hostKey: { type: 'string', description: 'Only when rejoining as the room creator: the hostKey from room_create' },
-        seatKey: { type: 'string', description: 'The seatKey a previous room_join returned. Send it to get your old seat back after a restart; without it a room already holding your name gives you a numbered one ("Claude (2)").' },
+        seatKey: { type: 'string', description: 'The opaque server-issued key from a previous room_join. Send it to resume the same seat; a successful resume rotates the key. Keep it private.' },
       },
     },
   },
@@ -890,6 +894,74 @@ export const FULL_TOOLS: ToolDef[] = [
   },
 ];
 
+const MEMORY_TOOLS: ToolDef[] = [
+  {
+    name: 'memory_search',
+    description: 'Search this verified Room seat’s shared memories and, for a Persona seat, its private memories. Supply keywords and a requestId; use the returned searchSessionId for at most one retry. Every call requires the private seatKey from room_join.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'keywords', 'requestId'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' },
+      keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 64 } },
+      searchSessionId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
+    } },
+    outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_read',
+    description: 'Read an authorized memory body in bounded cursor pages. Requires the private seatKey from room_join.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'id'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, id: { type: 'string' }, cursor: { type: 'string' }, limit: { type: 'number' },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_write',
+    description: 'Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'title', 'preview', 'content', 'searchText', 'requestId'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
+      title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
+      sourceMessageId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_update',
+    description: 'Update a verified Persona memory directly or submit a pending Room update proposal. Requires target id and requestId; caller identity comes only from seatKey.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'id', 'requestId'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] }, id: { type: 'string' },
+      title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
+      sourceMessageId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_delete',
+    description: 'Delete a verified Persona memory or create a pending Room deletion proposal. Requires target id and requestId; caller identity comes only from seatKey.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'id', 'requestId'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] }, id: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_list',
+    description: 'List the verified caller’s Room or own Persona directory without full bodies. Requires the private seatKey from room_join.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
+      limit: { type: 'number' }, offset: { type: 'number' },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_review',
+    description: 'List pending proposals or approve/reject one when this seatKey resolves to the configured available reviewer or verified Room owner. Self-review is forbidden.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey', 'action'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' }, action: { type: 'string', enum: ['list', 'approve', 'reject'] },
+      proposalId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 }, limit: { type: 'number' }, offset: { type: 'number' },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+  {
+    name: 'memory_brief',
+    description: 'Return the structured Room plus caller Persona Brief at most once per seatKey session. Normal injection happens on room_join; this is a secured one-time recovery path.',
+    inputSchema: { type: 'object', required: ['code', 'seatKey'], properties: {
+      code: CODE_PROP, seatKey: { type: 'string' },
+    } }, outputSchema: { type: 'object', additionalProperties: true },
+  },
+];
+
 /**
  * The tool list, tailored to the caller where that matters.
  *
@@ -901,7 +973,8 @@ export const FULL_TOOLS: ToolDef[] = [
  * unchanged.
  */
 export function listTools(profile: McpProfile, harness?: HttpHarness): ToolDef[] {
-  const tools = profile === 'full' ? [...CORE_TOOLS, ...FULL_TOOLS] : CORE_TOOLS;
+  const base = profile === 'full' ? [...CORE_TOOLS, ...FULL_TOOLS] : [...CORE_TOOLS];
+  const tools = isMemoryEnabled() ? [...base, ...MEMORY_TOOLS] : base;
   if (!isWeakLoop(harness)) return tools;
   const cap = harness!.maxListenMs!;
   return tools.map((t) => {
@@ -1000,6 +1073,7 @@ export async function callTool(
   rawName: string,
   rawArgs: Record<string, unknown>,
   harness?: HttpHarness,
+  memoryDependencies?: MemoryToolDependencies,
 ): Promise<McpToolResult> {
   const { name, args } = resolveAlias(rawName, rawArgs as Record<string, any>);
   const available = new Set(listTools(profile).map(t => t.name));
@@ -1015,7 +1089,7 @@ export async function callTool(
     };
   }
   try {
-    return await dispatch(client, name, args, harness, profile);
+    return await dispatch(client, name, args, harness, profile, memoryDependencies);
   } catch (e) {
     if (e instanceof RemoteRoomApiError) {
       if (e.code === 'MutedError') {
@@ -1077,7 +1151,9 @@ async function dispatch(
   a: Record<string, any>,
   harness?: HttpHarness,
   profile: McpProfile = 'full',
+  memoryDependencies?: MemoryToolDependencies,
 ): Promise<McpToolResult> {
+  if (isMemoryToolName(name)) return ok(await dispatchMemoryTool(client, name, a, memoryDependencies));
   switch (name) {
     case 'room_create': {
       const created = await createRoom(client, { topic: a.topic, createdBy: a.name });
@@ -1091,7 +1167,10 @@ async function dispatch(
         joinedAt: Date.now(),
         lastSeenAt: Date.now(),
       };
-      await joinRoom(client, code, participant, { hostKey: created.hostKey });
+      const hostSeat = await joinRoom(client, code, participant, {
+        hostKey: created.hostKey,
+        personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
+      });
       const msgs = await listMessages(client, code, 0);
       return ok({
         code,
@@ -1100,6 +1179,7 @@ async function dispatch(
         cursor: msgs.length,
         nextAction: nextListenAction(code, msgs.length, a.name),
         hostKey: created.hostKey,
+        seatKey: hostSeat.seatKey,
         roleBrief: roleBriefFor(a.role ?? ''),
         hint: `Room created — share the joinUrl; keep the hostKey private. ${NEXT_LISTEN(code, msgs.length)} ${listenWindowHint(harness)}`,
       });
@@ -1116,12 +1196,14 @@ async function dispatch(
         lastSeenAt: Date.now(),
       };
       const before = await getRoom(client, a.code);
-      const reconnecting = before.participants.some(p => p.name === a.name && p.client === 'cc');
       const updated = await joinRoom(client, a.code, participant, {
         hostKey: typeof a.hostKey === 'string' && a.hostKey ? a.hostKey : undefined,
         seatKey: typeof a.seatKey === 'string' && a.seatKey ? a.seatKey : undefined,
+        personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
       });
       const finalName = updated.participant.name;
+      const reconnecting = finalName === a.name
+        && before.participants.some(p => p.name === finalName && p.client === 'cc');
       const myEntry = updated.participants.find(p => p.name === finalName && p.client === 'cc');
       const muted = myEntry?.canSpeak === false;
       if (!reconnecting && !muted) {
@@ -1143,6 +1225,10 @@ async function dispatch(
         undefined,
         finalName,
       );
+      let memoryBrief: Record<string, unknown> | undefined;
+      if (isMemoryEnabled()) {
+        memoryBrief = await loadJoinBrief(client, a.code, updated.seatKey!, memoryDependencies);
+      }
       return ok({
         code: a.code,
         topic: updated.topic,
@@ -1151,6 +1237,12 @@ async function dispatch(
         // Hand this back on your next room_join to keep this seat. Only this
         // caller ever sees it; the server stores a hash.
         seatKey: updated.seatKey,
+        ...(memoryBrief?.loaded === true ? {
+          memoryBrief: memoryBrief.brief,
+          memoryBriefEstimated: memoryBrief.estimated,
+          memoryBriefEstimatedTokens: memoryBrief.estimatedTokens,
+          memoryIds: memoryBrief.memoryIds,
+        } : memoryBrief?.code ? { memoryBriefError: memoryBrief.code } : {}),
         canSpeak: !muted,
         replyMode: updated.replyMode ?? 'open',
         participants: updated.participants.map(p => ({

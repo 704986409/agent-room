@@ -19,8 +19,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { createVpsApp, type VpsApp } from '../deploy/vps/server.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { Pool } from 'pg';
+import {
+  applyMemoryMigrations,
+  PostgresMemoryRepository,
+  RedisUrlCommandClient,
+} from '@agent-room/memory';
+import { createRemoteRoomClient } from './_mcpRoomClient.js';
+import { callTool, listTools } from './_mcpTools.js';
+import { createMemoryTestDependencies } from './_memoryTools.js';
 
 const REDIS_BASE = 'https://smoke.upstash.invalid';
+const initialMemoryEnabled = process.env.MEMORY_ENABLED;
+const initialMemoryDatabaseUrl = process.env.MEMORY_DATABASE_URL;
 process.env.UPSTASH_REDIS_REST_URL = REDIS_BASE;
 process.env.UPSTASH_REDIS_REST_TOKEN = 'smoke-token';
 process.env.SRH_WEB_URL = REDIS_BASE;
@@ -119,6 +131,8 @@ let vpsPort = 0;
 const clients: Client[] = [];
 
 beforeAll(async () => {
+  delete process.env.MEMORY_ENABLED;
+  delete process.env.MEMORY_DATABASE_URL;
   smokeKv = installFakeRedis();
   const mcpHandler = (await import('./mcp.js')).default;
 
@@ -152,6 +166,10 @@ afterAll(async () => {
   for (const c of clients) await c.close().catch(() => {});
   await vpsApp.close();
   await new Promise<void>(r => server.close(() => r()));
+  if (initialMemoryEnabled === undefined) delete process.env.MEMORY_ENABLED;
+  else process.env.MEMORY_ENABLED = initialMemoryEnabled;
+  if (initialMemoryDatabaseUrl === undefined) delete process.env.MEMORY_DATABASE_URL;
+  else process.env.MEMORY_DATABASE_URL = initialMemoryDatabaseUrl;
 });
 
 async function connect(asClient?: string): Promise<Client> {
@@ -165,8 +183,8 @@ async function connect(asClient?: string): Promise<Client> {
   return client;
 }
 
-function parsed(r: { content?: unknown }): Record<string, any> {
-  const content = r.content as { type: string; text: string }[];
+function parsed(value: unknown): Record<string, any> {
+  const content = (value as { content?: unknown })?.content as { type: string; text: string }[];
   return JSON.parse(content[0]!.text);
 }
 
@@ -776,4 +794,206 @@ describe('hosted MCP endpoint', () => {
     expect(serverless.status).toBe(501);
     expect((await serverless.json()).error).toBe('legacy_sse_requires_vps');
   }, 20_000);
+
+  it('runs seat-bound memory end to end through api/_mcpTools.callTool', async () => {
+    const databaseUrl = process.env.MEMORY_TEST_DATABASE_URL?.trim();
+    const redisUrl = process.env.MEMORY_TEST_REDIS_URL?.trim();
+    if (!databaseUrl) throw new Error('MEMORY_TEST_DATABASE_URL is required; MCP memory integration does not skip.');
+    if (!redisUrl) throw new Error('MEMORY_TEST_REDIS_URL is required; MCP memory integration does not skip.');
+
+    const previousMemoryEnabled = process.env.MEMORY_ENABLED;
+    const previousMemoryDatabaseUrl = process.env.MEMORY_DATABASE_URL;
+    const admin = new Pool({ connectionString: databaseUrl });
+    const schema = `memory_mcp_${process.pid}_${Date.now().toString(36)}`;
+    let scoped: Pool | undefined;
+    try {
+      const version = await admin.query<{ server_version_num: string }>('SHOW server_version_num');
+      const versionNumber = Number(version.rows[0]?.server_version_num);
+      if (versionNumber < 170000 || versionNumber >= 180000) {
+        throw new Error(`MEMORY_TEST_DATABASE_URL must point to PostgreSQL 17.x; found ${String(version.rows[0]?.server_version_num)}.`);
+      }
+      await admin.query(`CREATE SCHEMA ${schema}`);
+      scoped = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
+      await applyMemoryMigrations(scoped);
+      const dependencies = createMemoryTestDependencies(
+        () => PostgresMemoryRepository.fromPool(scoped!),
+        new RedisUrlCommandClient(redisUrl),
+      );
+      delete process.env.MEMORY_ENABLED;
+      delete process.env.MEMORY_DATABASE_URL;
+      expect(listTools('full').some(tool => tool.name.startsWith('memory_'))).toBe(false);
+      process.env.MEMORY_ENABLED = 'true';
+      process.env.MEMORY_DATABASE_URL = databaseUrl;
+      const listedMemoryTools = listTools('full').filter(tool => tool.name.startsWith('memory_'));
+      expect(listedMemoryTools).toHaveLength(8);
+      for (const tool of listedMemoryTools) {
+        const properties = (tool.inputSchema.properties ?? {}) as Record<string, unknown>;
+        expect(properties).not.toHaveProperty('name');
+        expect(properties).not.toHaveProperty('role');
+        expect(properties).not.toHaveProperty('personaId');
+      }
+
+      const roomClient = createRemoteRoomClient(undefined);
+      const invoke = async (name: string, args: Record<string, unknown>) =>
+        parsed(await callTool(roomClient, 'full', name, args, undefined, dependencies));
+      const host = await invoke('room_create', { topic: 'Memory isolation integration', name: 'Host' });
+      const code = String(host.code);
+      const hostSeatKey = String(host.seatKey);
+      expect(hostSeatKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const agentA = await invoke('room_join', {
+        code, name: 'Agent A', personaId: 'persona-alpha', role: 'builder',
+      });
+      const seatA = String(agentA.seatKey);
+      expect(agentA.memoryBriefEstimated).toBe(true);
+
+      const storedRoom = JSON.parse(smokeKv.get(`room:${code}`)!) as {
+        participants: { name: string; seatKeyHash?: string; memoryPersonaId?: string }[];
+        roomInstanceId?: string;
+      };
+      const storedA = storedRoom.participants.find(participant => participant.name === 'Agent A')!;
+      expect(storedRoom.roomInstanceId).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(storedA.seatKeyHash).toBe(createHash('sha256').update(seatA).digest('hex'));
+      expect(JSON.stringify(storedA)).not.toContain(seatA);
+      expect(storedA.memoryPersonaId).toBe('persona-alpha');
+
+      const privateWriteArgs = {
+        code, seatKey: seatA, scope: 'persona', title: 'Private alpha fact', preview: 'Alpha preview',
+        content: 'The private fact belongs to persona alpha.', searchText: 'alpha-private-fact',
+        requestId: `persona-write-${randomUUID()}`,
+      };
+      const privateWrite = await invoke('memory_write', privateWriteArgs);
+      expect(privateWrite.status).toBe('created');
+      const privateId = String(privateWrite.id);
+      const replay = await invoke('memory_write', privateWriteArgs);
+      expect(replay.id).toBe(privateId);
+
+      const samePersonaSeat = await invoke('room_join', {
+        code, name: 'Agent A new seat', personaId: 'persona-alpha', role: 'builder',
+      });
+      const samePersonaKey = String(samePersonaSeat.seatKey);
+      expect((await invoke('memory_read', { code, seatKey: samePersonaKey, id: privateId })).content)
+        .toContain('private fact belongs to persona alpha');
+      const otherPersonaSeat = await invoke('room_join', {
+        code, name: 'Agent B', personaId: 'persona-beta', role: 'reviewer',
+      });
+      const otherPersonaKey = String(otherPersonaSeat.seatKey);
+      expect(otherPersonaSeat.memoryBrief).not.toContain(privateId);
+      const analyst = await invoke('room_join', {
+        code, name: 'Project Analyst', personaId: 'persona-reviewer', role: 'project-analyst',
+      });
+      const analystKey = String(analyst.seatKey);
+      expect(await invoke('memory_read', {
+        code, seatKey: otherPersonaKey, id: privateId, personaId: 'persona-alpha', name: 'Agent A', role: 'project-analyst',
+      })).toMatchObject({ code: 'NOT_FOUND' });
+      expect(await invoke('memory_list', { code, seatKey: otherPersonaKey, scope: 'persona' }))
+        .toMatchObject({ items: [] });
+      expect(await invoke('memory_read', { code, seatKey: 'invalid-seat-key', id: privateId }))
+        .toMatchObject({ code: 'FORBIDDEN' });
+
+      const otherRoomHost = await invoke('room_create', { topic: 'Different Room', name: 'Other Host' });
+      const otherRoomCode = String(otherRoomHost.code);
+      const samePersonaOtherRoom = await invoke('room_join', {
+        code: otherRoomCode, name: 'Agent A', personaId: 'persona-alpha',
+      });
+      const storedOtherRoom = JSON.parse(smokeKv.get(`room:${otherRoomCode}`)!) as { roomInstanceId?: string };
+      expect(storedOtherRoom.roomInstanceId).not.toBe(storedRoom.roomInstanceId);
+      expect(await invoke('memory_read', {
+        code: otherRoomCode, seatKey: String(samePersonaOtherRoom.seatKey), id: privateId,
+      })).toMatchObject({ code: 'NOT_FOUND' });
+
+      const sharedWrite = await invoke('memory_write', {
+        code, seatKey: seatA, scope: 'room', title: 'Shared decision', preview: 'Shared preview',
+        content: 'The Room decided to retain the shared index.', searchText: 'shared-index-decision',
+        sourceMessageId: 'message-17', requestId: `shared-write-${randomUUID()}`,
+      });
+      expect(sharedWrite.code).toBe('PENDING_REVIEW');
+      expect(sharedWrite.notification).toMatchObject({
+        kind: 'mention', recipient: { type: 'persona', id: 'persona-reviewer' },
+      });
+      const proposalId = String(sharedWrite.proposalId);
+      expect(await invoke('memory_review', { code, seatKey: hostSeatKey, action: 'list' }))
+        .toMatchObject({ code: 'FORBIDDEN' });
+      expect(await invoke('memory_review', {
+        code, seatKey: seatA, action: 'approve', proposalId, requestId: `self-review-${randomUUID()}`,
+      })).toMatchObject({ code: 'FORBIDDEN' });
+      const pending = await invoke('memory_review', { code, seatKey: analystKey, action: 'list' });
+      expect(pending.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: proposalId })]));
+      const approved = await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId, requestId: `review-create-${randomUUID()}`,
+      });
+      expect(approved.status).toBe('approved');
+      const sharedListed = await invoke('memory_search', {
+        code, seatKey: otherPersonaKey, keywords: ['shared-index-decision'], requestId: `search-shared-${randomUUID()}`,
+      });
+      expect(sharedListed.found).toBe(true);
+      const storedSharedId = String((sharedListed.results as { id: string }[])[0]!.id);
+      expect(storedSharedId).toBeTruthy();
+
+      const updateProposal = await invoke('memory_update', {
+        code, seatKey: seatA, scope: 'room', id: storedSharedId, preview: 'Updated shared preview',
+        content: 'The Room decided to retain the shared index after review.',
+        searchText: 'shared-index-decision updated-shared-index', requestId: `shared-update-${randomUUID()}`,
+      });
+      expect(updateProposal.code).toBe('PENDING_REVIEW');
+      const updateDecision = await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId: String(updateProposal.proposalId),
+        requestId: `review-update-${randomUUID()}`,
+      });
+      expect(updateDecision.status).toBe('approved');
+
+      const deleteProposal = await invoke('memory_delete', {
+        code, seatKey: seatA, scope: 'room', id: storedSharedId, requestId: `shared-delete-${randomUUID()}`,
+      });
+      expect(deleteProposal.code).toBe('PENDING_REVIEW');
+      const deleteDecision = await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId: String(deleteProposal.proposalId),
+        requestId: `review-delete-${randomUUID()}`,
+      });
+      expect(deleteDecision.status).toBe('approved');
+
+      const reconnect = await invoke('room_join', {
+        code, name: 'Agent A', seatKey: seatA, personaId: 'persona-alpha', role: 'builder',
+      });
+      const rotatedKey = String(reconnect.seatKey);
+      expect(rotatedKey).not.toBe(seatA);
+      expect(reconnect.memoryBrief).toContain(privateId);
+      expect(await invoke('memory_read', { code, seatKey: seatA, id: privateId }))
+        .toMatchObject({ code: 'FORBIDDEN' });
+      expect(await invoke('memory_brief', { code, seatKey: rotatedKey })).toMatchObject({ loaded: false });
+      expect((await invoke('room_listen', { code, name: 'Agent A', since: 0, timeoutMs: 0 })).memoryBrief).toBeUndefined();
+
+      const firstMiss = await invoke('memory_search', {
+        code, seatKey: otherPersonaKey, keywords: ['no-such-memory-term'], requestId: `miss-one-${randomUUID()}`,
+      });
+      expect(firstMiss).toMatchObject({ code: 'NOT_FOUND', retryAllowed: true });
+      const secondMiss = await invoke('memory_search', {
+        code, seatKey: otherPersonaKey, keywords: ['still-no-such-term'],
+        searchSessionId: String(firstMiss.searchSessionId), requestId: `miss-two-${randomUUID()}`,
+      });
+      expect(secondMiss).toMatchObject({ code: 'NOT_FOUND', retryAllowed: false });
+      const thirdMiss = await invoke('memory_search', {
+        code, seatKey: otherPersonaKey, keywords: ['third-attempt'],
+        searchSessionId: String(firstMiss.searchSessionId), requestId: `miss-three-${randomUUID()}`,
+      });
+      expect(thirdMiss).toMatchObject({ code: 'CONFLICT' });
+
+      const failedDependencies = createMemoryTestDependencies(
+        async () => { throw new Error('private database connection detail'); },
+        dependencies.redis,
+      );
+      const storageFailure = parsed(await callTool(
+        roomClient, 'full', 'memory_read', { code, seatKey: rotatedKey, id: privateId }, undefined, failedDependencies,
+      ));
+      expect(storageFailure).toMatchObject({ code: 'STORAGE_ERROR' });
+      expect(JSON.stringify(storageFailure)).not.toContain('private database connection detail');
+    } finally {
+      if (previousMemoryEnabled === undefined) delete process.env.MEMORY_ENABLED;
+      else process.env.MEMORY_ENABLED = previousMemoryEnabled;
+      if (previousMemoryDatabaseUrl === undefined) delete process.env.MEMORY_DATABASE_URL;
+      else process.env.MEMORY_DATABASE_URL = previousMemoryDatabaseUrl;
+      await scoped?.end();
+      await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await admin.end();
+    }
+  }, 120_000);
 });

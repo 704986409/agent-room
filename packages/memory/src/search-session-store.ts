@@ -3,8 +3,9 @@ import type { MemorySearchCandidate, MemoryIdentityType } from './types.js';
 
 export interface MemorySearchBinding {
   readonly roomInstanceId: string;
-  readonly personaId: string;
   readonly identityType: MemoryIdentityType;
+  readonly personaId?: string;
+  readonly principalId?: string;
 }
 
 export type MemorySearchResponse =
@@ -168,8 +169,9 @@ function parseScriptResult(value: unknown): SearchSessionInspection | SearchSess
 function bindingHash(binding: MemorySearchBinding): string {
   const canonical = JSON.stringify({
     roomInstanceId: binding.roomInstanceId,
-    personaId: binding.personaId,
     identityType: binding.identityType,
+    ...(binding.personaId ? { personaId: binding.personaId } : {}),
+    ...(binding.principalId ? { principalId: binding.principalId } : {}),
   });
   return createHash('sha256').update(canonical).digest('hex');
 }

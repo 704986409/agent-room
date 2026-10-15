@@ -28,6 +28,16 @@ export interface Participant {
   // Present only after a signed fleet Agent Card has been verified. This is
   // part of the room document so every RoomPersistence adapter retains it.
   authenticatedIdentity?: AuthenticatedMemberIdentity;
+  /** Server-issued memory seat binding. Only the SHA-256 hash of the opaque key is persisted. */
+  seatKeyHash?: string;
+  /** Optional stable Persona selected at seat creation; never used without a valid seatKey. */
+  memoryPersonaId?: string;
+  /** Server-assigned principal ID for non-Persona memory identities. */
+  memoryPrincipalId?: string;
+  /** Server-derived memory identity category, stored with the Room seat. */
+  memoryIdentityType?: 'persona' | 'room_member' | 'room_owner';
+  /** True only for a seat that passed the Room hostKey check. */
+  memoryIsRoomOwner?: boolean;
 }
 
 // How agent responses are coordinated in this room.

@@ -41,7 +41,9 @@ function trustedCaller(
   personaId: string,
   identityType: TrustedMemoryCaller['identityType'] = 'persona',
 ): TrustedMemoryCaller {
-  return { roomInstanceId, personaId, identityType };
+  return identityType === 'persona'
+    ? { roomInstanceId, personaId, identityType }
+    : { roomInstanceId, principalId: personaId, identityType };
 }
 
 function resultId(result: MemoryServiceMutationResult): string {

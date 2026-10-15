@@ -28,7 +28,9 @@ function content(overrides: Partial<MemoryContent> = {}): MemoryContent {
 }
 
 function caller(roomInstanceId: string, personaId: string, identityType: TrustedMemoryCaller['identityType'] = 'persona') {
-  return { roomInstanceId, personaId, identityType } satisfies TrustedMemoryCaller;
+  return identityType === 'persona'
+    ? { roomInstanceId, personaId, identityType } satisfies TrustedMemoryCaller
+    : { roomInstanceId, principalId: personaId, identityType } satisfies TrustedMemoryCaller;
 }
 
 describe('Agent Memory P3 search with PostgreSQL 17 and Redis', () => {

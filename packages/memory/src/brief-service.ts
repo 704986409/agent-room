@@ -32,16 +32,20 @@ export const MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET = 1_800;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function validateCaller(caller: TrustedMemoryCaller): TrustedMemoryCaller {
+  const hasPersona = typeof caller?.personaId === 'string' && Boolean(caller.personaId.trim());
+  const hasPrincipal = typeof caller?.principalId === 'string' && Boolean(caller.principalId.trim());
   if (!caller || typeof caller !== 'object'
     || typeof caller.roomInstanceId !== 'string' || !UUID_PATTERN.test(caller.roomInstanceId)
-    || typeof caller.personaId !== 'string' || !caller.personaId.trim()
-    || !['persona', 'room_member', 'room_owner'].includes(caller.identityType)) {
+    || !['persona', 'room_member', 'room_owner'].includes(caller.identityType)
+    || (caller.identityType === 'persona'
+      ? !hasPersona
+      : !hasPrincipal || caller.personaId !== undefined)) {
     throw new MemoryForbiddenError('A trusted Room seat context is required.');
   }
   return {
     roomInstanceId: caller.roomInstanceId,
-    personaId: caller.personaId,
     identityType: caller.identityType,
+    ...(caller.identityType === 'persona' ? { personaId: caller.personaId } : { principalId: caller.principalId }),
   };
 }
 
@@ -162,7 +166,8 @@ export class MemoryBriefService {
 
       const binding: MemoryBriefBinding = {
         roomInstanceId: trusted.roomInstanceId,
-        personaId: trusted.personaId,
+        ...(trusted.personaId ? { personaId: trusted.personaId } : {}),
+        ...(trusted.principalId ? { principalId: trusted.principalId } : {}),
         sessionKey: key,
       };
       if (await this.sessions.hasLoaded(binding)) return alreadyLoaded();

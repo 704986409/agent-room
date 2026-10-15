@@ -51,25 +51,29 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function trustedCaller(value: TrustedMemoryCaller): TrustedMemoryCaller {
+  const hasPersona = typeof value?.personaId === 'string' && Boolean(value.personaId.trim());
+  const hasPrincipal = typeof value?.principalId === 'string' && Boolean(value.principalId.trim());
   if (!isRecord(value)
     || typeof value.roomInstanceId !== 'string'
     || !UUID_PATTERN.test(value.roomInstanceId)
-    || typeof value.personaId !== 'string'
-    || !value.personaId.trim()
-    || !['persona', 'room_member', 'room_owner'].includes(String(value.identityType))) {
+    || !['persona', 'room_member', 'room_owner'].includes(String(value.identityType))
+    || (value.identityType === 'persona'
+      ? !hasPersona
+      : !hasPrincipal || value.personaId !== undefined)) {
     throw new MemoryForbiddenError('A trusted Room seat context is required.');
   }
   return {
     roomInstanceId: value.roomInstanceId,
-    personaId: value.personaId,
     identityType: value.identityType as TrustedMemoryCaller['identityType'],
+    ...(value.identityType === 'persona' ? { personaId: value.personaId } : { principalId: value.principalId }),
   };
 }
 
 function bindingFor(caller: TrustedMemoryCaller): MemorySearchBinding {
   return {
     roomInstanceId: caller.roomInstanceId,
-    personaId: caller.personaId,
+    ...(caller.personaId ? { personaId: caller.personaId } : {}),
+    ...(caller.principalId ? { principalId: caller.principalId } : {}),
     identityType: caller.identityType,
   };
 }
@@ -77,7 +81,7 @@ function bindingFor(caller: TrustedMemoryCaller): MemorySearchBinding {
 function scopesFor(caller: TrustedMemoryCaller): MemoryScope[] {
   const scopes: MemoryScope[] = [{ roomInstanceId: caller.roomInstanceId, scope: 'room' }];
   if (caller.identityType === 'persona') {
-    scopes.push({ roomInstanceId: caller.roomInstanceId, scope: 'persona', personaId: caller.personaId });
+    scopes.push({ roomInstanceId: caller.roomInstanceId, scope: 'persona', personaId: caller.personaId! });
   }
   return scopes;
 }

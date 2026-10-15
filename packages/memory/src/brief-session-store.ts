@@ -3,8 +3,9 @@ import type { RedisCommandClient } from './search-session-store.js';
 
 export interface MemoryBriefBinding {
   readonly roomInstanceId: string;
-  readonly personaId: string;
   readonly sessionKey: string;
+  readonly personaId?: string;
+  readonly principalId?: string;
 }
 
 /** A short-lived distributed marker; process-local state is deliberately insufficient. */
@@ -21,8 +22,9 @@ export interface RedisMemoryBriefSessionStoreOptions {
 function keyFor(namespace: string, binding: MemoryBriefBinding): string {
   const canonical = JSON.stringify({
     roomInstanceId: binding.roomInstanceId,
-    personaId: binding.personaId,
     sessionKey: binding.sessionKey,
+    ...(binding.personaId ? { personaId: binding.personaId } : {}),
+    ...(binding.principalId ? { principalId: binding.principalId } : {}),
   });
   const digest = createHash('sha256').update(canonical).digest('hex');
   return `${namespace}:${digest}`;
