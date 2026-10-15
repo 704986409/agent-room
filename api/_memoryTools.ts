@@ -371,4 +371,3 @@ export function createMemoryTestDependencies(
 ): MemoryToolDependencies {
   return { openRepository, redis };
 }
-
