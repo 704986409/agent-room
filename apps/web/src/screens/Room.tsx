@@ -1450,6 +1450,7 @@ export function Room() {
                                 .catch(() => { /* best-effort */ });
                             }
                           } catch (e) {
+                            const { showToast } = await import('../components/Toast.js');
                             showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
                             setText(merged); // restore draft so the user can retry
                           }
