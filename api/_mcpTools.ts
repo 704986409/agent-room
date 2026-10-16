@@ -201,8 +201,10 @@ async function dispatch(
   // Memory tools declare an object outputSchema, so every result (including
   // error-code objects) must also carry structuredContent per the MCP spec.
   if (isMemoryToolName(name)) return ok(await dispatchMemoryTool(client, name, a, memoryDependencies), [], true);
-  // Same promise, same obligation, for every other tool that declares one:
-  // room_create, room_join, room_listen and room_task.
+  // Same promise, same obligation, for every other tool that declares one —
+  // which is now all of them, including the refusal objects a tool hands back
+  // instead of a payload (bad_request hints here, the API's own codes in
+  // remoteApiErrorResult).
   const structured = declaresObjectOutput(name);
   switch (name) {
     case 'room_create': {
@@ -322,7 +324,7 @@ async function dispatch(
     }
 
     case 'room_send':
-      return dispatchRoomSend(client, a, profile);
+      return dispatchRoomSend(client, a, profile, structured);
 
     case 'room_listen': {
       const since = typeof a.since === 'number' ? a.since : 0;
@@ -468,7 +470,7 @@ async function dispatch(
             ? 'Compact room view. Digest supersedes older listen dumps.'
             : 'Whole room still fits in recent; no digest yet.',
           ...(retro ? { retro } : {}),
-        });
+        }, [], structured);
       }
       const base = {
         topic: room.topic,
@@ -483,21 +485,21 @@ async function dispatch(
           exported: true,
           reportUrl: `${publicBaseUrl()}/r/${a.code}/report`,
           messageCount: report.messageCount,
-        });
+        }, [], structured);
       }
-      return ok(base);
+      return ok(base, [], structured);
     }
 
     case 'room_leave': {
       try {
         await removeParticipant(client, a.code, a.name, a.name);
       } catch { /* room may already be ended / expired */ }
-      return ok({ left: true, code: a.code });
+      return ok({ left: true, code: a.code }, [], structured);
     }
 
     case 'room_end': {
       await endRoom(client, a.code, a.name ?? '', typeof a.hostKey === 'string' ? a.hostKey : undefined);
-      return ok({ ended: true, code: a.code });
+      return ok({ ended: true, code: a.code }, [], structured);
     }
 
     case 'room_task':
@@ -507,7 +509,7 @@ async function dispatch(
       switch (a.action) {
         case 'register': {
           const err = requireFields(a, ['name', 'url']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return ok({ error: 'bad_request', hint: err }, [], structured);
           const body = await client.post<{ webhook: { id: string; url: string } }>({
             action: 'webhookSet',
             code: a.code,
@@ -523,20 +525,20 @@ async function dispatch(
               'On wake: room_listen({ since: <last cursor you processed>, timeoutMs: 0 }), reply via room_send, sleep again. ' +
               'Registering does NOT mean leave now: end your run only if you are actually going to sleep between events. ' +
               `If you are staying online, keep looping room_listen — the webhook is just a backstop. ${NEXT_LISTEN(a.code, 0).replace('since: 0', 'since: <your cursor>')}`,
-          });
+          }, [], structured);
         }
         case 'list': {
           const body = await client.post<{ webhooks: unknown[] }>({ action: 'webhookList', code: a.code });
-          return ok({ webhooks: body.webhooks });
+          return ok({ webhooks: body.webhooks }, [], structured);
         }
         case 'unregister': {
           const err = requireFields(a, ['name', 'id']);
-          if (err) return ok({ error: 'bad_request', hint: err });
+          if (err) return ok({ error: 'bad_request', hint: err }, [], structured);
           const body = await client.post<{ removed: boolean }>({ action: 'webhookDelete', code: a.code, requesterName: a.name, id: a.id });
-          return ok({ removed: body.removed });
+          return ok({ removed: body.removed }, [], structured);
         }
         default:
-          return ok({ error: 'bad_request', hint: 'room_webhook action must be one of: register, list, unregister.' });
+          return ok({ error: 'bad_request', hint: 'room_webhook action must be one of: register, list, unregister.' }, [], structured);
       }
     }
 
@@ -545,10 +547,10 @@ async function dispatch(
       switch (a.action) {
         case 'reactivate': {
           await reactivateRoom(client, a.code, a.name ?? '', hostKey);
-          return ok({ reactivated: true, code: a.code });
+          return ok({ reactivated: true, code: a.code }, [], structured);
         }
         case 'set_mode': {
-          if (!a.mode) return ok({ error: 'bad_request', hint: 'set_mode requires "mode" (open | sequential | moderator).' });
+          if (!a.mode) return ok({ error: 'bad_request', hint: 'set_mode requires "mode" (open | sequential | moderator).' }, [], structured);
           const config =
             a.mode === 'sequential' && a.leadAgentName
               ? { leadAgentName: a.leadAgentName, leadAgentClient: 'cc' }
@@ -556,7 +558,7 @@ async function dispatch(
                 ? { moderatorAgentName: a.moderatorAgentName, moderatorAgentClient: 'cc' }
                 : undefined;
           if (a.mode === 'moderator' && !a.moderatorAgentName) {
-            return ok({ error: 'bad_request', hint: 'moderator mode requires "moderatorAgentName".' });
+            return ok({ error: 'bad_request', hint: 'moderator mode requires "moderatorAgentName".' }, [], structured);
           }
           const body = await client.post<{ room: Room }>({
             action: 'setReplyMode',
@@ -566,10 +568,10 @@ async function dispatch(
             mode: a.mode,
             ...(config ? { config } : {}),
           });
-          return ok({ replyMode: body.room.replyMode, modeConfig: body.room.modeConfig });
+          return ok({ replyMode: body.room.replyMode, modeConfig: body.room.modeConfig }, [], structured);
         }
         case 'invoke': {
-          if (!a.targetName) return ok({ error: 'bad_request', hint: 'invoke requires "targetName".' });
+          if (!a.targetName) return ok({ error: 'bad_request', hint: 'invoke requires "targetName".' }, [], structured);
           // An MCP agent acting as Moderator has no hostKey, so the host-only
           // form left it with no way to hand anyone the floor — it could name
           // an assignee but never authorise one. The server already exposes
@@ -593,7 +595,7 @@ async function dispatch(
             target: { name: a.targetName, client: 'cc' },
             source,
           });
-          return ok({ invoked: body.added, targetName: a.targetName, as: source });
+          return ok({ invoked: body.added, targetName: a.targetName, as: source }, [], structured);
         }
         case 'skip': {
           const body = await client.post<{ skipped: unknown }>({
@@ -602,10 +604,10 @@ async function dispatch(
             requesterName: a.name,
             hostKey,
           });
-          return ok({ skipped: body.skipped });
+          return ok({ skipped: body.skipped }, [], structured);
         }
         default:
-          return ok({ error: 'bad_request', hint: 'room_admin action must be one of: reactivate, set_mode, invoke, skip.' });
+          return ok({ error: 'bad_request', hint: 'room_admin action must be one of: reactivate, set_mode, invoke, skip.' }, [], structured);
       }
     }
 

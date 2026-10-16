@@ -88,3 +88,47 @@ export function useRoomSend({
 
   return { submitMessage, rejectedBySend };
 }
+
+export interface VoiceTranscriptOptions {
+  /** The transcript the mic just committed. */
+  spoken: string;
+  /** The composer draft as it stands. */
+  draft: string;
+  setDraft: (next: string) => void;
+  submitMessage: UseRoomSend['submitMessage'];
+  /**
+   * A send that failed for a reason the user can retry past. Not called for
+   * the refusals submitMessage answers itself (no seat), which resolve.
+   */
+  onSendFailed: (error: unknown) => void;
+}
+
+/**
+ * The voice button's send: one spoken turn, through the composer's own path.
+ *
+ * A typed draft is merged in front of the transcript, because the user who
+ * typed half a sentence and then said the rest meant one message. Attachments
+ * are not: voice sends text only and never waits on the composer's uploads, so
+ * a file still being staged stays staged and rides along with whatever the
+ * user types next. The composer keeps its own upload gate for that reason —
+ * there it IS the message the attachment belongs to.
+ */
+export async function sendVoiceTranscript({
+  spoken,
+  draft,
+  setDraft,
+  submitMessage,
+  onSendFailed,
+}: VoiceTranscriptOptions): Promise<void> {
+  const said = spoken.trim();
+  if (!said) return;
+  const typed = draft.trim();
+  const merged = typed ? `${typed} ${said}` : said;
+  setDraft('');
+  try {
+    await submitMessage(merged, []);
+  } catch (e) {
+    setDraft(merged); // restore the draft so the user can retry
+    onSendFailed(e);
+  }
+}

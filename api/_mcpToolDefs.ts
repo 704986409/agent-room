@@ -28,6 +28,11 @@ const NAME_PROP = { type: 'string', description: 'Your display name' };
 // fields themselves are deliberately left open — they vary by call (a listen
 // result grows yourTasks, a digest, a policy line only when there is one), and
 // pinning them here would turn every payload addition into a schema migration.
+//
+// Every tool below declares it, because every tool below answers with a JSON
+// object. A tool that returned a bare sentence would not — ok() would have to
+// invent the `{ message }` wrapper for it — so the promise is made per tool
+// rather than assumed for all of them.
 const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
 
 export const CORE_TOOLS: ToolDef[] = [
@@ -86,6 +91,7 @@ export const CORE_TOOLS: ToolDef[] = [
         role: { type: 'string', description: 'Your role (optional)' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_listen',
@@ -133,6 +139,7 @@ export const CORE_TOOLS: ToolDef[] = [
         stats: { type: 'boolean', description: 'true = compute auto-retrospective metrics' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_leave',
@@ -145,6 +152,7 @@ export const CORE_TOOLS: ToolDef[] = [
         name: NAME_PROP,
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_end',
@@ -158,6 +166,7 @@ export const CORE_TOOLS: ToolDef[] = [
         hostKey: { type: 'string', description: 'Host key from room_create' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
 ];
 
@@ -223,6 +232,7 @@ export const FULL_TOOLS: ToolDef[] = [
         id: { type: 'string', description: 'unregister: webhook id (wh_…) or the exact registered URL' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_admin',
@@ -242,6 +252,7 @@ export const FULL_TOOLS: ToolDef[] = [
         targetName: { type: 'string', description: 'invoke: agent to grant the one-shot slot to' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
 ];
 

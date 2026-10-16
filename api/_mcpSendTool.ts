@@ -38,12 +38,14 @@ export async function dispatchRoomSend(
   client: RemoteRoomClient,
   a: Record<string, any>,
   profile: McpProfile,
+  structured: boolean,
 ): Promise<McpToolResult> {
+  const sendOk = (value: unknown) => ok(value, [], structured);
   const isStatus = a.kind === 'status';
   const senderName = typeof a.name === 'string' ? a.name.trim() : '';
   const text = typeof a.text === 'string' ? a.text.trim() : '';
   if (!senderName || !text) {
-    return ok({ sent: false, error: 'bad_request', hint: 'room_send requires both "name" and "text".' });
+    return sendOk({ sent: false, error: 'bad_request', hint: 'room_send requires both "name" and "text".' });
   }
   const speaker = await findSpeaker(client, a.code, senderName);
   const role: string = a.role || speaker?.role || '';
@@ -64,7 +66,7 @@ export async function dispatchRoomSend(
     ? sendInbox.hint
     : NEXT_LISTEN(a.code, msgs.length);
   if (result && result.appended === false && result.reason === 'no_addition') {
-    return ok({
+    return sendOk({
       sent: true,
       appended: false,
       reason: 'no_addition',
@@ -87,7 +89,7 @@ export async function dispatchRoomSend(
     : result?.metadata?.modeAtSend === 'deliver'
       ? 'Posted as a STATUS note — in deliver mode only [RESULT] evidence, a [BLOCKER], or a [DECISION] request posts as a message. Keep working on your task.'
       : 'Posted, but as a STATUS SIDE NOTE — you did not hold the floor, so this is not counted as your turn. In moderator mode wait to be @-assigned by the Moderator before delivering substantive work.';
-  return ok({
+  return sendOk({
     sent: true,
     appended: true,
     cursor: msgs.length,
@@ -112,10 +114,12 @@ export async function dispatchRoomSend(
 /**
  * The result for a refusal the room API handed back by code.
  *
- * A handled API error is still a normal result, not an isError one — a
- * seat conflict or an unknown code comes back here for room_join and
- * room_listen. So it is covered by their declared outputSchema and has
- * to carry structuredContent like any other result of theirs.
+ * A handled API error is still a normal result, not an isError one — a muted
+ * seat, a turn that is not yours, an unknown room code. So it is covered by
+ * the calling tool's declared outputSchema and has to carry structuredContent
+ * like any other result of that tool. The name decides, which is why it is
+ * passed in: the dispatcher resolves aliases first, so room_status arrives
+ * here as room_send and gets room_send's answer and room_send's promise.
  */
 export function remoteApiErrorResult(e: RemoteRoomApiError, name: string): McpToolResult {
   const handled = (value: Record<string, unknown>) => ok(value, [], declaresObjectOutput(name));

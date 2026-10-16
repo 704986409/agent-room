@@ -17,10 +17,10 @@ import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { MemoryReviewPanel } from '../components/MemoryReviewPanel.js';
 import { SpeakBlockedNotice } from '../components/SpeakBlockedNotice.js';
 import { Composer, TEXTAREA_MAX_HEIGHT, TEXTAREA_MIN_HEIGHT } from '../components/Composer.js';
-import { useRoomSend } from './room/useRoomSend.js';
+import { sendVoiceTranscript, useRoomSend } from './room/useRoomSend.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
 import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
-import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, onDeliverHostMessage, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
+import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
@@ -1256,34 +1256,22 @@ export function Room() {
                 tools={(
                   <VoiceButton
                     // Plan B: speak, stop, and the transcript is sent at once (any
-                    // pending typed draft is merged in front of it).
-                    onTranscript={async (spoken) => {
-                      if (ended || !spoken.trim()) return;
-                      const merged = text.trim() ? `${text.trim()} ${spoken.trim()}` : spoken.trim();
-                      const msg: Message = {
-                        id: Date.now(),
-                        type: 'msg',
-                        name: me.name,
-                        role: me.role,
-                        initials: initialsFor(me.name),
-                        color: colorForName(me.name),
-                        client: 'web',
-                        text: merged,
-                        time: Date.now(),
-                      };
-                      setText('');
-                      try {
-                        await sendMessage(msg);
-                        if (isHost && replyMode === 'deliver') {
-                          void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, merged)
-                            .then(() => taskBoard.reload())
-                            .catch(() => { /* best-effort */ });
-                        }
-                      } catch (e) {
-                        const { showToast } = await import('../components/Toast.js');
-                        showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
-                        setText(merged); // restore draft so the user can retry
-                      }
+                    // pending typed draft is merged in front of it) — through the
+                    // same submitMessage the composer uses, so the room sees one
+                    // send path and a seatless sender gets the rejoin notice
+                    // rather than a toast.
+                    onTranscript={(spoken) => {
+                      if (ended) return;
+                      void sendVoiceTranscript({
+                        spoken,
+                        draft: text,
+                        setDraft: setText,
+                        submitMessage,
+                        onSendFailed: async (e) => {
+                          const { showToast } = await import('../components/Toast.js');
+                          showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
+                        },
+                      });
                     }}
                     disabled={ended}
                   />

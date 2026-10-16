@@ -215,7 +215,7 @@ export async function dispatchRoomTask(
     }
     case 'reopen': {
       const err = requireFields(a, ['name', 'id']);
-      if (err) return ok({ error: 'bad_request', hint: err });
+      if (err) return taskOk({ error: 'bad_request', hint: err });
       const body = await client.post<{ board: TaskBoard; task: Task }>({
         action: 'taskReopen',
         code: a.code,
@@ -224,7 +224,7 @@ export async function dispatchRoomTask(
         requesterClient: 'cc',
         ...(a.state ? { state: a.state } : {}),
       });
-      return ok({ task: body.task, board: body.board });
+      return taskOk({ task: body.task, board: body.board });
     }
     default:
       return taskOk({ error: 'bad_request', hint: 'room_task action must be one of: list, create, claim, submit, verify, reassign, reopen, cancel.' });
