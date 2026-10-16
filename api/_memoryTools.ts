@@ -12,6 +12,8 @@ import {
   RedisUrlCommandClient,
   ReviewerPolicy,
   type MemoryIdentity,
+  type MemoryServiceMutationResult,
+  type ReviewerSeat,
   type MemoryContent,
   type MemoryRepository,
   type MemoryUpdate,
@@ -19,7 +21,7 @@ import {
   type TrustedMemoryCaller,
   type TrustedMemoryReviewer,
 } from '@agent-room/memory';
-import { getRoom, RemoteRoomApiError, type RemoteRoomClient } from './_mcpRoomClient.js';
+import { getRoom, isMemorySeatOnline, RemoteRoomApiError, type RemoteRoomClient } from './_mcpRoomClient.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MEMORY_TOOL_NAMES = new Set([
@@ -177,31 +179,69 @@ function memoryReviewerContext(seat: ResolvedSeat): TrustedMemoryReviewer {
   };
 }
 
+/**
+ * New pending proposal -> notify all online reviewers (or the owner fallback with
+ * reviewCode REVIEWER_UNAVAILABLE). A duplicateOf result re-notifies nobody.
+ */
+async function withReviewNotifications(
+  result: MemoryServiceMutationResult,
+  reviews: MemoryReviewService,
+  roomInstanceId: string,
+): Promise<Record<string, unknown>> {
+  if (!('code' in result) || result.code !== 'PENDING_REVIEW' || result.duplicateOf) {
+    return result as unknown as Record<string, unknown>;
+  }
+  try {
+    const mention = await reviews.mentionReviewers(roomInstanceId, result.proposalId);
+    return {
+      ...result,
+      notification: mention.notifications[0],
+      notifications: mention.notifications,
+      ...(mention.reviewCode ? { reviewCode: mention.reviewCode } : {}),
+    };
+  } catch (error) {
+    if (error instanceof MemoryServiceError && error.code === 'REVIEW_REQUIRED') {
+      return { ...result, reviewCode: 'REVIEW_REQUIRED' };
+    }
+    throw error;
+  }
+}
+
 function hasSeatHash(participant: Participant): boolean {
   return typeof participant.seatKeyHash === 'string' && /^[0-9a-f]{64}$/i.test(participant.seatKeyHash);
 }
 
-function reviewerDirectory(client: RemoteRoomClient, code: string) {
+export function reviewerDirectory(client: RemoteRoomClient, code: string) {
   async function latestRoom(roomInstanceId: string): Promise<Room | null> {
     const room = await getRoom(client, code);
     return room.status === 'active' && room.roomInstanceId === roomInstanceId ? room : null;
   }
   return {
     async findReviewerByRole(roomInstanceId: string, role: string): Promise<MemoryIdentity | null> {
+      const seats = await this.listReviewersByRole(roomInstanceId, role);
+      return seats.find(seat => seat.online)?.identity ?? null;
+    },
+    /** Every verified seat bound to the reviewer role, with presence (live listen lease or <=120s since last seen). */
+    async listReviewersByRole(roomInstanceId: string, role: string): Promise<ReviewerSeat[]> {
       const room = await latestRoom(roomInstanceId);
-      if (!room) return null;
+      if (!room) return [];
       const normalizedRole = role.normalize('NFKC').trim().toLocaleLowerCase();
-      const agent = room.participants.find(candidate => candidate.client === 'cc'
-        && hasSeatHash(candidate)
-        && candidate.role.normalize('NFKC').trim().toLocaleLowerCase() === normalizedRole
-        && candidate.lastSeenAt >= Date.now() - 120_000);
-      return agent ? identityForSeat(agent) : null;
+      const now = Date.now();
+      const seats: ReviewerSeat[] = [];
+      for (const candidate of room.participants) {
+        if (candidate.client !== 'cc' || !hasSeatHash(candidate)) continue;
+        if ((candidate.role ?? '').normalize('NFKC').trim().toLocaleLowerCase() !== normalizedRole) continue;
+        const identity = identityForSeat(candidate);
+        if (identity) seats.push({ identity, online: isMemorySeatOnline(candidate, now) });
+      }
+      return seats;
     },
     async isAvailable(roomInstanceId: string, identity: MemoryIdentity): Promise<boolean> {
       const room = await latestRoom(roomInstanceId);
+      const now = Date.now();
       return Boolean(room?.participants.some(candidate => candidate.client === 'cc'
         && hasSeatHash(candidate)
-        && candidate.lastSeenAt >= Date.now() - 120_000
+        && isMemorySeatOnline(candidate, now)
         && sameIdentity(identityForSeat(candidate), identity)));
     },
     async resolveRoomOwner(roomInstanceId: string): Promise<MemoryIdentity | null> {
@@ -292,29 +332,26 @@ export async function dispatchMemoryTool(
       case 'memory_write': {
         const scope = scopeFrom(args.scope);
         if (!scope) return { code: 'INVALID_INPUT' };
-        const result = await service.createEntry(seat.caller, scope, contentFrom(args), requestId);
-        if ('code' in result && result.code === 'PENDING_REVIEW') {
-          try {
-            const notification = await reviews.mentionReviewer(seat.caller.roomInstanceId, result.proposalId);
-            return { ...result, notification } as unknown as Record<string, unknown>;
-          } catch (error) {
-            if (error instanceof MemoryServiceError && error.code === 'REVIEW_REQUIRED') {
-              return { ...result, reviewCode: 'REVIEW_REQUIRED' };
-            }
-            throw error;
-          }
-        }
-        return result as unknown as Record<string, unknown>;
+        return await withReviewNotifications(
+          await service.createEntry(seat.caller, scope, contentFrom(args), requestId),
+          reviews, seat.caller.roomInstanceId,
+        );
       }
       case 'memory_update': {
         const scope = scopeFrom(args.scope);
         if (!scope) return { code: 'INVALID_INPUT' };
-        return await service.updateEntry(seat.caller, scope, text(args.id) ?? '', updateFrom(args), requestId) as unknown as Record<string, unknown>;
+        return await withReviewNotifications(
+          await service.updateEntry(seat.caller, scope, text(args.id) ?? '', updateFrom(args), requestId),
+          reviews, seat.caller.roomInstanceId,
+        );
       }
       case 'memory_delete': {
         const scope = scopeFrom(args.scope);
         if (!scope) return { code: 'INVALID_INPUT' };
-        return await service.deleteEntry(seat.caller, scope, text(args.id) ?? '', requestId) as unknown as Record<string, unknown>;
+        return await withReviewNotifications(
+          await service.deleteEntry(seat.caller, scope, text(args.id) ?? '', requestId),
+          reviews, seat.caller.roomInstanceId,
+        );
       }
       case 'memory_list': {
         const scope = scopeFrom(args.scope);

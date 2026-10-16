@@ -856,7 +856,7 @@ describe('hosted MCP endpoint', () => {
       const agentA = await invoke('room_join', {
         code, name: 'Agent A', personaId: 'persona-alpha', role: 'builder',
       });
-      const seatA = String(agentA.seatKey);
+      let seatA = String(agentA.seatKey);
       expect(agentA.memoryBriefEstimated).toBe(true);
 
       const storedRoom = JSON.parse(smokeKv.get(`room:${code}`)!) as {
@@ -880,10 +880,45 @@ describe('hosted MCP endpoint', () => {
       const replay = await invoke('memory_write', privateWriteArgs);
       expect(replay.id).toBe(privateId);
 
+      const ageSeat = (seatName: string) => {
+        const raw = JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: Record<string, unknown>[] };
+        for (const p of raw.participants) {
+          if (p.name === seatName) {
+            p.lastSeenAt = Date.now() - 121_000;
+            delete p.listenUntil;
+            delete p.listenLeases;
+          }
+        }
+        smokeKv.set(`room:${code}`, JSON.stringify(raw));
+      };
+      const seatNames = () => (JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: { name: string }[] })
+        .participants.map(p => p.name);
+      // Same Persona, no seatKey, while its seat is online: refused, never evicted, no "(2)" seat.
+      const busy = await invoke('room_join', {
+        code, name: 'Agent A new seat', personaId: 'persona-alpha', role: 'builder',
+      });
+      expect(busy).toMatchObject({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE' });
+      expect(seatNames().filter(n => n.startsWith('Agent A'))).toEqual(['Agent A']);
+      // Plant an orphaned offline seat of the same Persona (as left by an earlier key-less join).
+      const planted = JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: Record<string, unknown>[] };
+      planted.participants.push({
+        name: 'Agent A (2)', role: 'builder', color: '#000000', initials: 'AA', client: 'cc',
+        joinedAt: Date.now() - 600_000, lastSeenAt: Date.now() - 600_000, canSpeak: true,
+        seatKeyHash: 'a'.repeat(64), memoryIdentityType: 'persona', memoryPersonaId: 'persona-alpha',
+        memoryPrincipalId: randomUUID(),
+      });
+      smokeKv.set(`room:${code}`, JSON.stringify(planted));
+      // Once the seat is offline (>120s, no listen lease) the same Persona reclaims it under the same name.
+      ageSeat('Agent A');
       const samePersonaSeat = await invoke('room_join', {
         code, name: 'Agent A new seat', personaId: 'persona-alpha', role: 'builder',
       });
+      expect(samePersonaSeat.assignedName).toBe('Agent A');
       const samePersonaKey = String(samePersonaSeat.seatKey);
+      expect(samePersonaKey).not.toBe(seatA);
+      expect(await invoke('memory_list', { code, seatKey: seatA, scope: 'persona' })).toMatchObject({ code: 'FORBIDDEN' });
+      expect(seatNames().filter(n => n.startsWith('Agent A'))).toEqual(['Agent A']);
+      seatA = samePersonaKey;
       expect((await invoke('memory_read', { code, seatKey: samePersonaKey, id: privateId })).content)
         .toContain('private fact belongs to persona alpha');
       const otherPersonaSeat = await invoke('room_join', {
@@ -970,6 +1005,61 @@ describe('hosted MCP endpoint', () => {
         requestId: `review-delete-${randomUUID()}`,
       });
       expect(deleteDecision.status).toBe('approved');
+
+      // Multiple reviewers: every online project-analyst seat may review and is notified; first review wins.
+      const analystTwo = await invoke('room_join', {
+        code, name: 'Analyst Two', personaId: 'persona-reviewer-2', role: 'project-analyst',
+      });
+      const analystTwoKey = String(analystTwo.seatKey);
+      const proposeShared = async (title: string) => invoke('memory_write', {
+        code, seatKey: seatA, scope: 'room', title, preview: `${title} preview`,
+        content: `${title} content`, searchText: title.toLowerCase(), requestId: `multi-${randomUUID()}`,
+      });
+      const recipients = (result: Record<string, any>) =>
+        (result.notifications as { recipient: { type: string; id: string } }[]).map(n => `${n.recipient.type}:${n.recipient.id}`).sort();
+      const twoOnline = await proposeShared('Two reviewers online');
+      expect(twoOnline.code).toBe('PENDING_REVIEW');
+      expect(recipients(twoOnline)).toEqual(['persona:persona-reviewer', 'persona:persona-reviewer-2']);
+      expect(twoOnline.reviewCode).toBeUndefined();
+      const firstWins = await invoke('memory_review', {
+        code, seatKey: analystTwoKey, action: 'approve', proposalId: String(twoOnline.proposalId), requestId: `mr-${randomUUID()}`,
+      });
+      expect(firstWins.status).toBe('approved');
+      expect(await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId: String(twoOnline.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'CONFLICT' });
+      expect(await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'reject', proposalId: String(twoOnline.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'CONFLICT' });
+
+      // A stale reviewer seat is skipped for notification and told it is unavailable.
+      ageSeat('Analyst Two');
+      const oneStale = await proposeShared('One reviewer stale');
+      expect(recipients(oneStale)).toEqual(['persona:persona-reviewer']);
+      expect(await invoke('memory_review', {
+        code, seatKey: analystTwoKey, action: 'approve', proposalId: String(oneStale.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'REVIEWER_UNAVAILABLE' });
+      expect(await invoke('memory_review', {
+        code, seatKey: hostSeatKey, action: 'approve', proposalId: String(oneStale.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'FORBIDDEN' });
+      expect((await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId: String(oneStale.proposalId), requestId: `mr-${randomUUID()}`,
+      })).status).toBe('approved');
+
+      // All reviewers offline: owner fallback is notified with REVIEWER_UNAVAILABLE and may review.
+      ageSeat('Project Analyst');
+      const allOffline = await proposeShared('All reviewers offline');
+      expect(allOffline.reviewCode).toBe('REVIEWER_UNAVAILABLE');
+      expect(recipients(allOffline)).toEqual([`room_owner:${storedRoom.roomInstanceId}`]);
+      expect(await invoke('memory_review', {
+        code, seatKey: analystKey, action: 'approve', proposalId: String(allOffline.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'REVIEWER_UNAVAILABLE' });
+      expect(await invoke('memory_review', {
+        code, seatKey: seatA, action: 'approve', proposalId: String(allOffline.proposalId), requestId: `mr-${randomUUID()}`,
+      })).toMatchObject({ code: 'FORBIDDEN' });
+      expect((await invoke('memory_review', {
+        code, seatKey: hostSeatKey, action: 'approve', proposalId: String(allOffline.proposalId), requestId: `mr-${randomUUID()}`,
+      })).status).toBe('approved');
 
       const reconnect = await invoke('room_join', {
         code, name: 'Agent A', seatKey: seatA, personaId: 'persona-alpha', role: 'builder',

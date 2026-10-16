@@ -9,6 +9,7 @@ import {
   type TrustedMemoryReviewer,
 } from '@agent-room/memory';
 import { createRemoteRoomClient, getRoom, RemoteRoomApiError } from './_mcpRoomClient.js';
+import { reviewerDirectory } from './_memoryTools.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -21,6 +22,8 @@ export class MemoryReviewApiError extends Error {
 
 export interface MemoryReviewRoomContext {
   readonly roomInstanceId: string;
+  /** Room code, used to resolve live reviewer seats. */
+  readonly code?: string;
 }
 
 export interface MemoryReviewRuntimeContext {
@@ -79,19 +82,21 @@ function productionRuntime(): MemoryReviewHttpRuntime {
   return {
     async resolveRoom(code, hostKey) {
       const client = createRemoteRoomClient(undefined);
-      return verifyMemoryReviewRoom(code, hostKey, { getRoom: roomCode => getRoom(client, roomCode) });
+      const verified = await verifyMemoryReviewRoom(code, hostKey, { getRoom: roomCode => getRoom(client, roomCode) });
+      return { ...verified, code };
     },
     async createContext(room) {
       const databaseUrl = process.env.MEMORY_DATABASE_URL?.trim() || process.env.DATABASE_URL?.trim();
       if (!databaseUrl) throw new MemoryReviewApiError('STORAGE_ERROR', 503);
       const repository = await PostgresMemoryRepository.connect({ connectionString: databaseUrl });
       const role = process.env.MEMORY_REVIEWER_ROLE?.trim() || 'project-analyst';
-      // P6 will resolve a role through server-issued seatKey identities. Until
-      // that resolver exists, no display-name/role claim is trusted and review
-      // falls back to the verified hostKey owner.
+      // The hostKey proves the owner; reviewer seats come from live seatKey-bound
+      // participants, so the owner may decide only when every reviewer is offline.
+      const seats = room.code ? reviewerDirectory(createRemoteRoomClient(undefined), room.code) : null;
       const policy = new ReviewerPolicy({
-        findReviewerByRole: async () => null,
-        isAvailable: async () => false,
+        findReviewerByRole: async (id, r) => seats ? seats.findReviewerByRole(id, r) : null,
+        isAvailable: async (id, identity) => seats ? seats.isAvailable(id, identity) : false,
+        listReviewersByRole: async (id, r) => seats ? seats.listReviewersByRole(id, r) : [],
         resolveRoomOwner: async roomInstanceId => ({ type: 'room_owner', id: roomInstanceId }),
       }, role);
       const caller: TrustedMemoryReviewer = {
@@ -123,6 +128,7 @@ function errorResponse(error: unknown): { status: number; code: string } {
       FORBIDDEN: 403,
       PENDING_REVIEW: 202,
       REVIEW_REQUIRED: 409,
+      REVIEWER_UNAVAILABLE: 409,
       CONFLICT: 409,
       STORAGE_ERROR: 503,
     };

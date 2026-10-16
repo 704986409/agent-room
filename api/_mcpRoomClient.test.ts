@@ -393,3 +393,19 @@ describe('_mcpRoomClient HTTP helpers', () => {
     expect(storeMocks.getTurnState).toHaveBeenCalledWith(client.store, room.code);
   });
 });
+
+describe('isMemorySeatOnline', () => {
+  const base = { name: 'A', role: 'r', color: '#000', initials: 'A', client: 'cc' as const, joinedAt: 0 };
+  it('treats <=120s since last seen as online and >120s as offline', async () => {
+    const { isMemorySeatOnline } = await import('./_mcpRoomClient.js');
+    const now = 1_000_000_000;
+    expect(isMemorySeatOnline({ ...base, lastSeenAt: now - 120_000 }, now)).toBe(true);
+    expect(isMemorySeatOnline({ ...base, lastSeenAt: now - 120_001 }, now)).toBe(false);
+  });
+  it('treats a live listen lease as online even when lastSeenAt is old', async () => {
+    const { isMemorySeatOnline } = await import('./_mcpRoomClient.js');
+    const now = 1_000_000_000;
+    expect(isMemorySeatOnline({ ...base, lastSeenAt: now - 600_000, listenLeases: { x: now + 30_000 } }, now)).toBe(true);
+    expect(isMemorySeatOnline({ ...base, lastSeenAt: now - 600_000, listenLeases: { x: now - 1 } }, now)).toBe(false);
+  });
+});

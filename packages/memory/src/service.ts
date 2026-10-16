@@ -21,6 +21,7 @@ export type MemoryServiceErrorCode =
   | 'FORBIDDEN'
   | 'PENDING_REVIEW'
   | 'REVIEW_REQUIRED'
+  | 'REVIEWER_UNAVAILABLE'
   | 'CONFLICT'
   | 'STORAGE_ERROR';
 
@@ -89,6 +90,7 @@ const ERROR_MESSAGES: Record<MemoryServiceErrorCode, string> = {
   FORBIDDEN: 'Memory access is not allowed.',
   PENDING_REVIEW: 'This memory change requires review.',
   REVIEW_REQUIRED: 'A verified reviewer is required.',
+  REVIEWER_UNAVAILABLE: 'This reviewer seat is offline; refresh presence with room_listen, then retry.',
   CONFLICT: 'Memory operation conflicts with the current state.',
   STORAGE_ERROR: 'Memory storage is temporarily unavailable.',
 };

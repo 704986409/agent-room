@@ -731,7 +731,11 @@ export class PostgresMemoryRepository implements MemoryRepository {
         throw new MemoryForbiddenError('A proposer cannot review their own memory proposal.');
       }
       if (proposal.status !== 'pending') {
-        if (proposal.status === targetStatus) return { status: proposal.status, id: proposal.id };
+        // Idempotent only for the reviewer who decided; any other reviewer loses (first review wins).
+        if (proposal.status === targetStatus && proposal.reviewer_identity_type === reviewer.type
+          && proposal.reviewer_identity_id === reviewer.id) {
+          return { status: proposal.status, id: proposal.id };
+        }
         throw new MemoryConflictError(`Proposal ${proposal.id} is already ${proposal.status}.`);
       }
 

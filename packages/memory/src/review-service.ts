@@ -24,6 +24,24 @@ export interface ReviewerDirectory {
   isAvailable(roomInstanceId: string, reviewer: MemoryIdentity): Promise<boolean>;
   /** Return a verified room_owner identity, or null when it cannot be verified. */
   resolveRoomOwner(roomInstanceId: string): Promise<MemoryIdentity | null>;
+  /**
+   * Optional: every verified seat bound to the reviewer role, with server-side presence.
+   * When absent, the policy falls back to findReviewerByRole + isAvailable (single reviewer).
+   */
+  listReviewersByRole?(roomInstanceId: string, role: string): Promise<ReviewerSeat[]>;
+}
+
+export interface ReviewerSeat {
+  readonly identity: MemoryIdentity;
+  readonly online: boolean;
+}
+
+export interface ReviewerSet {
+  /** reviewers: online role seats; owner_fallback: all role seats offline; none: nobody can review. */
+  readonly mode: 'reviewers' | 'owner_fallback' | 'none';
+  readonly reviewers: readonly MemoryIdentity[];
+  /** Role-bound seats that exist but are offline (excluding the proposer). */
+  readonly offlineReviewers: readonly MemoryIdentity[];
 }
 
 /** Resolves a configured real reviewer, falling back to a verified room owner. */
@@ -37,16 +55,38 @@ export class ReviewerPolicy {
     this.configuredRole = configuredRole.trim();
   }
 
-  async expectedReviewer(roomInstanceId: string, excluded?: MemoryIdentity): Promise<MemoryIdentity | null> {
-    const configured = await this.directory.findReviewerByRole(roomInstanceId, this.configuredRole);
-    if (configured && configured.type !== 'room_owner' && isValidIdentity(configured)
-      && (!excluded || !sameIdentity(configured, excluded))
-      && await this.directory.isAvailable(roomInstanceId, configured)) {
-      return copyIdentity(configured);
+  private async roleSeats(roomInstanceId: string): Promise<ReviewerSeat[]> {
+    if (this.directory.listReviewersByRole) {
+      return this.directory.listReviewersByRole(roomInstanceId, this.configuredRole);
     }
+    const configured = await this.directory.findReviewerByRole(roomInstanceId, this.configuredRole);
+    if (!configured) return [];
+    return [{ identity: configured, online: await this.directory.isAvailable(roomInstanceId, configured) }];
+  }
+
+  /** All identities allowed to review now. Any online reviewer may review; owner only when none is online. */
+  async reviewerSet(roomInstanceId: string, excluded?: MemoryIdentity): Promise<ReviewerSet> {
+    const online: MemoryIdentity[] = [];
+    const offline: MemoryIdentity[] = [];
+    for (const seat of await this.roleSeats(roomInstanceId)) {
+      const identity = seat.identity;
+      if (!identity || identity.type === 'room_owner' || !isValidIdentity(identity)) continue;
+      if (excluded && sameIdentity(identity, excluded)) continue;
+      const bucket = seat.online ? online : offline;
+      if (!bucket.some(known => sameIdentity(known, identity))) bucket.push(copyIdentity(identity));
+    }
+    const offlineReviewers = offline.filter(identity => !online.some(known => sameIdentity(known, identity)));
+    if (online.length) return { mode: 'reviewers', reviewers: online, offlineReviewers };
     const owner = await this.directory.resolveRoomOwner(roomInstanceId);
-    return owner?.type === 'room_owner' && isValidIdentity(owner)
-      && (!excluded || !sameIdentity(owner, excluded)) ? copyIdentity(owner) : null;
+    if (owner?.type === 'room_owner' && isValidIdentity(owner) && (!excluded || !sameIdentity(owner, excluded))) {
+      return { mode: 'owner_fallback', reviewers: [copyIdentity(owner)], offlineReviewers };
+    }
+    return { mode: 'none', reviewers: [], offlineReviewers };
+  }
+
+  /** Back-compat: the first identity allowed to review. */
+  async expectedReviewer(roomInstanceId: string, excluded?: MemoryIdentity): Promise<MemoryIdentity | null> {
+    return (await this.reviewerSet(roomInstanceId, excluded)).reviewers[0] ?? null;
   }
 }
 
@@ -113,6 +153,14 @@ function copyIdentity(identity: MemoryIdentity): MemoryIdentity {
 
 function sameIdentity(left: MemoryIdentity, right: MemoryIdentity): boolean {
   return left.type === right.type && left.id === right.id;
+}
+
+function proposerOf(proposal: MemoryProposal): MemoryIdentity {
+  return {
+    type: proposal.proposer_identity_type,
+    id: proposal.proposer_identity_id,
+    ...(proposal.proposer_persona_id ? { personaId: proposal.proposer_persona_id } : {}),
+  };
 }
 
 function validateContext(context: TrustedMemoryReviewer): { roomInstanceId: string; identity: MemoryIdentity } {
@@ -222,6 +270,11 @@ export class MemoryReviewService {
       const previousReviewer = proposal.reviewer_identity_type && proposal.reviewer_identity_id
         ? { type: proposal.reviewer_identity_type, id: proposal.reviewer_identity_id } as MemoryIdentity
         : null;
+      if (proposal.status !== 'pending' && (!previousReviewer || !sameIdentity(previousReviewer, trusted.identity))) {
+        // First review wins: an otherwise-authorized later reviewer gets CONFLICT.
+        await this.assertExpectedReviewer(trusted.roomInstanceId, trusted.identity, proposerOf(proposal));
+        throw new MemoryServiceError('CONFLICT');
+      }
       if (proposal.status !== 'pending' && previousReviewer && sameIdentity(previousReviewer, trusted.identity)) {
         if ((proposal.status === 'approved' && choice !== 'approve')
           || (proposal.status === 'rejected' && choice !== 'reject')) {
@@ -243,6 +296,32 @@ export class MemoryReviewService {
         await this.repository.reviewRoomProposal(trusted.roomInstanceId, id, trusted.identity, choice, idempotencyKey),
         choice,
       );
+    });
+  }
+
+  /** Notify every reviewer allowed to review the proposal (all online reviewers, else the owner fallback). */
+  async mentionReviewers(roomInstanceId: string, proposalId: string): Promise<{
+    readonly notifications: readonly MemoryReviewMentionNotification[];
+    readonly mode: ReviewerSet['mode'];
+    readonly reviewCode?: 'REVIEWER_UNAVAILABLE';
+  }> {
+    return this.execute(async () => {
+      if (typeof roomInstanceId !== 'string' || !UUID_PATTERN.test(roomInstanceId)) {
+        throw new TypeError('room_instance_id must be a UUID.');
+      }
+      const id = validateProposalId(proposalId);
+      const proposal = await this.repository.getRoomProposal(roomInstanceId, id);
+      if (!proposal) throw new MemoryServiceError('NOT_FOUND');
+      if (proposal.status !== 'pending') throw new MemoryServiceError('CONFLICT');
+      const set = await this.reviewerPolicy.reviewerSet(proposal.room_instance_id, proposerOf(proposal));
+      if (set.mode === 'none') throw new MemoryServiceError('REVIEW_REQUIRED');
+      return {
+        mode: set.mode,
+        ...(set.mode === 'owner_fallback' ? { reviewCode: 'REVIEWER_UNAVAILABLE' as const } : {}),
+        notifications: set.reviewers.map(recipient => this.notificationAdapter.createMentionNotification({
+          kind: 'mention', roomInstanceId: proposal.room_instance_id, proposalId: proposal.id, recipient,
+        })),
+      };
     });
   }
 
@@ -276,9 +355,14 @@ export class MemoryReviewService {
     caller: MemoryIdentity,
     excluded?: MemoryIdentity,
   ): Promise<void> {
-    const expected = await this.reviewerPolicy.expectedReviewer(roomInstanceId, excluded);
-    if (!expected) throw new MemoryServiceError('REVIEW_REQUIRED');
-    if (!sameIdentity(expected, caller)) throw new MemoryServiceError('FORBIDDEN');
+    const set = await this.reviewerPolicy.reviewerSet(roomInstanceId, excluded);
+    if (set.reviewers.some(reviewer => sameIdentity(reviewer, caller))) return;
+    // A reviewer-role seat that is currently offline gets an explicit, actionable code.
+    if (set.offlineReviewers.some(reviewer => sameIdentity(reviewer, caller))) {
+      throw new MemoryServiceError('REVIEWER_UNAVAILABLE');
+    }
+    if (set.mode === 'none') throw new MemoryServiceError('REVIEW_REQUIRED');
+    throw new MemoryServiceError('FORBIDDEN');
   }
 
   private async execute<T>(operation: () => Promise<T>): Promise<T> {

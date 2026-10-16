@@ -21,7 +21,7 @@
 // that makes a model stop calling tools.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { generateCode } from '@agent-room/shared';
+import { generateCode, hasActiveListenLease } from '@agent-room/shared';
 import type { Message, Participant, Room, RoomReport } from '@agent-room/shared';
 import {
   createClient,
@@ -37,6 +37,7 @@ import {
   appendMessage as storeAppendMessage,
   reactivateRoom as storeReactivateRoom,
   removeParticipant as storeRemoveParticipant,
+  casRoom as storeCasRoom,
   setListenUntil as storeSetListenUntil,
   verifyHostKey,
   HostNameTakenError,
@@ -361,9 +362,30 @@ export async function joinRoom(
       await verifyHostKey(client.store, code, options.hostKey);
     }
 
-    const previous = current.participants.find(p => p.name === participant.name && p.client === participant.client);
-    const validResume = Boolean(previous?.seatKeyHash && options.seatKey
+    let previous = current.participants.find(p => p.name === participant.name && p.client === participant.client);
+    let validResume = Boolean(previous?.seatKeyHash && options.seatKey
       && seatKeyMatches(previous.seatKeyHash, options.seatKey));
+    // A seatKey may also resume a same-persona seat whose name differs from the request.
+    if (!validResume && options.seatKey && !isHostClaim) {
+      const keyed = current.participants.find(p => p.client === participant.client && p.seatKeyHash
+        && seatKeyMatches(p.seatKeyHash, options.seatKey!));
+      if (keyed) { previous = keyed; validResume = true; }
+    }
+    let reclaimed = false;
+    if (!validResume && !isHostClaim && options.personaId !== undefined && options.personaId.trim()) {
+      // Same Persona rejoining without a valid seatKey: never open a "(2)" seat.
+      const samePersona = current.participants.filter(p => p.client === participant.client
+        && p.seatKeyHash && p.memoryIdentityType === 'persona' && p.memoryPersonaId === options.personaId);
+      if (samePersona.some(p => isMemorySeatOnline(p))) {
+        throw new RemoteRoomApiError(
+          'This Persona already holds an online seat in this room. Reconnect with that seat\'s seatKey; an online seat is never evicted.',
+          409,
+          'SEAT_IN_USE',
+        );
+      }
+      const target = samePersona.find(p => p.name === participant.name) ?? samePersona[0];
+      if (target) { previous = target; reclaimed = true; }
+    }
     if (validResume && options.personaId !== undefined
       && options.personaId !== previous?.memoryPersonaId) {
       throw new RemoteRoomApiError('The seat identity cannot be changed during resume.', 403, 'seat_identity_mismatch');
@@ -383,7 +405,7 @@ export async function joinRoom(
       : randomUUID();
     const boundParticipant: Participant = {
       ...participant,
-      ...(validResume && previous ? { name: previous.name } : {}),
+      ...((validResume || reclaimed) && previous ? { name: previous.name } : {}),
       seatKeyHash: hashSeatKey(seatKey),
       memoryIdentityType: identityType,
       memoryPrincipalId: principalId,
@@ -393,14 +415,47 @@ export async function joinRoom(
 
     const result = await storeJoinRoom(client.store, code, boundParticipant, {
       ...(options.hostKey ? { hostKey: options.hostKey } : {}),
-      priorIdentity: validResume
+      priorIdentity: validResume || reclaimed
         ? { name: previous!.name, client: previous!.client }
         : previous && !previous.seatKeyHash
           ? { name: previous.name, client: previous.client }
           : options.priorIdentity,
     });
-    return { ...result, seatKey } as Room & { participant: Participant; seatKey: string };
+    let finalRoom: Room = result;
+    if (personaId && identityType === 'persona') {
+      finalRoom = await removeOrphanPersonaSeats(client, code, personaId, result.participant.name, participant.client);
+    }
+    return { ...finalRoom, participant: result.participant, seatKey, ...(reclaimed ? { reclaimed: true } : {}) } as
+      Room & { participant: Participant; seatKey: string };
   });
+}
+
+/** Seconds a memory seat may be silent before it counts as offline (a live listen lease always counts as online). */
+export const MEMORY_SEAT_STALE_MS = 120_000;
+
+export function isMemorySeatOnline(participant: Participant, now: number = Date.now()): boolean {
+  if (hasActiveListenLease(participant, now)) return true;
+  return typeof participant.lastSeenAt === 'number' && Number.isFinite(participant.lastSeenAt)
+    && now - participant.lastSeenAt <= MEMORY_SEAT_STALE_MS;
+}
+
+/** Drop other OFFLINE seats bound to the same Persona (orphans from earlier key-less joins). Online seats are kept. */
+async function removeOrphanPersonaSeats(
+  client: RemoteRoomClient,
+  code: string,
+  personaId: string,
+  keepName: string,
+  seatClient: Participant['client'],
+): Promise<Room> {
+  const now = Date.now();
+  const isOrphan = (p: Participant) => p.client === seatClient && p.name !== keepName
+    && p.memoryIdentityType === 'persona' && p.memoryPersonaId === personaId && !isMemorySeatOnline(p, now);
+  const current = await storeGetRoom(client.store, code);
+  if (!current.participants.some(isOrphan)) return current;
+  return storeCasRoom(client.store, code, room => ({
+    ...room,
+    participants: room.participants.filter(p => !isOrphan(p)),
+  }));
 }
 
 function hashSeatKey(seatKey: string): string {

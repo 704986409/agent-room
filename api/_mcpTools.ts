@@ -1114,6 +1114,9 @@ export async function callTool(
       if (e.code === 'RoomNotFoundError') {
         return ok({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
       }
+      if (e.code === 'SEAT_IN_USE') {
+        return ok({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
+      }
       if (e.code === 'NotParticipantError') {
         return ok({ error: 'not_participant', hint: `${e.message} Call room_join first.` });
       }

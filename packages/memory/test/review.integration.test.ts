@@ -175,6 +175,79 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     expect(result.status).toBe('approved');
   });
 
+  function multiServiceFor(roomInstanceId: string, seats: { identity: MemoryIdentity; online: boolean }[]) {
+    const directory = {
+      findReviewerByRole: vi.fn(async () => seats.find(seat => seat.online)?.identity ?? null),
+      isAvailable: vi.fn(async (_room: string, identity: MemoryIdentity) =>
+        seats.some(seat => seat.online && seat.identity.id === identity.id)),
+      resolveRoomOwner: vi.fn(async () => owner(roomInstanceId)),
+      listReviewersByRole: vi.fn(async () => seats),
+    };
+    return new MemoryReviewService(repository, new ReviewerPolicy(directory, 'project-analyst'));
+  }
+
+  it('lets any online reviewer review, notifies all of them, and the first review wins', async () => {
+    const roomId = randomUUID();
+    const first = persona(`analyst-a-${randomUUID()}`);
+    const second = persona(`analyst-b-${randomUUID()}`);
+    const stale = persona(`analyst-stale-${randomUUID()}`);
+    const proposer = persona(`proposer-${randomUUID()}`);
+    const service = multiServiceFor(roomId, [
+      { identity: first, online: true }, { identity: stale, online: false }, { identity: second, online: true },
+    ]);
+    const proposal = await proposeCreate(roomId, proposer);
+    const mention = await service.mentionReviewers(roomId, proposal.id);
+    expect(mention.mode).toBe('reviewers');
+    expect(mention.reviewCode).toBeUndefined();
+    expect(mention.notifications.map(n => n.recipient.id).sort()).toEqual([first.id, second.id].sort());
+    // Second (not first-match) reviewer may review; stale seat gets REVIEWER_UNAVAILABLE.
+    await expect(service.review(reviewerContext(roomId, stale), proposal.id, 'approve', `s-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'REVIEWER_UNAVAILABLE' });
+    await expect(service.review(reviewerContext(roomId, owner(roomId)), proposal.id, 'approve', `o-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(service.review(reviewerContext(roomId, proposer), proposal.id, 'approve', `p-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const winner = await service.review(reviewerContext(roomId, second), proposal.id, 'approve', `w-${randomUUID()}`);
+    expect(winner.status).toBe('approved');
+    await expect(service.review(reviewerContext(roomId, first), proposal.id, 'approve', `l-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(service.review(reviewerContext(roomId, first), proposal.id, 'reject', `l2-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await repository.listEntries({ roomInstanceId: roomId, scope: 'room' })).toHaveLength(1);
+  });
+
+  it('serializes concurrent reviews by different reviewers: exactly one wins, the other gets CONFLICT', async () => {
+    const roomId = randomUUID();
+    const a = persona(`race-a-${randomUUID()}`);
+    const b = persona(`race-b-${randomUUID()}`);
+    const proposal = await proposeCreate(roomId, persona(`proposer-${randomUUID()}`));
+    const results = await Promise.allSettled([
+      repository.reviewRoomProposal(roomId, proposal.id, a, 'approve', `ra-${randomUUID()}`),
+      repository.reviewRoomProposal(roomId, proposal.id, b, 'approve', `rb-${randomUUID()}`),
+    ]);
+    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+    expect(await repository.listEntries({ roomInstanceId: roomId, scope: 'room' })).toHaveLength(1);
+  });
+
+  it('falls back to the owner only when every reviewer is offline, with REVIEWER_UNAVAILABLE', async () => {
+    const roomId = randomUUID();
+    const a = persona(`off-a-${randomUUID()}`);
+    const b = persona(`off-b-${randomUUID()}`);
+    const service = multiServiceFor(roomId, [{ identity: a, online: false }, { identity: b, online: false }]);
+    const proposal = await proposeCreate(roomId, persona(`proposer-${randomUUID()}`));
+    const mention = await service.mentionReviewers(roomId, proposal.id);
+    expect(mention).toMatchObject({ mode: 'owner_fallback', reviewCode: 'REVIEWER_UNAVAILABLE' });
+    expect(mention.notifications.map(n => n.recipient)).toEqual([owner(roomId)]);
+    await expect(service.review(reviewerContext(roomId, a), proposal.id, 'approve', `a-${randomUUID()}`))
+      .rejects.toMatchObject({ code: 'REVIEWER_UNAVAILABLE' });
+    expect((await service.review(reviewerContext(roomId, owner(roomId)), proposal.id, 'approve', `own-${randomUUID()}`)).status)
+      .toBe('approved');
+    // Owner is never chosen as reviewer of its own proposal.
+    const ownProposal = await proposeCreate(roomId, owner(roomId));
+    await expect(service.mentionReviewers(roomId, ownProposal.id)).rejects.toMatchObject({ code: 'REVIEW_REQUIRED' });
+  });
+
   it('returns the prior result on duplicate approval without applying the proposal twice', async () => {
     const roomId = randomUUID();
     const analyst = persona(`analyst-${randomUUID()}`);

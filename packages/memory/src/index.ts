@@ -22,6 +22,8 @@ export type {
   MemoryReviewProposalView,
   MemoryReviewResult,
   ReviewerDirectory,
+  ReviewerSeat,
+  ReviewerSet,
   ReviewProvider,
   TrustedMemoryReviewer,
 } from './review-service.js';
