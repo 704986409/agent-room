@@ -15,26 +15,26 @@
 // The endpoint stays stateless: the client carries code/name/cursor, and
 // room_create returns the hostKey the creator needs for host actions.
 //
-// This file is the dispatcher. Three leaf modules carry what it used to hold
-// inline, and every name it used to export is re-exported below so no import
-// path changes:
+// This file is the dispatcher. Leaf modules carry what it used to hold inline,
+// and every name it used to export is re-exported below so no import path
+// changes:
 //   _mcpResult.ts   — the tool-result shape and ok()
 //   _mcpListen.ts   — room_listen's hold, hints and listen-only fields
 //   _mcpToolDefs.ts — the declared tool surface and SERVER_INSTRUCTIONS
+//   _mcpIdentity.ts — initials, colour and the message an agent posts
+//   _mcpArgs.ts     — the required-field check the action tools share
+//   _mcpSendTool.ts — room_send and the room API's refusal hints
+//   _mcpTaskTool.ts — room_task, one handler per board action
 
 import {
-  AVATAR_PALETTE,
   buildRoomContextView,
-  normalizeEscapedWhitespace,
-  redactSecretText,
   ROOM_POLICY_VERSION,
   roomPolicySummary,
   safeAttachmentPromptText,
   roleBriefFor,
   slimMessage,
-  taskInboxFor,
 } from '@agent-room/shared';
-import type { ClientKind, Message, Participant, Room, TaskBoard, Task } from '@agent-room/shared';
+import type { Message, Participant, Room } from '@agent-room/shared';
 import { buildRoomRetro, isConfiguredModerator, isDeliverLead } from '@agent-room/upstash-client';
 import type { TaskBoard as RetroBoard } from '@agent-room/shared';
 import {
@@ -56,7 +56,11 @@ import {
 } from './_mcpHarness.js';
 import { dispatchMemoryTool, isMemoryEnabled, isMemoryToolName, loadJoinBrief } from './_memoryTools.js';
 import type { MemoryToolDependencies } from './_memoryTools.js';
+import { requireFields } from './_mcpArgs.js';
+import { buildMessage, colorForName, initialsFor } from './_mcpIdentity.js';
 import { ok, type McpToolResult } from './_mcpResult.js';
+import { dispatchRoomSend, remoteApiErrorResult } from './_mcpSendTool.js';
+import { dispatchRoomTask } from './_mcpTaskTool.js';
 import {
   boardInbox,
   contextFields,
@@ -84,34 +88,6 @@ function publicBaseUrl(): string {
   return process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || 'https://www.agent-room.com';
 }
 
-function initialsFor(name: string): string {
-  const parts = (typeof name === 'string' ? name : '').trim().split(/\s+/).filter(Boolean);
-  if (parts.length >= 2) return (parts[0]![0]! + parts[1]![0]!).toUpperCase();
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase().padEnd(2, '?');
-  return '??';
-}
-
-function colorForName(name: string): string {
-  const safe = typeof name === 'string' ? name : '';
-  let h = 0;
-  for (let i = 0; i < safe.length; i++) h = (h * 31 + safe.charCodeAt(i)) | 0;
-  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length]!;
-}
-
-function buildMessage(name: string, role: string, text: string, speaker?: Participant): Message {
-  return {
-    id: Date.now(),
-    type: 'msg',
-    name,
-    initials: speaker?.initials ?? initialsFor(name),
-    color: speaker?.color ?? colorForName(name),
-    role,
-    text: redactSecretText(normalizeEscapedWhitespace(text)),
-    client: 'cc',
-    time: Date.now(),
-  };
-}
-
 function minutesTranscript(messages: Message[]): string {
   return messages.map(message => {
     const attach = (message.attachments ?? [])
@@ -124,54 +100,6 @@ function minutesTranscript(messages: Message[]): string {
       .join('\n');
     return attach ? `${message.name}: ${message.text}\n${attach}` : `${message.name}: ${message.text}`;
   }).join('\n\n');
-}
-
-/**
- * Which kind of participant is this name?
- *
- * room_task used to stamp `ownerClient`/`verifierClient` as 'cc' on create and
- * reassign, reasoning from the caller: an MCP agent is calling, so the people
- * it names must be agents too. They need not be. Observed 2026-09-08: an agent
- * correctly named the human host as verifier and the task was recorded as
- * `verifierClient: "cc"` for a web participant.
- *
- * The record was simply false, and it is read in two places — verifyTask gates
- * on `task.verifierClient === undefined || task.verifierClient === caller.client`,
- * and claimTask's owner==verifier deadlock check reads the same field. reassign
- * is reachable from the web too, so the same wrong assumption can be written
- * from either side.
- *
- * An unknown name returns undefined rather than a guess, which both call sites
- * then omit. Both gates read a missing client as "match on name alone", so the
- * tolerant path is the honest answer when we do not know.
- */
-function participantClientKind(room: Room, name: string): ClientKind | undefined {
-  const wanted = name.trim().toLowerCase();
-  return room.participants.find(p => p.name.trim().toLowerCase() === wanted)?.client;
-}
-
-/** Reads the room once for the two role fields create/reassign may carry. */
-async function roleClients(
-  client: RemoteRoomClient,
-  code: string,
-  owner?: string,
-  verifier?: string,
-): Promise<{ ownerClient?: ClientKind; verifierClient?: ClientKind }> {
-  if (!owner && !verifier) return {};
-  let room: Room;
-  try {
-    room = await getRoom(client, code);
-  } catch {
-    // Never fail a task write over a lookup. Omitting the kind lands on the
-    // name-only path, which is what the old hardcoded 'cc' was pretending to be.
-    return {};
-  }
-  const ownerClient = owner ? participantClientKind(room, owner) : undefined;
-  const verifierClient = verifier ? participantClientKind(room, verifier) : undefined;
-  return {
-    ...(ownerClient ? { ownerClient } : {}),
-    ...(verifierClient ? { verifierClient } : {}),
-  };
 }
 
 // ─── Aliases (old surface → consolidated surface) ────────────────────────
@@ -219,15 +147,6 @@ function resolveAlias(name: string, a: Record<string, any>): { name: string; arg
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────
 
-async function findSpeaker(client: RemoteRoomClient, code: string, name: string): Promise<Participant | undefined> {
-  try {
-    const room = await getRoom(client, code);
-    return room.participants.find(p => p.name === name && p.client === 'cc');
-  } catch {
-    return undefined;
-  }
-}
-
 export async function callTool(
   client: RemoteRoomClient,
   profile: McpProfile,
@@ -252,66 +171,9 @@ export async function callTool(
   try {
     return await dispatch(client, name, args, harness, profile, memoryDependencies);
   } catch (e) {
-    if (e instanceof RemoteRoomApiError) {
-      // A handled API error is still a normal result, not an isError one — a
-      // seat conflict or an unknown code comes back here for room_join and
-      // room_listen. So it is covered by their declared outputSchema and has
-      // to carry structuredContent like any other result of theirs.
-      const handled = (value: Record<string, unknown>) => ok(value, [], declaresObjectOutput(name));
-      if (e.code === 'MutedError') {
-        return handled({ sent: false, error: 'muted', hint: `${e.message} Wait via room_listen; do not retry until unmuted.` });
-      }
-      if (e.code === 'NotYourTurnError') {
-        return handled({ sent: false, error: 'not_your_turn', hint: `${e.message} Wait for your turn via room_listen.` });
-      }
-      if (e.code === 'garbled_text') {
-        return handled({
-          sent: false,
-          error: 'garbled_text',
-          hint: `${e.message} Nothing was posted — the room is still waiting on you, so compose the message again and call room_send once more.`,
-        });
-      }
-      if (e.code === 'NotHostError') {
-        return handled({ ok: false, error: 'not_host', hint: `${e.message} Only the host (with the hostKey from room_create) can do this.` });
-      }
-      if (e.code === 'HostNameTakenError') {
-        return handled({ error: 'host_name_taken', hint: 'That name is reserved for the room\'s host. Pick a different display name.' });
-      }
-      if (e.code === 'RoomNotFoundError') {
-        return handled({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
-      }
-      if (e.code === 'SEAT_IN_USE') {
-        return handled({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
-      }
-      if (e.code === 'NotParticipantError') {
-        // A send from an agent that never joined fails the same shape as any
-        // other refused send (`sent: false`), and is told to join rather than
-        // to wait — "wait until unmuted" is a dead end for someone with no
-        // seat. room_status resolves to room_send above, so it lands here too.
-        if (name === 'room_send') {
-          return handled({
-            sent: false,
-            error: 'not_participant',
-            hint: `${e.message} Call room_join with this room code and your agent name, then send again.`,
-          });
-        }
-        return handled({ error: 'not_participant', hint: `${e.message} Call room_join first.` });
-      }
-      if (e.code === 'WebhookLimitError') {
-        return handled({ error: 'webhook_limit', hint: `${e.message} Unregister one first (room_webhook action="unregister").` });
-      }
-      // isError results stay as they are: the spec exempts them from an
-      // outputSchema, and the memory tools — which declare one — do not add
-      // structuredContent here either.
-      return { ...ok({ error: e.code, message: e.message }), isError: true };
-    }
+    if (e instanceof RemoteRoomApiError) return remoteApiErrorResult(e, name);
     throw e;
   }
-}
-
-function requireFields(a: Record<string, any>, fields: string[]): string | null {
-  const missing = fields.filter(f => a[f] === undefined || a[f] === null || a[f] === '');
-  return missing.length > 0 ? `Missing required field(s) for this action: ${missing.join(', ')}.` : null;
 }
 
 // The reader's own policy line: how speaking works in this mode, plus — for
@@ -459,76 +321,8 @@ async function dispatch(
       }, await hydrateListenImages(recentMessages), structured);
     }
 
-    case 'room_send': {
-      const isStatus = a.kind === 'status';
-      const senderName = typeof a.name === 'string' ? a.name.trim() : '';
-      const text = typeof a.text === 'string' ? a.text.trim() : '';
-      if (!senderName || !text) {
-        return ok({ sent: false, error: 'bad_request', hint: 'room_send requires both "name" and "text".' });
-      }
-      const speaker = await findSpeaker(client, a.code, senderName);
-      const role: string = a.role || speaker?.role || '';
-      const result = (await appendMessage(
-        client,
-        a.code,
-        buildMessage(senderName, role, a.text, speaker),
-        isStatus ? 'status' : 'message',
-      )) as {
-        appended?: boolean;
-        reason?: string;
-        metadata?: { roleAtSend?: string; turnId?: number; extendsTurn?: boolean; modeAtSend?: string };
-      };
-      const msgs = await listMessages(client, a.code, 0);
-      const sendInbox = await boardInbox(client, profile, a.code, senderName, false, result?.metadata?.modeAtSend);
-      const sendNextAction = nextActionForInbox(sendInbox, a.code, msgs.length, senderName);
-      const sendContinuation = inboxRequiresWork(sendInbox)
-        ? sendInbox.hint
-        : NEXT_LISTEN(a.code, msgs.length);
-      if (result && result.appended === false && result.reason === 'no_addition') {
-        return ok({
-          sent: true,
-          appended: false,
-          reason: 'no_addition',
-          cursor: msgs.length,
-          nextAction: sendNextAction,
-          ...(sendInbox.hint ? { yourTasks: sendInbox } : {}),
-          hint: `Your "__no_addition__" was accepted — the supplement turn was skipped without posting. ${sendContinuation}`,
-        });
-      }
-      const extended = result?.metadata?.extendsTurn === true;
-      const postedAsStatus = result?.metadata?.roleAtSend === 'status';
-      // Off-floor in moderator mode: the message IS stored, but tagged as a
-      // status side note (roleAtSend='status') and rendered as one — it does
-      // not read as the agent taking a turn. `sent: true` alone made that
-      // indistinguishable from a normal reply, so an agent whose delivery got
-      // demoted had no way to know. Say it plainly.
-      const demoted = !isStatus && postedAsStatus;
-      const sentHint = !demoted
-        ? 'Sent.'
-        : result?.metadata?.modeAtSend === 'deliver'
-          ? 'Posted as a STATUS note — in deliver mode only [RESULT] evidence, a [BLOCKER], or a [DECISION] request posts as a message. Keep working on your task.'
-          : 'Posted, but as a STATUS SIDE NOTE — you did not hold the floor, so this is not counted as your turn. In moderator mode wait to be @-assigned by the Moderator before delivering substantive work.';
-      return ok({
-        sent: true,
-        appended: true,
-        cursor: msgs.length,
-        nextAction: sendNextAction,
-        ...(sendInbox.hint ? { yourTasks: sendInbox } : {}),
-        ...(postedAsStatus ? { extendsTurn: extended } : {}),
-        ...(result?.metadata?.roleAtSend ? { roleAtSend: result.metadata.roleAtSend } : {}),
-        ...(demoted ? { degradedToStatus: true } : {}),
-        // Sending a progress line must not erase durable board work. The old
-        // hint offered "or wait via room_listen" next to the task, so agents
-        // posted "working on it" and went straight back to polling. The
-        // continuation is the task when there is one, the listen otherwise.
-        hint: [
-          postedAsStatus
-            ? (extended ? 'Status posted — turn deadline renewed.' : 'Status posted (no turn change).')
-            : sentHint,
-          sendContinuation,
-        ].join(' '),
-      });
-    }
+    case 'room_send':
+      return dispatchRoomSend(client, a, profile);
 
     case 'room_listen': {
       const since = typeof a.since === 'number' ? a.since : 0;
@@ -706,174 +500,8 @@ async function dispatch(
       return ok({ ended: true, code: a.code });
     }
 
-    case 'room_task': {
-      const taskOk = (value: unknown) => ok(value, [], true);
-      switch (a.action) {
-        case 'list': {
-          const body = await client.post<{ board: TaskBoard }>({ action: 'taskBoard', code: a.code });
-          return taskOk({ board: body.board });
-        }
-        case 'create': {
-          const err = requireFields(a, ['name', 'title']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskCreate',
-            code: a.code,
-            requesterName: a.name,
-            title: a.title,
-            ...(a.id ? { id: a.id } : {}),
-            ...(a.owner ? { owner: a.owner } : {}),
-            ...(a.verifier ? { verifier: a.verifier } : {}),
-            ...(await roleClients(client, a.code, a.owner, a.verifier)),
-            ...(a.dod ? { dod: a.dod } : {}),
-          });
-          return taskOk({ task: body.task, board: body.board });
-        }
-        case 'claim': {
-          const err = requireFields(a, ['name', 'id']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskClaim', code: a.code, id: a.id, name: a.name, client: 'cc',
-          });
-          return taskOk({
-            task: body.task,
-            board: body.board,
-            workNext: {
-              required: true,
-              action: 'execute_task',
-              id: body.task.id,
-              instruction:
-                `Work on ${body.task.id} now. Do not send a status-only room message. `
-                + 'Return to room_task submit only after producing verifiable evidence, or report one concrete blocker.',
-            },
-          });
-        }
-        case 'submit': {
-          const err = requireFields(a, ['name', 'id', 'fileListing', 'fileExcerpt']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const ran = typeof a.runOutput === 'string' && a.runOutput.trim() !== '';
-          const coded = typeof a.exitCode === 'number' && Number.isFinite(a.exitCode);
-          if (ran !== coded) {
-            return taskOk({
-              error: 'bad_request',
-              hint: ran
-                ? 'runOutput needs a numeric exitCode with it.'
-                : 'exitCode needs the runOutput it came from.',
-            });
-          }
-          if (!ran && !(typeof a.checks === 'string' && a.checks.trim())) {
-            return taskOk({
-              error: 'bad_request',
-              hint: 'submit needs proof you checked it: runOutput + exitCode for work with a run, '
-                + 'or checks — each done-when criterion and how you verified it — for work without one.',
-            });
-          }
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskSubmit',
-            code: a.code,
-            id: a.id,
-            name: a.name,
-            client: 'cc',
-            evidence: {
-              fileListing: a.fileListing,
-              fileExcerpt: a.fileExcerpt,
-              ...(ran ? { runOutput: a.runOutput, exitCode: a.exitCode } : {}),
-              ...(typeof a.checks === 'string' && a.checks.trim() ? { checks: a.checks } : {}),
-            },
-          });
-          const inbox = taskInboxFor(body.board, a.name);
-          const nextOwned = (body.board.tasks as Task[]).find(
-            task => task.state === 'todo'
-              && task.owner?.trim().toLowerCase() === a.name.trim().toLowerCase(),
-          );
-          return taskOk({
-            task: body.task,
-            board: body.board,
-            taskStateUpdated: body.task.state === 'awaiting_review',
-            submittedForReview: body.task.state === 'awaiting_review',
-            ...(nextOwned ? {
-              workNext: {
-                required: true,
-                action: 'claim_next_task',
-                id: nextOwned.id,
-                instruction:
-                  `${body.task.id} is now awaiting_review. Immediately claim ${nextOwned.id} and continue working; `
-                  + 'do not stop at a status report or wait for review unless it is a real dependency.',
-              },
-            } : {
-              workNext: {
-                required: false,
-                action: 'await_review',
-                instruction:
-                  `${body.task.id} is now awaiting_review. The owner cannot mark it done; a different verifier must rule.`,
-              },
-            }),
-            ...(inbox.hint ? { yourTasks: inbox } : {}),
-          });
-        }
-        case 'verify': {
-          const err = requireFields(a, ['name', 'id', 'verdict']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskVerify', code: a.code, id: a.id, name: a.name, client: 'cc', verdict: a.verdict, note: a.note,
-            ...(a.followUp !== undefined ? { followUp: a.followUp } : {}),
-          });
-          const followUpRecorded = Boolean(body.task.verdict?.followUp);
-          return taskOk({
-            task: body.task,
-            board: body.board,
-            verified: true,
-            notificationSent: true,
-            followUpRecorded,
-            nextAction: 'no_duplicate_report',
-            hint: 'The system posted the single official review notice with the note and optional followUp. Do not repeat the ruling with room_send; use it only for new substantive information, reconsideration, or complex coordination. If acceptance fails, choose rejected; do not use done + followUp to bypass it.',
-          });
-        }
-        case 'reassign': {
-          const err = requireFields(a, ['name', 'id']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskReassign',
-            code: a.code,
-            id: a.id,
-            requesterName: a.name,
-            requesterClient: 'cc',
-            ...(a.owner ? { owner: a.owner } : {}),
-            ...(a.verifier ? { verifier: a.verifier } : {}),
-            ...(await roleClients(client, a.code, a.owner, a.verifier)),
-          });
-          return taskOk({ task: body.task, board: body.board });
-        }
-        case 'cancel': {
-          const err = requireFields(a, ['name', 'id']);
-          if (err) return taskOk({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskCancel',
-            code: a.code,
-            id: a.id,
-            requesterName: a.name,
-            requesterClient: 'cc',
-            ...(a.reason ? { reason: a.reason } : {}),
-          });
-          return taskOk({ task: body.task, board: body.board });
-        }
-        case 'reopen': {
-          const err = requireFields(a, ['name', 'id']);
-          if (err) return ok({ error: 'bad_request', hint: err });
-          const body = await client.post<{ board: TaskBoard; task: Task }>({
-            action: 'taskReopen',
-            code: a.code,
-            id: a.id,
-            requesterName: a.name,
-            requesterClient: 'cc',
-            ...(a.state ? { state: a.state } : {}),
-          });
-          return ok({ task: body.task, board: body.board });
-        }
-        default:
-          return taskOk({ error: 'bad_request', hint: 'room_task action must be one of: list, create, claim, submit, verify, reassign, reopen, cancel.' });
-      }
-    }
+    case 'room_task':
+      return dispatchRoomTask(client, a);
 
     case 'room_webhook': {
       switch (a.action) {

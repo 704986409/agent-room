@@ -17,8 +17,9 @@ import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { MemoryReviewPanel } from '../components/MemoryReviewPanel.js';
 import { SpeakBlockedNotice } from '../components/SpeakBlockedNotice.js';
 import { Composer, TEXTAREA_MAX_HEIGHT, TEXTAREA_MIN_HEIGHT } from '../components/Composer.js';
+import { useRoomSend } from './room/useRoomSend.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
-import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
+import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, onDeliverHostMessage, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
@@ -55,10 +56,6 @@ export function Room() {
   const { room, messages, error, sendMessage, refreshRoom, forceRefresh } = useRoom(code, self?.name ?? '');
   useDocumentTitle(t('page.roomTitle', { topic: room?.topic ?? t('common.loading') }));
   const [text, setText] = useState('');
-  // Set when the server refuses a send because we hold no seat. Only the
-  // rejoin it points at clears it — the roster that let us try is the one
-  // thing we now know to be wrong.
-  const [rejectedBySend, setRejectedBySend] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [turnState, setTurnState] = useState<TurnState | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -451,6 +448,17 @@ export function Room() {
   const reviewTaskCount = taskBoard.board?.tasks.filter(
     t => canRuleOn(t, { name: self?.name ?? '', client: 'web' }, ended),
   ).length ?? 0;
+  // Sending lives in its own hook so the composer and the voice button speak
+  // through the same path. It has to be called above the early returns below,
+  // which is why it takes a room and an identity that may still be null.
+  const { submitMessage, rejectedBySend } = useRoomSend({
+    code,
+    room,
+    self,
+    sendMessage,
+    forceRefresh,
+    reloadTaskBoard: taskBoard.reload,
+  });
 
   async function handleExportReport() {
     if (!room) return;
@@ -730,43 +738,6 @@ export function Room() {
       textareaRef.current?.focus();
       autoGrow(textareaRef.current);
     });
-  }
-
-  // Hands one message to the room. Rejects on failure so the Composer can put
-  // the draft (text + attachments) back where the user left it.
-  async function submitMessage(body: string, attachments: MessageAttachment[]) {
-    const msg: Message = {
-      id: Date.now(),
-      type: 'msg',
-      name: me.name,
-      role: me.role,
-      initials: initialsFor(me.name),
-      color: colorForName(me.name),
-      client: 'web',
-      text: body,
-      time: Date.now(),
-      attachments: attachments.length ? attachments : undefined,
-    };
-    try {
-      await sendMessage(msg);
-    } catch (e) {
-      // "You are not in this room" is not a failed send to retry — the
-      // composer should not have been there at all. Resync the roster and
-      // show the rejoin notice instead of a toast the user can only dismiss.
-      if (e instanceof Error && e.name === 'NotParticipantError') {
-        setRejectedBySend(true);
-        await forceRefresh();
-        return;
-      }
-      throw e;
-    }
-    // Deliver: the host's message is either the go for a waiting plan
-    // ("Start" / 开工) or a goal the lead should plan for.
-    if (isHost && replyMode === 'deliver') {
-      void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, body)
-        .then(() => taskBoard.reload())
-        .catch(() => { /* best-effort */ });
-    }
   }
 
   function appendText(value: string) {
