@@ -1108,6 +1108,22 @@ describe('hosted MCP endpoint', () => {
       expect(duplicateWrite).toMatchObject({ code: 'PENDING_REVIEW', proposalId, duplicateOf: proposalId });
       expect(duplicateWrite.notificationDelivered).toBeUndefined();
       expect(await roomNotices()).toHaveLength(1);
+      const chineseProposal = await invoke('memory_write', {
+        code, seatKey: seatA, scope: 'room', title: 'Shell 规则一', preview: '脚本规则',
+        content: '这个仓库中的所有 shell 脚本都必须在第二行写 set -euo pipefail。',
+        searchText: 'shell set-euo-pipefail', requestId: `near-shell-a-${randomUUID()}`,
+      });
+      expect(chineseProposal.code).toBe('PENDING_REVIEW');
+      const noticeCountAfterChineseCreate = (await roomNotices()).length;
+      const chineseDuplicate = await invoke('memory_write', {
+        code, seatKey: otherPersonaKey, scope: 'room', title: 'Shell 规则二', preview: '脚本规则',
+        content: '每个仓库脚本的第二行都必须是 set -euo pipefail。',
+        searchText: 'shell set-euo-pipefail', requestId: `near-shell-b-${randomUUID()}`,
+      });
+      expect(chineseDuplicate).toEqual({
+        code: 'PENDING_REVIEW', proposalId: chineseProposal.proposalId, duplicateOf: chineseProposal.proposalId,
+      });
+      expect(await roomNotices()).toHaveLength(noticeCountAfterChineseCreate);
       expect(await invoke('memory_review', { code, seatKey: hostSeatKey, action: 'list' }))
         .toMatchObject({ code: 'FORBIDDEN' });
       expect(await invoke('memory_review', {

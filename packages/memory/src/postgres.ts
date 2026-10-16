@@ -612,6 +612,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
     input: MemoryProposalInput,
     proposer: MemoryIdentity,
     requestId: string,
+    duplicateResult?: MemoryMutationResult,
   ): Promise<MemoryMutationResult> {
     assertScope(scope);
     assertProposerIdentity(proposer);
@@ -619,6 +620,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       throw new TypeError('Memory proposal update must change at least one field.');
     }
     return this.withRequest({ roomInstanceId: scope.roomInstanceId, actor: proposer, requestId }, async client => {
+      if (input.action === 'create' && duplicateResult) return duplicateResult;
       const proposalId = randomUUID();
       let targetMemoryId: string | null = null;
       let targetVersion: number | null = null;
@@ -674,6 +676,32 @@ export class PostgresMemoryRepository implements MemoryRepository {
       }
       throw new Error('Could not insert or resolve a pending memory proposal.');
     });
+  }
+
+  async findRoomCreateDuplicateCandidates(
+    scope: Extract<MemoryScope, { scope: 'room' }>,
+  ): Promise<Array<{ id: string; kind: 'memory' | 'proposal'; title: string; content: string }>> {
+    assertScope(scope);
+    const [entries, proposals] = await Promise.all([
+      this.pool.query<{ id: string; title: string; content: string }>(
+        `SELECT id, title, content FROM (
+           SELECT id, title, content, created_at FROM agent_memory_entries
+           WHERE room_instance_id = $1 AND scope = 'room' AND persona_id IS NULL AND deleted_at IS NULL
+           ORDER BY created_at DESC, id DESC LIMIT 500
+         ) recent`, [scope.roomInstanceId],
+      ),
+      this.pool.query<{ id: string; payload: MemoryContent }>(
+        `SELECT id, payload FROM (
+           SELECT id, payload, created_at FROM agent_memory_proposals
+           WHERE room_instance_id = $1 AND action = 'create' AND status = 'pending'
+           ORDER BY created_at DESC, id DESC LIMIT 500
+         ) recent`, [scope.roomInstanceId],
+      ),
+    ]);
+    return [
+      ...entries.rows.map(row => ({ id: row.id, kind: 'memory' as const, title: row.title, content: row.content })),
+      ...proposals.rows.map(row => ({ id: row.id, kind: 'proposal' as const, title: row.payload.title, content: row.payload.content })),
+    ];
   }
 
   async getRoomProposal(roomInstanceId: string, proposalId: string): Promise<MemoryProposal | null> {

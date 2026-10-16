@@ -106,6 +106,7 @@ export type MutationStatus =
   | 'deleted'
   | 'not_found'
   | 'pending_review'
+  | 'duplicate'
   | 'approved'
   | 'rejected';
 
@@ -116,6 +117,8 @@ export interface MemoryMutationResult {
   version?: number;
   /** pending_review only: the existing identical pending proposal that was returned. */
   duplicateOf?: string;
+  /** duplicate only: an approved room entry matched a new room create. */
+  duplicateKind?: 'memory';
   /** Proposal IDs made obsolete by an approved update or delete. */
   superseded?: string[];
 }

@@ -61,7 +61,12 @@ export interface MemoryRepository {
     input: MemoryProposalInput,
     proposer: MemoryIdentity,
     requestId: string,
+    duplicateResult?: MemoryMutationResult,
   ): Promise<MemoryMutationResult>;
+
+  findRoomCreateDuplicateCandidates(
+    scope: Extract<MemoryScope, { scope: 'room' }>,
+  ): Promise<Array<{ id: string; kind: 'memory' | 'proposal'; title: string; content: string }>>;
 
   getRoomProposal(roomInstanceId: string, proposalId: string): Promise<MemoryProposal | null>;
   getRoomProposals(roomInstanceId: string, proposalIds: readonly string[]): Promise<MemoryProposal[]>;

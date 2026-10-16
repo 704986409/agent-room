@@ -479,6 +479,41 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     expect(resultId(del3)).not.toBe(resultId(del1));
   });
 
+  it('detects bounded room create near-duplicates against pending and approved records only', async () => {
+    const service = new MemoryService(repository);
+    const roomInstanceId = randomUUID();
+    const roomScope = { roomInstanceId, scope: 'room' as const };
+    const caller = trustedCaller(roomInstanceId, `member-${randomUUID()}`, 'room_member');
+    const shellA = '这个仓库中的所有 shell 脚本都必须在第二行写 set -euo pipefail。';
+    const shellB = '每个仓库脚本的第二行都必须是 set -euo pipefail。';
+    const pending = await service.createEntry(caller, 'room', content({ title: 'Shell guideline A', content: shellA }), 'near-pending-a');
+    const pendingId = resultId(pending);
+    expect(await service.createEntry(caller, 'room', content({ title: 'Shell guideline B', content: shellB }), 'near-pending-b'))
+      .toEqual({ code: 'PENDING_REVIEW', proposalId: pendingId, duplicateOf: pendingId });
+    expect(await repository.listPendingRoomProposals(roomInstanceId, { limit: 100 })).toHaveLength(1);
+
+    const approvedProposal = await service.createEntry(caller, 'room', content({
+      title: 'Date convention A', content: '日期统一写成 YYYY-MM-DD 格式。',
+    }), 'near-approved-a');
+    const approvedId = resultId(approvedProposal);
+    await repository.reviewRoomProposal(roomInstanceId, approvedId, roomOwnerIdentity(), 'approve', 'near-approved-review');
+    const approvedEntry = (await repository.listEntries(roomScope, { limit: 100 }))
+      .find(entry => entry.title === 'Date convention A')!;
+    expect(await service.createEntry(caller, 'room', content({
+      title: 'Date convention B', content: '房间交付物和脚本里的日期都用 YYYY-MM-DD。',
+    }), 'near-approved-b')).toEqual({ code: 'DUPLICATE', duplicateOf: approvedEntry.id, duplicateKind: 'memory' });
+
+    const distinct = await service.createEntry(caller, 'room', content({
+      title: 'Output diagnostics', content: '脚本报错输出到 stderr，退出码用 2。',
+    }), 'near-distinct');
+    expect(distinct).toMatchObject({ code: 'PENDING_REVIEW' });
+    expect(resultId(distinct)).not.toBe(pendingId);
+
+    const personaCaller = trustedCaller(roomInstanceId, `persona-${randomUUID()}`);
+    const persona = await service.createEntry(personaCaller, 'persona', content({ title: 'Persona shell', content: shellB }), 'near-persona');
+    expect(persona).toMatchObject({ status: 'created' });
+  });
+
   it('rejects self-review and detects stale version snapshots without overwriting newer facts', async () => {
     const roomInstanceId = randomUUID();
     const scope = { roomInstanceId, scope: 'room' as const };

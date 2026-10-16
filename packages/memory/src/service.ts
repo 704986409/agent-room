@@ -1,5 +1,7 @@
 import type { MemoryRepository } from './repository.js';
 import { normalizeForDuplicate } from './normalize.js';
+import { classifyDuplicate, memoryKeywords, keywordSimilarity } from './keywords.js';
+import { resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
@@ -79,9 +81,16 @@ export interface PendingReviewResult {
   readonly duplicateOf?: string;
 }
 
+export interface DuplicateMemoryResult {
+  readonly code: 'DUPLICATE';
+  readonly duplicateOf: string;
+  readonly duplicateKind: 'memory';
+}
+
 export type MemoryServiceMutationResult =
   | DuplicateCandidatesResult
   | MutationCompletedResult
+  | DuplicateMemoryResult
   | PendingReviewResult;
 
 const ERROR_MESSAGES: Record<MemoryServiceErrorCode, string> = {
@@ -98,6 +107,12 @@ const ERROR_MESSAGES: Record<MemoryServiceErrorCode, string> = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZE = 100;
 const MAX_DUPLICATE_CANDIDATES = 5;
+let warnedAboutDuplicateVerifierFailure = false;
+
+export interface MemoryServiceOptions {
+  /** null explicitly disables verification; omitted resolves from the environment. */
+  duplicateVerifier?: DuplicateVerifier | null;
+}
 
 export class MemoryServiceError extends Error {
   constructor(readonly code: MemoryServiceErrorCode) {
@@ -248,6 +263,9 @@ function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationR
   if (result.status === 'pending_review') {
     return { code: 'PENDING_REVIEW', proposalId: result.id, ...(result.duplicateOf ? { duplicateOf: result.duplicateOf } : {}) };
   }
+  if (result.status === 'duplicate' && result.duplicateOf) {
+    return { code: 'DUPLICATE', duplicateOf: result.duplicateOf, duplicateKind: 'memory' };
+  }
   if (result.status === 'created' || result.status === 'updated' || result.status === 'deleted') {
     return { status: result.status, id: result.id, ...(result.version === undefined ? {} : { version: result.version }) };
   }
@@ -259,7 +277,13 @@ function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationR
  * server-side seat resolver; MCP payload fields are never used to construct it.
  */
 export class MemoryService {
-  constructor(private readonly repository: MemoryRepository) {}
+  private readonly duplicateVerifier: DuplicateVerifier | undefined;
+
+  constructor(private readonly repository: MemoryRepository, options: MemoryServiceOptions = {}) {
+    this.duplicateVerifier = options.duplicateVerifier === null
+      ? undefined
+      : options.duplicateVerifier ?? resolveDuplicateVerifier();
+  }
 
   async readEntry(caller: TrustedMemoryCaller, kind: MemoryScopeKind, id: string): Promise<MemoryEntry> {
     return this.execute(async () => {
@@ -334,6 +358,52 @@ export class MemoryService {
         return this.duplicateResult(candidates);
       }
 
+      let nearDuplicateResult: MemoryMutationResult | undefined;
+      if (scope.scope === 'room' && /\p{Script=Han}/u.test(`${content.title} ${content.content}`)) {
+        const candidateKeywords = memoryKeywords(`${content.title} ${content.content}`);
+        const scored = (await this.repository.findRoomCreateDuplicateCandidates(scope))
+          .map(existing => ({
+            ...existing,
+            score: keywordSimilarity(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)),
+          }))
+          .filter(existing => classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) !== 'not_duplicate')
+          .sort((a, b) => b.score - a.score
+            || (a.kind === b.kind ? 0 : a.kind === 'proposal' ? -1 : 1)
+            || a.id.localeCompare(b.id));
+        const bestRuleMatch = scored.find(existing =>
+          classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) === 'duplicate');
+        if (bestRuleMatch) {
+          nearDuplicateResult = bestRuleMatch.kind === 'proposal'
+            ? { status: 'pending_review', id: bestRuleMatch.id, duplicateOf: bestRuleMatch.id }
+            : { status: 'duplicate', id: bestRuleMatch.id, duplicateOf: bestRuleMatch.id, duplicateKind: 'memory' };
+        } else {
+          const borderline = scored.filter(existing =>
+            classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) === 'borderline')
+            .slice(0, 3);
+          for (const existing of borderline) {
+            if (!this.duplicateVerifier) break;
+            try {
+              const verified = await this.duplicateVerifier.verify({
+                candidate: { title: content.title, content: content.content },
+                existing: { id: existing.id, kind: existing.kind, title: existing.title, content: existing.content },
+                score: existing.score,
+              });
+              if (verified) {
+                nearDuplicateResult = existing.kind === 'proposal'
+                  ? { status: 'pending_review', id: existing.id, duplicateOf: existing.id }
+                  : { status: 'duplicate', id: existing.id, duplicateOf: existing.id, duplicateKind: 'memory' };
+                break;
+              }
+            } catch {
+              if (!warnedAboutDuplicateVerifierFailure) {
+                warnedAboutDuplicateVerifierFailure = true;
+                console.warn('Memory duplicate verifier failed; treating the candidate as not duplicate.');
+              }
+            }
+          }
+        }
+      }
+
       const result = scope.scope === 'persona'
         ? await this.repository.createPersonaEntry(scope, content, identity, idempotencyKey)
         : await this.repository.createRoomProposal(
@@ -341,6 +411,7 @@ export class MemoryService {
           { action: 'create', content },
           identity,
           idempotencyKey,
+          nearDuplicateResult,
         );
       return toServiceMutation(result);
     });

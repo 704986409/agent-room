@@ -1,5 +1,16 @@
 export { MEMORY_SEARCH_SQL, PostgresMemoryRepository, applyMemoryMigrations } from './postgres.js';
 export { MemoryService, MemoryServiceError } from './service.js';
+export {
+  BORDERLINE_THRESHOLD,
+  DEFAULT_DUPLICATE_THRESHOLD,
+  DUPLICATE_THRESHOLD,
+  classifyDuplicate,
+  isLikelyDuplicate,
+  keywordSimilarity,
+  memoryKeywords,
+} from './keywords.js';
+export { resolveDuplicateVerifier } from './dedupVerifier.js';
+export type { DuplicateVerifier } from './dedupVerifier.js';
 export { MemorySearchService, MEMORY_READ_MAX_CHARS } from './search-service.js';
 export {
   MemoryReviewService,
@@ -49,6 +60,8 @@ export type {
 } from './brief-session-store.js';
 export type {
   DuplicateCandidatesResult,
+  DuplicateMemoryResult,
+  MemoryServiceOptions,
   MemoryCallerContextResolver,
   MemoryCorePrinciplesReader,
   MemoryEntrySummary,
