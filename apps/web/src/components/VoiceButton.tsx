@@ -126,7 +126,7 @@ export function VoiceButton({ onTranscript, disabled, silenceMs = 5000, maxTurnM
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch (e) {
       const { showToast } = await import('./Toast.js');
-      showToast(`Mic permission denied: ${e instanceof Error ? e.message : String(e)}`);
+      showToast(`Mic permission denied: ${e instanceof Error ? e.message : String(e)}`, 'error');
       listeningRef.current = false;
       setState('idle');
       return;
@@ -256,11 +256,11 @@ export function VoiceButton({ onTranscript, disabled, silenceMs = 5000, maxTurnM
         // Surface but keep mic hot — user can try again.
         const detail = await resp.text().catch(() => '');
         const { showToast } = await import('./Toast.js');
-        showToast(`Transcription failed: ${detail.slice(0, 80) || resp.status}`);
+        showToast(`Transcription failed: ${detail.slice(0, 80) || resp.status}`, 'error');
       }
     } catch (e) {
       const { showToast } = await import('./Toast.js');
-      showToast(`Transcription failed: ${e instanceof Error ? e.message : String(e)}`);
+      showToast(`Transcription failed: ${e instanceof Error ? e.message : String(e)}`, 'error');
     }
     if (listeningRef.current) {
       setState('recording');

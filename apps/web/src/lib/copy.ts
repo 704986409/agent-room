@@ -8,6 +8,6 @@ export async function copyText(text: string, successMsg: string): Promise<void> 
   } catch {
     let locale: string | null = null;
     try { locale = window.localStorage.getItem('agent-room:locale'); } catch { /* storage can be disabled */ }
-    showToast(translate(resolveLocale(locale), 'common.copyFailed'));
+    showToast(translate(resolveLocale(locale), 'common.copyFailed'), 'error');
   }
 }

@@ -142,7 +142,7 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
               </code>
               <button
                 type="button"
-                onClick={() => copyText(initBlock, () => { setCopied('init'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
+                onClick={() => copyText(initBlock, () => { setCopied('init'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed'), 'error'))}
                 className="shrink-0 text-[10px] font-medium text-accent hover:underline"
               >
                 {copied === 'init' ? t('common.copied') : t('common.copy')}
@@ -161,7 +161,7 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
               </code>
               <button
                 type="button"
-                onClick={() => copyText(joinUrl, () => { setCopied('url'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
+                onClick={() => copyText(joinUrl, () => { setCopied('url'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed'), 'error'))}
                 className="shrink-0 text-[10px] font-medium text-accent hover:underline"
               >
                 {copied === 'url' ? t('common.copied') : t('mcp.copyUrl')}
@@ -176,7 +176,7 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
               </pre>
               <button
                 type="button"
-                onClick={() => copyText(agentPrompt, () => { setCopied('prompt'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed')))}
+                onClick={() => copyText(agentPrompt, () => { setCopied('prompt'); setTimeout(() => setCopied(null), 1500); }, () => showToast(t('common.copyFailed'), 'error'))}
                 className="self-start text-[10px] font-medium text-accent hover:underline"
               >
                 {copied === 'prompt' ? t('mcp.copiedPrompt') : t('mcp.copyPrompt')}

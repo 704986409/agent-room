@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type ClipboardEvent, type DragEvent, type ReactNode } from 'react';
+import { useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.js';
 import { useTaskBoard } from '../hooks/useTaskBoard.js';
@@ -15,13 +15,14 @@ import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { MemoryReviewPanel } from '../components/MemoryReviewPanel.js';
+import { Composer, TEXTAREA_MAX_HEIGHT, TEXTAREA_MIN_HEIGHT } from '../components/Composer.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
 import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, onDeliverHostMessage, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
-import { ALLOWED_ATTACHMENT_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, deleteRoomBlobs, formatBytes, uploadAttachment } from '../lib/upload.js';
+import { deleteRoomBlobs } from '../lib/upload.js';
 
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long enough that humans + agents discussing intermittently don't trip it
 const AUTO_CLOSE_COUNTDOWN = 5;          // seconds
@@ -36,10 +37,6 @@ function readStoredSelf(code: string): SelfIdentity | null {
     return null;
   }
 }
-
-// Cap auto-grow at ~8 lines so the input never eats the whole feed.
-const TEXTAREA_MAX_HEIGHT = 200;
-const TEXTAREA_MIN_HEIGHT = 42;
 
 export function Room() {
   const { locale, t, formatDateTime } = useLocale();
@@ -57,16 +54,11 @@ export function Room() {
   const { room, messages, error, sendMessage, refreshRoom, forceRefresh } = useRoom(code, self?.name ?? '');
   useDocumentTitle(t('page.roomTitle', { topic: room?.topic ?? t('common.loading') }));
   const [text, setText] = useState('');
-  const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
-  const [attachBusy, setAttachBusy] = useState(false);
-  const [dragActive, setDragActive] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [turnState, setTurnState] = useState<TurnState | null>(null);
   const [now, setNow] = useState(Date.now());
   const feedRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dragDepthRef = useRef(0);
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const activeAudioUrlRef = useRef<string | null>(null);
 
@@ -321,7 +313,7 @@ export function Room() {
       sessionStorage.removeItem(`room:${code}:self`);
       (async () => {
         const { showToast } = await import('../components/Toast.js');
-        showToast(t('room.removedByHost'));
+        showToast(t('room.removedByHost'), 'info');
       })();
       navigate(`/j/${code}`, { replace: true });
     }
@@ -403,7 +395,7 @@ export function Room() {
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.muteFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.muteFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     }
   }
 
@@ -421,7 +413,7 @@ export function Room() {
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.kickFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.kickFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     }
   }
 
@@ -472,7 +464,7 @@ export function Room() {
       navigate(`/r/${code}/report`);
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.exportFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.exportFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     } finally {
       setReportBusy(false);
     }
@@ -507,7 +499,7 @@ export function Room() {
       await forceRefresh();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `Start failed: ${e.message}` : 'Start failed');
+      showToast(e instanceof Error ? `Start failed: ${e.message}` : 'Start failed', 'error');
     }
   }
 
@@ -602,7 +594,7 @@ export function Room() {
     const nextConfig = buildModeConfig(mode, overrides);
     if (mode !== 'open' && !fallbackAgent) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.sequentialNeedsAgent'));
+      showToast(t('room.sequentialNeedsAgent'), 'info');
       return;
     }
     setModeBusy(true);
@@ -614,7 +606,7 @@ export function Room() {
       showToast(t('room.replyModeSet', { mode: modeLabel(mode) }));
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.modeChangeFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.modeChangeFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     } finally {
       setModeBusy(false);
     }
@@ -667,7 +659,7 @@ export function Room() {
     }
     if (!turnState) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.sendFirst'));
+      showToast(t('room.sendFirst'), 'info');
       return;
     }
     setModeBusy(true);
@@ -676,7 +668,7 @@ export function Room() {
       const added = await directInvoke(client, code, { name: p.name, client: p.client }, 'host');
       if (!added) {
         const { showToast } = await import('../components/Toast.js');
-        showToast(t('room.agentQueued', { name: p.name }));
+        showToast(t('room.agentQueued', { name: p.name }), 'info');
         return;
       }
       await emitTurnSystemMessage(
@@ -688,7 +680,7 @@ export function Room() {
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.askFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.askFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     } finally {
       setModeBusy(false);
     }
@@ -702,7 +694,7 @@ export function Room() {
       const skipped = await hostSkipCurrent(client, code, activeRoom);
       if (!skipped) {
         const { showToast } = await import('../components/Toast.js');
-        showToast(t('room.noActiveAgent'));
+        showToast(t('room.noActiveAgent'), 'info');
         return;
       }
       await emitTurnSystemMessage(
@@ -714,7 +706,7 @@ export function Room() {
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.skipFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
+      showToast(t('room.skipFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
     } finally {
       setModeBusy(false);
     }
@@ -733,9 +725,9 @@ export function Room() {
     });
   }
 
-  async function send() {
-    const body = text.trim();
-    if ((!body && attachments.length === 0) || ended) return;
+  // Hands one message to the room. Rejects on failure so the Composer can put
+  // the draft (text + attachments) back where the user left it.
+  async function submitMessage(body: string, attachments: MessageAttachment[]) {
     const msg: Message = {
       id: Date.now(),
       type: 'msg',
@@ -748,47 +740,13 @@ export function Room() {
       time: Date.now(),
       attachments: attachments.length ? attachments : undefined,
     };
-    setText('');
-    setAttachments([]);
-    try {
-      await sendMessage(msg);
-      // Deliver: the host's message is either the go for a waiting plan
-      // ("Start" / 开工) or a goal the lead should plan for.
-      if (isHost && replyMode === 'deliver') {
-        void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, body)
-          .then(() => taskBoard.reload())
-          .catch(() => { /* best-effort */ });
-      }
-    } catch (e) {
-      const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
-      setText(body); // restore draft
-      setAttachments(attachments);
-    }
-  }
-
-  async function addFiles(files: FileList | File[]) {
-    const incoming = Array.from(files);
-    if (!incoming.length) return;
-    setAttachBusy(true);
-    try {
-      const slots = Math.max(0, MAX_ATTACHMENTS_PER_MESSAGE - attachments.length);
-      const selected = incoming.slice(0, slots);
-      if (incoming.length > slots) {
-        const { showToast } = await import('../components/Toast.js');
-        showToast(t('room.attachLimit', { count: MAX_ATTACHMENTS_PER_MESSAGE }));
-      }
-      const prepared: MessageAttachment[] = [];
-      for (const file of selected) {
-        prepared.push(await uploadAttachment(file, code));
-      }
-      setAttachments(prev => [...prev, ...prepared].slice(0, MAX_ATTACHMENTS_PER_MESSAGE));
-    } catch (e) {
-      const { showToast } = await import('../components/Toast.js');
-      showToast(t('room.attachmentFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
-    } finally {
-      setAttachBusy(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
+    await sendMessage(msg);
+    // Deliver: the host's message is either the go for a waiting plan
+    // ("Start" / 开工) or a goal the lead should plan for.
+    if (isHost && replyMode === 'deliver') {
+      void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, body)
+        .then(() => taskBoard.reload())
+        .catch(() => { /* best-effort */ });
     }
   }
 
@@ -801,79 +759,6 @@ export function Room() {
       textareaRef.current?.focus();
       autoGrow(textareaRef.current);
     });
-  }
-
-  async function fileFromUrl(url: string): Promise<File | null> {
-    try {
-      const parsed = new URL(url);
-      const resp = await fetch(parsed.toString());
-      if (!resp.ok) return null;
-      const blob = await resp.blob();
-      if (!ALLOWED_ATTACHMENT_TYPES.has(blob.type)) return null;
-      const pathName = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() ?? 'attachment');
-      const fallbackName = blob.type.startsWith('image/') ? 'image' : 'attachment';
-      const name = pathName.includes('.') ? pathName : `${fallbackName}.${blob.type.split('/')[1] ?? 'bin'}`;
-      return new File([blob], name, { type: blob.type });
-    } catch {
-      return null;
-    }
-  }
-
-  async function filesFromDrop(dataTransfer: DataTransfer, uri: string): Promise<File[]> {
-    const droppedFiles = Array.from(dataTransfer.files);
-    if (droppedFiles.length > 0) return droppedFiles;
-    if (!uri) return [];
-    const file = await fileFromUrl(uri);
-    return file ? [file] : [];
-  }
-
-  function handleDragEnter(e: DragEvent<HTMLElement>) {
-    if (ended) return;
-    e.preventDefault();
-    e.stopPropagation();
-    dragDepthRef.current += 1;
-    setDragActive(true);
-  }
-
-  function handleDragOver(e: DragEvent<HTMLElement>) {
-    if (ended) return;
-    e.preventDefault();
-    e.stopPropagation();
-    e.dataTransfer.dropEffect = 'copy';
-  }
-
-  function handleDragLeave(e: DragEvent<HTMLElement>) {
-    if (ended) return;
-    e.preventDefault();
-    e.stopPropagation();
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) setDragActive(false);
-  }
-
-  async function handleDrop(e: DragEvent<HTMLElement>) {
-    if (ended) return;
-    e.preventDefault();
-    e.stopPropagation();
-    dragDepthRef.current = 0;
-    setDragActive(false);
-
-    const uri = e.dataTransfer.getData('text/uri-list').split('\n').find(line => line && !line.startsWith('#')) ?? '';
-    const plainText = e.dataTransfer.getData('text/plain');
-    const files = await filesFromDrop(e.dataTransfer, uri);
-    if (files.length > 0) {
-      await addFiles(files);
-      return;
-    }
-
-    const textValue = plainText || uri;
-    if (textValue.trim()) appendText(textValue.trim());
-  }
-
-  async function handlePaste(e: ClipboardEvent<HTMLTextAreaElement>) {
-    const files = Array.from(e.clipboardData.files).filter(file => file.type.startsWith('image/'));
-    if (!files.length) return;
-    e.preventDefault();
-    await addFiles(files);
   }
 
   return (
@@ -1321,19 +1206,15 @@ export function Room() {
                 </p>
               </div>
             ) : (
-              <div
-                className={`relative min-w-0 border-t border-border-faint p-2.5 sm:p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] bg-surface flex flex-col gap-2 transition ${dragActive ? 'ring-2 ring-inset ring-accent bg-accent-tint/40' : ''}`}
-                onDragEnter={handleDragEnter}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={e => { void handleDrop(e); }}
-              >
-                {dragActive && (
-                  <div className="pointer-events-none absolute inset-2 z-10 flex items-center justify-center rounded-lg border-2 border-dashed border-accent bg-surface/90 text-sm font-semibold text-accent shadow-sm">
-                    {t('room.releaseToAttach')}
-                  </div>
-                )}
-                {isHost && mutedCount > 0 && (
+              <Composer
+                roomCode={code}
+                text={text}
+                onTextChange={setText}
+                onAppendText={appendText}
+                onSubmit={submitMessage}
+                ended={ended}
+                textareaRef={textareaRef}
+                banner={isHost && mutedCount > 0 ? (
                   <div className="text-[11px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5 flex items-center gap-2">
                     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0">
                       <path d="M8 3.5 4.5 6.25H2.5v3.5h2L8 12.5z" />
@@ -1341,26 +1222,16 @@ export function Room() {
                     </svg>
                     <span>{t(mutedCount === 1 ? 'room.mutedOne' : 'room.mutedCount', { count: mutedCount })}</span>
                   </div>
-                )}
-                {attachments.length > 0 && (
-                  <div className="flex flex-wrap gap-2">
-                    {attachments.map(attachment => (
-                      <PendingAttachment
-                        key={attachment.id}
-                        attachment={attachment}
-                        onRemove={() => setAttachments(prev => prev.filter(item => item.id !== attachment.id))}
-                      />
-                    ))}
-                  </div>
-                )}
-                {/*
+                ) : null}
+                deck={(
+                /*
                   Command deck. Targeting an agent used to live only as an
                   "Ask" button inside each People row, so on a phone giving one
                   agent a job meant leaving Chat, finding the row, tapping Ask,
                   then coming back. The agents are now chips on the composer
                   itself: tap to address one (or to hand it the turn directly
                   in sequential / moderator mode) without losing the thread.
-                */}
+                */
                 <div className="flex w-full min-w-0 flex-wrap items-center gap-2 py-0.5 shrink-0">
                   {roomAgents.length === 0 ? (
                     messages.length > 0 && (
@@ -1402,96 +1273,43 @@ export function Room() {
                   </button>
                   </>)}
                 </div>
-                <div className="flex flex-col sm:flex-row sm:items-end gap-2">
-                  <div className="relative flex-1 min-w-0">
-                    <textarea
-                      ref={textareaRef}
-                      value={text}
-                      onChange={e => setText(e.target.value)}
-                      onPaste={e => { void handlePaste(e); }}
-                      onKeyDown={e => {
-                        // Desktop: Enter sends; Shift+Enter for new line.
-                        // Mobile touch: let Enter insert a newline so user can type freely without accidental send.
-                        const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-                        if (!isTouch && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                          e.preventDefault();
-                          send();
+                )}
+                tools={(
+                  <VoiceButton
+                    // Plan B: speak, stop, and the transcript is sent at once (any
+                    // pending typed draft is merged in front of it).
+                    onTranscript={async (spoken) => {
+                      if (ended || !spoken.trim()) return;
+                      const merged = text.trim() ? `${text.trim()} ${spoken.trim()}` : spoken.trim();
+                      const msg: Message = {
+                        id: Date.now(),
+                        type: 'msg',
+                        name: me.name,
+                        role: me.role,
+                        initials: initialsFor(me.name),
+                        color: colorForName(me.name),
+                        client: 'web',
+                        text: merged,
+                        time: Date.now(),
+                      };
+                      setText('');
+                      try {
+                        await sendMessage(msg);
+                        if (isHost && replyMode === 'deliver') {
+                          void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, merged)
+                            .then(() => taskBoard.reload())
+                            .catch(() => { /* best-effort */ });
                         }
-                      }}
-                      placeholder={t('room.messagePlaceholder')}
-                      rows={1}
-                      style={{ height: TEXTAREA_MIN_HEIGHT, maxHeight: TEXTAREA_MAX_HEIGHT }}
-                      className="w-full resize-none overflow-y-auto px-3.5 py-2.5 bg-surface-softer border border-border rounded-xl text-base sm:text-sm leading-relaxed outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint"
-                    />
-                  </div>
-                  <div className="flex items-center justify-between sm:justify-start gap-2 shrink-0">
-                    <div className="flex items-center gap-1.5">
-                      <VoiceButton
-                        // Plan B: speak, stop, and the transcript is sent at once (any
-                        // pending typed draft is merged in front of it).
-                        onTranscript={async (spoken) => {
-                          if (ended || !spoken.trim()) return;
-                          const merged = text.trim() ? `${text.trim()} ${spoken.trim()}` : spoken.trim();
-                          const msg: Message = {
-                            id: Date.now(),
-                            type: 'msg',
-                            name: me.name,
-                            role: me.role,
-                            initials: initialsFor(me.name),
-                            color: colorForName(me.name),
-                            client: 'web',
-                            text: merged,
-                            time: Date.now(),
-                          };
-                          setText('');
-                          try {
-                            await sendMessage(msg);
-                            if (isHost && replyMode === 'deliver') {
-                              void onDeliverHostMessage(createClient(ENV.upstash), code, activeRoom, merged)
-                                .then(() => taskBoard.reload())
-                                .catch(() => { /* best-effort */ });
-                            }
-                          } catch (e) {
-                            const { showToast } = await import('../components/Toast.js');
-                            showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }));
-                            setText(merged); // restore draft so the user can retry
-                          }
-                        }}
-                        disabled={ended}
-                      />
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        className="hidden"
-                        accept={Array.from(ALLOWED_ATTACHMENT_TYPES).join(',')}
-                        onChange={e => { if (e.target.files) void addFiles(e.target.files); }}
-                      />
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        disabled={attachBusy || attachments.length >= MAX_ATTACHMENTS_PER_MESSAGE}
-                        title={t('room.attachFiles')}
-                        className="h-10 w-10 sm:h-9 sm:w-auto justify-center rounded-lg bg-surface-softer border border-border sm:px-2 text-xs font-semibold text-ink-muted disabled:opacity-50 flex items-center gap-1.5 active:scale-95 transition"
-                      >
-                        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M13 7.5v3a4 4 0 0 1-8 0v-5a2.5 2.5 0 0 1 5 0v5a1 1 0 0 1-2 0v-4.5" />
-                        </svg>
-                        <span className="hidden sm:inline sm:text-xs">{attachBusy ? '...' : t('room.attachFiles')}</span>
-                      </button>
-                    </div>
-                    <button
-                      onClick={send}
-                      disabled={!text.trim() && attachments.length === 0}
-                      className="min-h-[40px] sm:min-h-[36px] min-w-[78px] sm:min-w-[64px] bg-accent text-white px-5 sm:px-4 py-2 rounded-xl text-sm font-semibold disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 transition shadow-sm flex items-center justify-center gap-1.5"
-                    >
-                      <span>{t('room.send')}</span>
-                      <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true">
-                        <path d="M1.5 1.5l13 6.5-13 6.5 2-6.5-2-6.5zm3.2 6.5h5.8-5.8z" />
-                      </svg>
-                    </button>
-                  </div>
-                </div>
-              </div>
+                      } catch (e) {
+                        const { showToast } = await import('../components/Toast.js');
+                        showToast(t('room.sendFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
+                        setText(merged); // restore draft so the user can retry
+                      }
+                    }}
+                    disabled={ended}
+                  />
+                )}
+              />
             )}
           </section>
 
@@ -1547,28 +1365,6 @@ export function RoomRecoverySurface({ room, error, children }: {
       )}
       {children}
     </>
-  );
-}
-
-function PendingAttachment({ attachment, onRemove }: { attachment: MessageAttachment; onRemove: () => void }) {
-  const { t } = useLocale();
-  return (
-    <div className="flex max-w-[220px] items-center gap-2 rounded-lg border border-border bg-surface-softer px-2 py-1.5">
-      {attachment.type === 'image' && (
-        <img src={attachment.url} alt="" className="h-8 w-8 rounded object-cover" />
-      )}
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[11px] font-semibold text-ink">{attachment.name}</div>
-        <div className="text-[10px] text-ink-soft">{formatBytes(attachment.size)}</div>
-      </div>
-      <button
-        onClick={onRemove}
-        className="h-6 w-6 rounded text-xs font-bold text-ink-soft hover:bg-surface"
-        title={t('room.removeAttachmentTitle', { name: attachment.name })}
-      >
-        x
-      </button>
-    </div>
   );
 }
 

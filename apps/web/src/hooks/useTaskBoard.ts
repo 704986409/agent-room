@@ -75,7 +75,7 @@ export function useTaskBoard(code: string) {
     // already true by the time the second one checks.
     if (busyRef.current) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(t('task.stillSaving'));
+      showToast(t('task.stillSaving'), 'info');
       return false;
     }
     busyRef.current = true;
@@ -86,7 +86,7 @@ export function useTaskBoard(code: string) {
       return true;
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? `${failureLabel}: ${e.message}` : failureLabel);
+      showToast(e instanceof Error ? `${failureLabel}: ${e.message}` : failureLabel, 'error');
       return false;
     } finally {
       busyRef.current = false;
