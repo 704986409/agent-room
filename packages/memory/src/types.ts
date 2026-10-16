@@ -114,6 +114,8 @@ export interface MemoryMutationResult {
   status: MutationStatus;
   id: string;
   version?: number;
+  /** pending_review only: the existing identical pending proposal that was returned. */
+  duplicateOf?: string;
 }
 
 export interface ListMemoryOptions {

@@ -92,7 +92,7 @@ Restore into a separate, empty PostgreSQL 17 validation database first (do not p
 pg_restore --no-owner --dbname="$MEMORY_RESTORE_URL" agent-memory-before.dump
 ```
 
-Validate schema version 2, table/index definitions, row counts for `agent_memory_entries`, `agent_memory_proposals`, `agent_memory_briefs`, and `agent_memory_requests`, and representative row reads. Record the source/target PostgreSQL versions and validation results before relying on a production restore.
+Validate schema version 3, table/index definitions, row counts for `agent_memory_entries`, `agent_memory_proposals`, `agent_memory_briefs`, and `agent_memory_requests`, and representative row reads. Record the source/target PostgreSQL versions and validation results before relying on a production restore.
 
 There is deliberately no destructive down migration. To roll back application code, disable the Memory feature entry point and deploy the previous application version while preserving Memory tables and rows. Dropping the tables is a separate, explicitly approved data-destruction operation and is not part of normal rollback.
 

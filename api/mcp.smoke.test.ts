@@ -924,6 +924,13 @@ describe('hosted MCP endpoint', () => {
         kind: 'mention', recipient: { type: 'persona', id: 'persona-reviewer' },
       });
       const proposalId = String(sharedWrite.proposalId);
+      // Identical normalized content from another seat with a new requestId reuses the pending proposal.
+      const duplicateWrite = await invoke('memory_write', {
+        code, seatKey: otherPersonaKey, scope: 'room', title: '  shared DECISION ', preview: 'Shared preview',
+        content: 'The Room decided to retain the shared index.', searchText: 'shared-index-decision',
+        sourceMessageId: 'message-17', requestId: `shared-write-dup-${randomUUID()}`,
+      });
+      expect(duplicateWrite).toMatchObject({ code: 'PENDING_REVIEW', proposalId, duplicateOf: proposalId });
       expect(await invoke('memory_review', { code, seatKey: hostSeatKey, action: 'list' }))
         .toMatchObject({ code: 'FORBIDDEN' });
       expect(await invoke('memory_review', {

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
 import type { MemoryRepository } from './repository.js';
+import { proposalDedupKey } from './normalize.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
@@ -646,16 +647,32 @@ export class PostgresMemoryRepository implements MemoryRepository {
         payload = input.action === 'update' ? input.update : {};
       }
 
-      await client.query(
-        `INSERT INTO agent_memory_proposals
-          (id, room_instance_id, action, target_memory_id, target_version, target_updated_at,
-           payload, proposer_persona_id, proposer_identity_type, proposer_identity_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11)`,
-        [proposalId, scope.roomInstanceId, input.action, targetMemoryId, targetVersion,
-          targetUpdatedAt, JSON.stringify(payload), proposer.personaId ?? null,
-          proposer.type, proposer.id, requestId],
-      );
-      return { status: 'pending_review', id: proposalId };
+      const dedupKey = proposalDedupKey(input);
+      // Race-safe collapse: the partial unique index on pending (room, dedup_key)
+      // makes a concurrent identical insert wait and then conflict. If the
+      // conflicting proposal is reviewed before we can read it, retry the insert.
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const inserted = await client.query(
+          `INSERT INTO agent_memory_proposals
+            (id, room_instance_id, action, target_memory_id, target_version, target_updated_at,
+             payload, proposer_persona_id, proposer_identity_type, proposer_identity_id, request_id, dedup_key)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+           ON CONFLICT (room_instance_id, dedup_key) WHERE status = 'pending' AND dedup_key IS NOT NULL
+           DO NOTHING`,
+          [proposalId, scope.roomInstanceId, input.action, targetMemoryId, targetVersion,
+            targetUpdatedAt, JSON.stringify(payload), proposer.personaId ?? null,
+            proposer.type, proposer.id, requestId, dedupKey],
+        );
+        if (inserted.rowCount) return { status: 'pending_review', id: proposalId };
+        const existing = await client.query<{ id: string }>(
+          `SELECT id FROM agent_memory_proposals
+           WHERE room_instance_id = $1 AND dedup_key = $2 AND status = 'pending'`,
+          [scope.roomInstanceId, dedupKey],
+        );
+        const existingId = existing.rows[0]?.id;
+        if (existingId) return { status: 'pending_review', id: existingId, duplicateOf: existingId };
+      }
+      throw new Error('Could not insert or resolve a pending memory proposal.');
     });
   }
 

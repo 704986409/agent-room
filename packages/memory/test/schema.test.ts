@@ -25,6 +25,12 @@ describe('Agent Memory migration source', () => {
     expect(searchIndexes).toContain('idx_memory_search_lower_trgm_active');
     expect(searchIndexes).toContain('idx_memory_content_lower_trgm_active');
     expect(searchIndexes).toContain('idx_memory_scope_first_active');
+    const dedup = readFileSync(
+      fileURLToPath(new URL('../migrations/003_pending_proposal_dedup.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(dedup).toContain('ADD COLUMN IF NOT EXISTS dedup_key');
+    expect(dedup).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_proposals_pending_dedup[\s\S]*WHERE status = 'pending' AND dedup_key IS NOT NULL/);
   });
 
   it('uses scoped indexable predicates for long search terms and keeps short-term fallback', () => {

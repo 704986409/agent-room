@@ -9,7 +9,7 @@ if (!connectionString?.trim()) {
 const pool = new Pool({ connectionString });
 try {
   await applyMemoryMigrations(pool);
-  process.stdout.write('Agent Memory PostgreSQL schema migrated to version 2.\n');
+  process.stdout.write('Agent Memory PostgreSQL schema migrated to version 3.\n');
 } finally {
   await pool.end();
 }

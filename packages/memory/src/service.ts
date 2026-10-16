@@ -1,4 +1,5 @@
 import type { MemoryRepository } from './repository.js';
+import { normalizeForDuplicate } from './normalize.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
@@ -73,6 +74,8 @@ export interface MutationCompletedResult {
 export interface PendingReviewResult {
   readonly code: 'PENDING_REVIEW';
   readonly proposalId: string;
+  /** Set when an identical pending proposal already existed and was returned instead. */
+  readonly duplicateOf?: string;
 }
 
 export type MemoryServiceMutationResult =
@@ -231,9 +234,7 @@ function mergeUpdate(entry: MemoryEntry, update: MemoryUpdate): MemoryContent {
   };
 }
 
-function normalizeForDuplicate(value: string): string {
-  return value.normalize('NFKC').trim().replace(/\s+/gu, ' ').toLowerCase();
-}
+
 
 function isExactDuplicate(entry: MemoryEntry, candidate: MemoryContent): boolean {
   return normalizeForDuplicate(entry.title) === normalizeForDuplicate(candidate.title)
@@ -242,7 +243,9 @@ function isExactDuplicate(entry: MemoryEntry, candidate: MemoryContent): boolean
 
 function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationResult {
   if (result.status === 'not_found') throw new MemoryServiceError('NOT_FOUND');
-  if (result.status === 'pending_review') return { code: 'PENDING_REVIEW', proposalId: result.id };
+  if (result.status === 'pending_review') {
+    return { code: 'PENDING_REVIEW', proposalId: result.id, ...(result.duplicateOf ? { duplicateOf: result.duplicateOf } : {}) };
+  }
   if (result.status === 'created' || result.status === 'updated' || result.status === 'deleted') {
     return { status: result.status, id: result.id, ...(result.version === undefined ? {} : { version: result.version }) };
   }

@@ -92,9 +92,9 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
 
   it('creates the schema, applies migrations repeatedly, and has no Room table foreign key', async () => {
     const versions = await scopedPool.query<{ count: string }>(
-      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2)',
+      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2, 3)',
     );
-    expect(versions.rows[0]?.count).toBe('2');
+    expect(versions.rows[0]?.count).toBe('3');
 
     const foreignKeys = await scopedPool.query<{ count: string }>(`
       SELECT count(*)::text AS count
@@ -423,6 +423,60 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       .toEqual(first);
     expect(await repository.listEntries(scope)).toHaveLength(1);
     expect((await repository.getRoomProposal(roomInstanceId, proposal.id))?.status).toBe('approved');
+  });
+
+  it('collapses identical pending Room proposals across requestIds, race-safely, keeping requestId replay', async () => {
+    const service = new MemoryService(repository);
+    const roomInstanceId = randomUUID();
+    const callerA = trustedCaller(roomInstanceId, `member-a-${randomUUID()}`, 'room_member');
+    const callerB = trustedCaller(roomInstanceId, `member-b-${randomUUID()}`, 'room_member');
+    const shared = content({ title: 'Shared port decision', content: 'API runs on port 3000.' });
+
+    const first = await service.createEntry(callerA, 'room', shared, 'pdup-create-1');
+    expect(first).toMatchObject({ code: 'PENDING_REVIEW' });
+    expect(first).not.toHaveProperty('duplicateOf');
+    const firstId = resultId(first);
+    // Same normalized content (case/whitespace/NFKC differences), new requestId, other caller.
+    const again = await service.createEntry(callerB, 'room', content({
+      title: '  shared   PORT decision ', content: 'api runs on port 3000.',
+    }), 'pdup-create-2');
+    expect(again).toEqual({ code: 'PENDING_REVIEW', proposalId: firstId, duplicateOf: firstId });
+    // requestId idempotency unchanged: replays return their own stored receipt.
+    expect(await service.createEntry(callerA, 'room', content({ title: 'changed' }), 'pdup-create-1')).toEqual(first);
+    expect(await service.createEntry(callerB, 'room', content({ title: 'changed' }), 'pdup-create-2')).toEqual(again);
+    // Different content is still a separate proposal.
+    const distinct = await service.createEntry(callerA, 'room', content({ title: 'Other', content: 'Other fact' }), 'pdup-create-3');
+    expect(resultId(distinct)).not.toBe(firstId);
+
+    // Concurrent identical submissions yield exactly one pending proposal.
+    const racers = await Promise.all(Array.from({ length: 6 }, (_, index) => service.createEntry(
+      index % 2 ? callerA : callerB, 'room', content({ title: 'Race title', content: 'Race body' }), `pdup-race-${index}`,
+    )));
+    expect(new Set(racers.map(resultId)).size).toBe(1);
+    const pending = await repository.listPendingRoomProposals(roomInstanceId, { limit: 50 });
+    expect(pending.filter(p => p.action === 'create' && (p.payload as MemoryContent).title === 'Race title')).toHaveLength(1);
+    expect(pending.filter(p => p.action === 'create' && (p.payload as MemoryContent).title === 'Shared port decision')).toHaveLength(1);
+
+    // Update and delete: same target + action + normalized payload collapse; others do not.
+    const owner = roomOwnerIdentity();
+    await repository.reviewRoomProposal(roomInstanceId, firstId, owner, 'approve', 'pdup-approve-1');
+    const entryId = (await repository.listEntries({ roomInstanceId, scope: 'room' }))
+      .find(entry => entry.title === 'Shared port decision')!.id;
+    const up1 = await service.updateEntry(callerA, 'room', entryId, { content: 'API runs on port 3001.' }, 'pdup-up-1');
+    const up2 = await service.updateEntry(callerB, 'room', entryId, { content: ' api RUNS on port 3001. ' }, 'pdup-up-2');
+    expect(up2).toEqual({ code: 'PENDING_REVIEW', proposalId: resultId(up1), duplicateOf: resultId(up1) });
+    const up3 = await service.updateEntry(callerB, 'room', entryId, { content: 'API runs on port 3002.' }, 'pdup-up-3');
+    expect(resultId(up3)).not.toBe(resultId(up1));
+    const del1 = await service.deleteEntry(callerA, 'room', entryId, 'pdup-del-1');
+    const del2 = await service.deleteEntry(callerB, 'room', entryId, 'pdup-del-2');
+    expect(del2).toEqual({ code: 'PENDING_REVIEW', proposalId: resultId(del1), duplicateOf: resultId(del1) });
+    expect(resultId(del1)).not.toBe(resultId(up1));
+
+    // Once reviewed, the same content may be proposed again as a fresh proposal.
+    await repository.reviewRoomProposal(roomInstanceId, resultId(del1), owner, 'reject', 'pdup-reject-del');
+    const del3 = await service.deleteEntry(callerA, 'room', entryId, 'pdup-del-3');
+    expect(del3).not.toHaveProperty('duplicateOf');
+    expect(resultId(del3)).not.toBe(resultId(del1));
   });
 
   it('rejects self-review and detects stale version snapshots without overwriting newer facts', async () => {

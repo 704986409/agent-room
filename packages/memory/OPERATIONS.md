@@ -24,7 +24,7 @@ npm run build -w packages/memory
 npm run migrate:postgres -w packages/memory
 ```
 
-`DATABASE_URL` is required by the migration runner. The runner applies numbered migrations under a PostgreSQL advisory transaction lock. Schema version 2 adds the P7 trigram and Room/scope indexes to the original version 1 tables. Re-running the migration command is safe. No Room table is migrated or recreated.
+`DATABASE_URL` is required by the migration runner. The runner applies numbered migrations under a PostgreSQL advisory transaction lock. Schema version 2 adds the P7 trigram and Room/scope indexes to the original version 1 tables. Schema version 3 adds a nullable `dedup_key` column and a partial unique index so identical pending Room proposals (same action, target, and normalized content) collapse into one; rows created earlier keep `dedup_key` NULL. Re-running the migration command is safe. No Room table is migrated or recreated.
 
 For a clean database when the runtime role cannot install the extension, the administrator runs:
 
@@ -42,7 +42,7 @@ The normal rollback is application-only:
 2. Deploy the previous application version.
 3. Keep `agent_memory_*` tables, rows, migrations, and indexes in place.
 
-There is no destructive down migration. Do not drop memory tables as part of a code rollback. Migration 002 adds indexes; retaining them is safe for the previous application version. Index removal is a separate database change that requires review and a verified backup.
+There is no destructive down migration. Do not drop memory tables as part of a code rollback. Migrations 002 and 003 add indexes (and 003 a nullable column); retaining them is safe for the previous application version. Index removal is a separate database change that requires review and a verified backup.
 
 ## Backup and restore
 
