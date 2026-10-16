@@ -48,6 +48,7 @@ import { TopNav } from '../components/TopNav.js';
 import { AudioReplyBar } from '../components/AudioReplyBar.js';
 import { templateBySlug } from '../lib/liveTemplates.js';
 import { copyText } from '../lib/copy.js';
+import { safeFormatTime } from '../lib/time.js';
 
 const HOST_NAME = 'Host';
 const briefStorageKey = (code: string) => `agent-room:interview-brief:${code}`;
@@ -696,7 +697,7 @@ export function TemplateInterviewLive() {
                               Host note
                             </span>
                           )}
-                          <span className="text-[10px] text-ink-faint">{new Date(m.time).toLocaleTimeString()}</span>
+                          <span className="text-[10px] text-ink-faint">{safeFormatTime(m.time, date => date.toLocaleTimeString())}</span>
                         </div>
                         <p className="text-[13px] leading-relaxed text-ink-soft whitespace-pre-wrap">{m.text}</p>
                         {speaker === 'interviewer' && (

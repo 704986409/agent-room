@@ -1,14 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, Room } from '@agent-room/shared';
 import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
-import { createClient, appendMessage, listMessages, NotApprovedError, NotYourTurnError } from '../src/index.js';
+import { appendSystemMessage, createClient, appendMessage, listMessages, NotApprovedError, NotYourTurnError } from '../src/index.js';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
 function mockResp(body: unknown) { return new Response(JSON.stringify(body)); }
 
+/** The message JSON actually handed to RPUSH by the write pipeline. */
+function pushedMessage(fetchMock: { mock: { calls: unknown[][] } }, callIndex: number): Message {
+  const init = fetchMock.mock.calls[callIndex]![1] as { body: string };
+  return JSON.parse(JSON.parse(init.body)[0][2]) as Message;
+}
+
+// `time` must sit inside the server's trust window or the write path restamps
+// it — see normalizeMessageTime / the "stamps a server time" tests below.
 const MSG: Message = {
   id: 1, type: 'msg', name: 'A', initials: 'AA', color: '#111',
-  role: 'r', text: 'hi', client: 'web', time: 1,
+  role: 'r', text: 'hi', client: 'web', time: Date.now(),
 };
 
 const APPROVED_ROOM: Room = {
@@ -98,6 +106,43 @@ describe('appendMessage', () => {
     const [, init] = fetchMock.mock.calls[1]!;
     const cmds = JSON.parse((init as any).body);
     expect(JSON.parse(cmds[0][2]).text).toBe('');
+  });
+
+  // Regression: /api/room accepted a send with no `time` (old clients omit it
+  // entirely), the message was stored without one, and every web bubble that
+  // rendered it printed "Invalid Date". The server is the clock now.
+  it('stamps a server time when the client sent none (open mode)', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(APPROVED_ROOM) }))
+      .mockResolvedValueOnce(mockResp([
+        { result: 1 }, { result: 1 }, { result: 'OK' }, { result: 1 }, { result: 1 },
+      ]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { time: _dropped, ...timeless } = MSG;
+    const before = Date.now();
+    const client = createClient(ENV);
+    await appendMessage(client, 'ABC-DEF-GHJ', timeless as Message);
+
+    const stored = pushedMessage(fetchMock, 1);
+    expect(typeof stored.time).toBe('number');
+    expect(stored.time).toBeGreaterThanOrEqual(before);
+    expect(stored.time).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('restamps a client time that is nowhere near the server clock', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(APPROVED_ROOM) }))
+      .mockResolvedValueOnce(mockResp([
+        { result: 1 }, { result: 1 }, { result: 'OK' }, { result: 1 }, { result: 1 },
+      ]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const before = Date.now();
+    const client = createClient(ENV);
+    await appendMessage(client, 'ABC-DEF-GHJ', { ...MSG, time: 9_999_999_999_999 });
+
+    expect(pushedMessage(fetchMock, 1).time).toBeGreaterThanOrEqual(before);
   });
 
   it('throws NotApprovedError when the sender is pending host approval', async () => {
@@ -274,6 +319,71 @@ describe('appendMessage — sequential status heartbeat', () => {
     expect(persisted.currentRole).toBe('lead');
     expect(persisted.spoken).toEqual([]);
     expect(persisted.deadline).toBeGreaterThan(seqTurn.deadline);
+  });
+});
+
+// The turn-taking path and the system-event path do their own RPUSH calls.
+// Both funnel through rpushMessage, so neither can store a timeless message.
+describe('message time is stamped on every write path', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const SEQ_ROOM: Room = {
+    code: 'SEQ-TIM-001', topic: 't', createdAt: Date.now(), createdBy: 'host',
+    status: 'active', version: 1,
+    replyMode: 'sequential',
+    modeConfig: { leadAgentName: 'Lead', leadAgentClient: 'cc' },
+    participants: [
+      { name: 'host', role: '', color: '#111', initials: 'HO', client: 'web', joinedAt: 0, lastSeenAt: 0, canSpeak: true },
+      { name: 'Lead', role: '', color: '#222', initials: 'LE', client: 'cc', joinedAt: 10, lastSeenAt: 10, canSpeak: true },
+    ],
+  };
+
+  it('sequential mode: a lead reply with no time is stored with a server time', async () => {
+    const now = Date.now();
+    const seqTurn = {
+      turnId: 6000, mode: 'sequential',
+      leadName: 'Lead', leadClient: 'cc',
+      currentName: 'Lead', currentClient: 'cc', currentRole: 'lead',
+      deadline: now + 5_000, hardDeadline: now + 600_000, queue: [], spoken: [],
+    };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(SEQ_ROOM) }))  // getRoom
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(seqTurn) }))   // getTurnState
+      .mockResolvedValueOnce(mockResp({ result: 'OK' }))                      // setTurnState
+      .mockResolvedValueOnce(mockResp([
+        { result: 1 }, { result: 1 }, { result: 'OK' }, { result: 1 }, { result: 1 },
+      ]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createClient(ENV);
+    await appendMessage(client, 'SEQ-TIM-001', {
+      id: 7, type: 'msg', name: 'Lead', initials: 'LE', color: '#222',
+      role: '', text: 'done', client: 'cc',
+    } as Message);
+
+    const stored = pushedMessage(fetchMock, 3);
+    expect(Number.isFinite(stored.time)).toBe(true);
+    expect(stored.time).toBeGreaterThanOrEqual(now);
+  });
+
+  it('a system message with no time gets one', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(APPROVED_ROOM) }))
+      .mockResolvedValueOnce(mockResp([
+        { result: 1 }, { result: 1 }, { result: 'OK' }, { result: 1 }, { result: 1 },
+      ]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const before = Date.now();
+    const client = createClient(ENV);
+    await appendSystemMessage(client, 'ABC-DEF-GHJ', {
+      id: 99, type: 'sys', name: 'system', initials: 'AR', color: '#5B6AFF',
+      role: 'System', text: 'reply mode changed', client: 'cc',
+    } as Message);
+
+    const stored = pushedMessage(fetchMock, 1);
+    expect(typeof stored.time).toBe('number');
+    expect(stored.time).toBeGreaterThanOrEqual(before);
   });
 });
 

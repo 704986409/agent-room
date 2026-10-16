@@ -161,6 +161,27 @@ async function dispatchRoomHttpAction(
         );
       }
 
+      // A sender with no name cannot be matched against the participant list,
+      // and a non-string `text` is a client bug the storage layer would only
+      // be able to paper over with ''. Both are worth a loud 400 here; `time`
+      // deliberately is not — the server stamps that itself so old clients
+      // that omit it keep working (see normalizeMessageTime).
+      if (!str(message.name).trim()) {
+        throw new RemoteRoomApiError(
+          'message.name is required',
+          400,
+          'bad_request',
+        );
+      }
+
+      if (typeof message.text !== 'string') {
+        throw new RemoteRoomApiError(
+          'message.text must be a string',
+          400,
+          'bad_request',
+        );
+      }
+
       const kind = p.kind === 'status' ? 'status' : 'message';
 
       const result = await appendMessage(

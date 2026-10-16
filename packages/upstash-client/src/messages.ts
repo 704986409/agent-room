@@ -3,6 +3,7 @@ import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { findSpeaker, MutedError, NotYourTurnError, getRoom } from './rooms.js';
 import { RoomNotFoundError, UpstashError } from './errors.js';
+import { healStoredMessage, normalizeMessageForWrite } from './messageNormalize.js';
 import type { TurnSpokenEntry } from './turnState.js';
 import {
   advanceOnTimeout,
@@ -346,11 +347,10 @@ async function rpushMessage(
   roomCreatedAt: number,
 ): Promise<void> {
   const expireAt = roomExpirationTimestamp(roomCreatedAt);
-  // Older MCP clients (and raw API callers) can send a message with no
-  // `text` — persisting it verbatim crashed every web viewer of the room
-  // ("Cannot read properties of undefined (reading 'length')" in Bubble
-  // rendering). Coerce to '' at the single write choke point.
-  const safe = typeof message.text === 'string' ? message : { ...message, text: '' };
+  // Single choke point for message field repair — see messageNormalize.ts.
+  // Every append path (chat, status ping, system event) funnels through here,
+  // so a message can never reach the list with an unusable `text` or `time`.
+  const safe = normalizeMessageForWrite(message);
   await client.pipeline([
     ['RPUSH', msgsKey(code), JSON.stringify(safe)],
     ['INCR', msgCountKey(code)],
@@ -424,7 +424,7 @@ export async function commitTaskVerification(
   message: Message,
 ): Promise<boolean> {
   const expireAt = roomExpirationTimestamp(roomCreatedAt);
-  const safe = typeof message.text === 'string' ? message : { ...message, text: '' };
+  const safe = normalizeMessageForWrite(message);
   const result = Number(await client.command<number>([
     'EVAL', TASK_VERIFY_COMMIT_SCRIPT, '4',
     `task-board:${code}`, msgsKey(code), msgCountKey(code), `room:${code}`,
@@ -480,13 +480,9 @@ export async function listMessages(
 
   if (start >= listLen) return [];
   const raw = await client.command<string[]>(['LRANGE', msgsKey(code), start, -1]);
-  return raw.map(line => {
-    const m = JSON.parse(line) as Message;
-    // Heal text-less messages already stored by older clients — without
-    // this, one bad message bricks the room page for every viewer.
-    if (typeof m.text !== 'string') m.text = '';
-    return m;
-  });
+  // Heal text-less messages already stored by older clients — without this,
+  // one bad message bricks the room page for every viewer.
+  return raw.map(line => healStoredMessage(JSON.parse(line) as Message));
 }
 
 /**

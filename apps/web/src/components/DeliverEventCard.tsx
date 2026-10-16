@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { Message } from '@agent-room/shared';
+import { safeFormatTime } from '../lib/time.js';
 
 // Deliver mode system events. Plan and report messages are cards the host can
 // read at a glance; an escalation is addressed to the host.
@@ -38,7 +39,7 @@ export function DeliverEventCard({ message, onViewTaskBoard, onStart, startPlanI
         <span>{style.title}</span>
         {taskId && <span className="font-mono normal-case">{taskId}</span>}
         <span className="ml-auto font-normal normal-case">
-          {new Date(message.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          {safeFormatTime(message.time, date => date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}
         </span>
       </div>
       <div className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-snug">{message.text}</div>

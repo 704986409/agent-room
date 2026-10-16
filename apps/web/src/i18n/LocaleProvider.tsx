@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { resolveLocale, translate, type Locale, type MessageKey, type MessageValues } from './messages.js';
+import { safeFormatTime } from '../lib/time.js';
 
 export const LOCALE_STORAGE_KEY = 'agent-room:locale';
 
@@ -49,8 +50,8 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     locale,
     setLocale,
     t: (key, values) => translate(locale, key, values),
-    formatDateTime: value => new Date(value).toLocaleString(locale),
-    formatTime: value => new Date(value).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' }),
+    formatDateTime: value => safeFormatTime(value, date => date.toLocaleString(locale)),
+    formatTime: value => safeFormatTime(value, date => date.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })),
     formatNumber: value => new Intl.NumberFormat(locale).format(value),
   }), [locale, setLocale]);
 
