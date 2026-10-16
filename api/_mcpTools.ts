@@ -1153,7 +1153,9 @@ async function dispatch(
   profile: McpProfile = 'full',
   memoryDependencies?: MemoryToolDependencies,
 ): Promise<McpToolResult> {
-  if (isMemoryToolName(name)) return ok(await dispatchMemoryTool(client, name, a, memoryDependencies));
+  // Memory tools declare an object outputSchema, so every result (including
+  // error-code objects) must also carry structuredContent per the MCP spec.
+  if (isMemoryToolName(name)) return ok(await dispatchMemoryTool(client, name, a, memoryDependencies), [], true);
   switch (name) {
     case 'room_create': {
       const created = await createRoom(client, { topic: a.topic, createdBy: a.name });

@@ -834,8 +834,21 @@ describe('hosted MCP endpoint', () => {
       }
 
       const roomClient = createRemoteRoomClient(undefined);
-      const invoke = async (name: string, args: Record<string, unknown>) =>
-        parsed(await callTool(roomClient, 'full', name, args, undefined, dependencies));
+      const schemaByTool = new Map(listedMemoryTools.map(tool => [tool.name, tool.outputSchema]));
+      const invoke = async (name: string, args: Record<string, unknown>) => {
+        const result = await callTool(roomClient, 'full', name, args, undefined, dependencies);
+        const body = parsed(result);
+        if (name.startsWith('memory_')) {
+          // Declared outputSchema is { type: 'object' }: structuredContent must be present,
+          // a plain object, and identical to the text payload on success and error paths.
+          expect(schemaByTool.get(name)).toMatchObject({ type: 'object' });
+          expect(result.structuredContent).toBeDefined();
+          expect(typeof result.structuredContent).toBe('object');
+          expect(Array.isArray(result.structuredContent)).toBe(false);
+          expect(result.structuredContent).toEqual(body);
+        }
+        return body;
+      };
       const host = await invoke('room_create', { topic: 'Memory isolation integration', name: 'Host' });
       const code = String(host.code);
       const hostSeatKey = String(host.seatKey);
