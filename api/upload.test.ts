@@ -29,6 +29,8 @@ import handler, {
   DRAIN_CEILING_BYTES,
   MAX_FILE_BYTES,
   MAX_REQUEST_BYTES,
+  keyFilename,
+  publicObjectUrl,
   storageContentType,
 } from './upload.js';
 
@@ -67,6 +69,74 @@ describe('storageContentType', () => {
     expect(storageContentType('application/octet-stream')).toBe('application/octet-stream');
     expect(storageContentType('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'))
       .toBe('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  });
+});
+
+describe('publicObjectUrl', () => {
+  const key = (filename: string) => `rooms/ABC-DEF-GHJ/0e3f/${filename}`;
+
+  it('percent-encodes Chinese and spaces', () => {
+    expect(publicObjectUrl('https://pub.r2.dev', key('会议 记录 第 1 版.txt')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/%E4%BC%9A%E8%AE%AE%20%E8%AE%B0%E5%BD%95%20%E7%AC%AC%201%20%E7%89%88.txt');
+  });
+
+  it('encodes the characters that end a URL early or change its meaning', () => {
+    expect(publicObjectUrl('https://pub.r2.dev', key('report #3 draft?.pdf')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/report%20%233%20draft%3F.pdf');
+    // A literal '%' has to become '%25' or the URL reads as a bad escape, and
+    // a '+' has to become '%2B' or a decoder turns it into a space.
+    expect(publicObjectUrl('https://pub.r2.dev', key('100%讨论+notes.md')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/100%25%E8%AE%A8%E8%AE%BA%2Bnotes.md');
+  });
+
+  it('encodes astral-plane characters as utf-8', () => {
+    expect(publicObjectUrl('https://pub.r2.dev', key('🎉 launch.png')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/%F0%9F%8E%89%20launch.png');
+  });
+
+  it('leaves a plain ascii key byte-for-byte alone', () => {
+    expect(publicObjectUrl('https://pub.r2.dev', key('notes-v2.txt')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/notes-v2.txt');
+  });
+
+  it('keeps the separators as separators', () => {
+    const url = publicObjectUrl('https://pub.r2.dev', key('中文.txt'));
+    expect(url.split('/')).toHaveLength(7);
+    expect(url).not.toContain('%2F');
+    expect(new URL(url).pathname.split('/').slice(1)).toHaveLength(4);
+  });
+
+  it('touches the base only to drop one trailing slash', () => {
+    expect(publicObjectUrl('https://pub.r2.dev/', key('a.txt')))
+      .toBe('https://pub.r2.dev/rooms/ABC-DEF-GHJ/0e3f/a.txt');
+    // A base that already carries a path (custom domain subdirectory) is
+    // passed through verbatim — it is ours, not user input.
+    expect(publicObjectUrl('https://cdn.example.com/att%20files', key('a.txt')))
+      .toBe('https://cdn.example.com/att%20files/rooms/ABC-DEF-GHJ/0e3f/a.txt');
+  });
+
+  it('round-trips back to the stored key, which is what r2.dev looks up', () => {
+    const stored = key('会议 记录 第 1 版.txt');
+    const path = new URL(publicObjectUrl('https://pub.r2.dev', stored)).pathname;
+    expect(decodeURIComponent(path.slice(1))).toBe(stored);
+  });
+});
+
+describe('keyFilename', () => {
+  it('keeps Chinese and spaces', () => {
+    expect(keyFilename('会议 记录 第 1 版.txt')).toBe('会议 记录 第 1 版.txt');
+  });
+
+  it('neutralises separators and control characters', () => {
+    expect(keyFilename('../../etc/passwd')).toBe('.._.._etc_passwd');
+    expect(keyFilename('C:\\notes\\plan.txt')).toBe('C:_notes_plan.txt');
+    expect(keyFilename('two\r\nlines.txt')).toBe('two__lines.txt');
+    expect(keyFilename('nul\u0000byte.txt')).toBe('nul_byte.txt');
+  });
+
+  it('falls back to a name when there is nothing usable left', () => {
+    expect(keyFilename(undefined)).toBe('file');
+    expect(keyFilename('')).toBe('file');
   });
 });
 
@@ -209,6 +279,43 @@ describe('POST /api/upload', () => {
     expect(attachment.type).toBe('file');
     expect(attachment.size).toBe(fileBytes.length);
     expect(attachment.url.startsWith('https://pub.r2.dev/rooms/ABC-DEF-GHJ/')).toBe(true);
+  });
+
+  it('stores the raw filename in the key but hands back an encoded url', async () => {
+    const res = await upload([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: '会议 记录 第 1 版.txt', contentType: 'text/plain', data: '内容' },
+    ]);
+
+    expect(res.statusCode).toBe(201);
+    const attachment = res.body as { url: string; storageKey: string; name: string };
+    // The key is what R2 holds and what delete-room-blobs.ts lists by prefix:
+    // raw utf-8, untouched.
+    expect(mocks.putInputs[0]!.Key).toBe(attachment.storageKey);
+    expect(attachment.storageKey).toBe(`rooms/ABC-DEF-GHJ/${attachment.storageKey.split('/')[2]}/会议 记录 第 1 版.txt`);
+    expect(attachment.url).toBe(publicObjectUrl('https://pub.r2.dev', attachment.storageKey));
+    expect(attachment.url).not.toContain(' ');
+    expect(attachment.url).toContain('%E4%BC%9A%E8%AE%AE%20');
+    // The filename the user sees is still theirs.
+    expect(attachment.name).toBe('会议 记录 第 1 版.txt');
+  });
+
+  it('refuses to let a hostile filename grow the key', async () => {
+    for (const filename of ['../../other-room/pwn.txt', 'C:\\plan\\q3.txt', 'two\nlines.txt']) {
+      mocks.putInputs.length = 0;
+      const res = await upload([
+        { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+        { name: 'file', filename, contentType: 'text/plain', data: 'x' },
+      ]);
+
+      expect(res.statusCode).toBe(201);
+      const attachment = res.body as { url: string; storageKey: string; name: string };
+      expect(attachment.storageKey.split('/')).toHaveLength(4);
+      expect(attachment.storageKey.startsWith('rooms/ABC-DEF-GHJ/')).toBe(true);
+      expect(attachment.storageKey).not.toMatch(/[\\\r\n]/);
+      expect(new URL(attachment.url).pathname.split('/')).toHaveLength(5);
+      expect(attachment.name).toBe(filename);
+    }
   });
 
   it('accepts a part whose content-type already carries a charset', async () => {

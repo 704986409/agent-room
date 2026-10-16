@@ -49,6 +49,28 @@ export { ALLOWED_MIMES, TEXTUAL_MIMES, baseMime, storageContentType } from './_u
 
 export const config = { api: { bodyParser: false } };
 
+// The object key keeps the filename's raw UTF-8 bytes — that is what R2
+// stores and what delete-room-blobs.ts lists by prefix — so only the URL we
+// hand out is percent-encoded. Encoding runs per segment so the '/'
+// separators survive, and the base prefix is left exactly as configured
+// (it may already be a percent-encoded path). r2.dev decodes back to the
+// stored key, so the encoded URL downloads the same object.
+export function publicObjectUrl(base: string, key: string): string {
+  const prefix = base.replace(/\/$/, '');
+  const encoded = key.split('/').map(encodeURIComponent).join('/');
+  return `${prefix}/${encoded}`;
+}
+
+// Filename as it goes into the object key. Path separators would split one
+// name into extra key segments (escaping the rooms/{code}/{uuid}/ prefix we
+// batch-delete by) and control characters have no business in a key at all;
+// both become '_'. Chinese, spaces and the rest stay — the key is raw UTF-8
+// and `name` on the attachment keeps the original filename regardless.
+export function keyFilename(filename: string | undefined): string {
+  const name = (filename ?? 'file').replace(/[/\\\u0000-\u001f\u007f]/g, '_').slice(0, 200);
+  return name || 'file';
+}
+
 // One body for every over-size path — a declared Content-Length over the
 // read cap, a stream that runs past it, and a file that parses out too big
 // all read identically on the client.
@@ -188,8 +210,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   const id = randomUUID();
-  const safeName = (filePart.filename ?? 'file').replace(/[/\\]/g, '_').slice(0, 200) || 'file';
-  const key = `rooms/${roomCode}/${id}/${safeName}`;
+  const key = `rooms/${roomCode}/${id}/${keyFilename(filePart.filename)}`;
 
   try {
     await getR2Client(env).send(new PutObjectCommand({
@@ -209,7 +230,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
 
   // Public URL via the R2.dev subdomain (or custom domain if you swap it
   // later — we just env-var the prefix so the swap is one variable change).
-  const publicUrl = `${env.publicUrl.replace(/\/$/, '')}/${key}`;
+  const url = publicObjectUrl(env.publicUrl, key);
 
   const isImage = mime.startsWith('image/');
   const widthNum = widthPart ? Number(widthPart.data.toString('utf8')) : NaN;
@@ -218,7 +239,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const attachment = {
     id,
     type: isImage ? 'image' : 'file',
-    url: publicUrl,
+    url,
     storageKey: key,
     name: filePart.filename ?? 'file',
     size: filePart.data.length,
