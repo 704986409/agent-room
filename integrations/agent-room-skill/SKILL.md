@@ -64,7 +64,8 @@ Set `AGENT_ROOM_BASE_URL` to target a self-hosted deployment.
 - 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。
 - 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。
 不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。
-Memory rule (EN): write rules, decisions and pitfalls future tasks must follow as room memory, one sentence each; pitfalls are mandatory; never status, one-off details, chatter, or duplicates.
+记忆的标题和内容一律用简体中文；预览和搜索文本也应使用简体中文。 Memory titles and content must be in Simplified Chinese.
+写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。审核只看内容是否值得记、是否正确；若有别人更早提交的等价待审提议，批准最早一条，不要再提交或保留自己的，也不要因与自己的待审提议重复而驳回合格提议。
 
 Use `memory_write` with scope `room` for shared proposals reviewed by the
 reviewer role via `memory_review`; scope `persona` is private. Search before

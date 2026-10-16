@@ -1,6 +1,7 @@
 // Tool descriptions and SERVER_INSTRUCTIONS text hygiene test for agent-room-oss
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { CORE_TOOLS, FULL_TOOLS, listTools, memoryJoinNote, serverInstructions } from './_mcpTools.js';
 import { AGENT_ROOM_CODEX_CONTINUE } from '@agent-room/shared';
 
@@ -38,6 +39,8 @@ describe('memory guidance stays static and gated', () => {
       delete process.env.MEMORY_ENABLED;
       delete process.env.MEMORY_DATABASE_URL;
       expect(serverInstructions()).not.toContain('记忆规则：');
+      expect(serverInstructions()).not.toContain('写记忆前先查重');
+      expect(serverInstructions()).not.toContain('简体中文');
       expect(serverInstructions()).not.toContain('脚本报错输出到 stderr，退出码用 2');
       expect(serverInstructions()).not.toContain('接口时间字段统一用 ISO 8601');
       expect(serverInstructions()).not.toContain('本地 Redis 直连用 6379，8079 是代理');
@@ -45,6 +48,8 @@ describe('memory guidance stays static and gated', () => {
       process.env.MEMORY_DATABASE_URL = 'configured';
       const instructions = serverInstructions();
       expect(instructions).toContain('记忆规则：');
+      expect(instructions).toContain('写记忆前先查重');
+      expect(instructions).toContain('简体中文');
       expect(instructions).toContain('脚本报错输出到 stderr，退出码用 2');
       expect(instructions).toContain('接口时间字段统一用 ISO 8601');
       expect(instructions).toContain('本地 Redis 直连用 6379，8079 是代理');
@@ -70,8 +75,15 @@ describe('memory guidance stays static and gated', () => {
       expect(description('memory_write')).toContain('脚本报错输出到 stderr，退出码用 2');
       expect(description('memory_write')).toContain('接口时间字段统一用 ISO 8601');
       expect(description('memory_write')).toContain('本地 Redis 直连用 6379，8079 是代理');
+      expect(description('memory_write')).toContain('简体中文');
+      expect(description('memory_write')).toContain('写记忆前先查重');
       expect(description('memory_search')).toContain('Search before unfamiliar work or when a convention may already exist');
       expect(description('memory_review')).toContain('Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates');
+      expect(description('memory_review')).toContain('批准最早');
+      const skill = readFileSync(new URL('../integrations/agent-room-skill/SKILL.md', import.meta.url), 'utf8');
+      expect(skill).toContain('记忆的标题和内容一律用简体中文');
+      expect(skill).toContain('写记忆前先查重');
+      expect(skill).toContain('批准最早');
     } finally {
       if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
       else process.env.MEMORY_ENABLED = previousEnabled;
@@ -82,6 +94,10 @@ describe('memory guidance stays static and gated', () => {
 });
 
 describe('no verbatim duplication inside one description', () => {
+  it('room_listen contains no memory guidance', () => {
+    expect(desc('room_listen')).not.toMatch(/memory|记忆/i);
+  });
+
   it('room_listen carries the Codex continuation rule exactly once', () => {
     expect(desc('room_listen').split(AGENT_ROOM_CODEX_CONTINUE)).toHaveLength(2);
   });
