@@ -15,4 +15,5 @@ export * from './agentContext.js';
 export * from './mentions.js';
 export * from './security.js';
 export * from './participantNames.js';
+export * from './speakPermission.js';
 export * from './agentJoinPrompt.js';

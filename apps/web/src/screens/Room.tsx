@@ -15,9 +15,10 @@ import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { AgentJoinNotice } from '../components/AgentJoinNotice.js';
 import { MemoryReviewPanel } from '../components/MemoryReviewPanel.js';
+import { SpeakBlockedNotice } from '../components/SpeakBlockedNotice.js';
 import { Composer, TEXTAREA_MAX_HEIGHT, TEXTAREA_MIN_HEIGHT } from '../components/Composer.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
-import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
+import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type MessageAttachment, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
 import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, onDeliverHostMessage, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { copyText } from '../lib/copy.js';
@@ -535,14 +536,12 @@ export function Room() {
   const me = self;
   const activeRoom = room;
 
-  // Speaking gate: the host is always allowed; other participants need the
   // Speaking gate: everyone joins able to speak. The host can mute via
   // setMuted() to suspend a specific participant. canSpeak === undefined
   // (legacy rooms before this field existed) is treated as approved so
-  // already-running meetings don't break.
-  const isHost = room.createdBy === me.name;
-  const myParticipant = room.participants.find(p => p.name === me.name && p.client === 'web');
-  const myCanSpeak = isHost || myParticipant?.canSpeak !== false;
+  // already-running meetings don't break. The rule itself is in
+  // @agent-room/shared/speakPermission, next to the server's own gate.
+  const { isHost, myCanSpeak } = webSpeakGate(room, me.name);
   const mutedCount = room.participants.filter(p => p.canSpeak === false).length;
   const replyMode = activeRoom.replyMode ?? 'open';
   const replyModeConfig = activeRoom.modeConfig;
@@ -1193,18 +1192,7 @@ export function Room() {
                 </div>
               </div>
             ) : !myCanSpeak ? (
-              <div className="border-t border-border-faint p-5 bg-amber-50 text-center">
-                <div className="mb-2 flex justify-center text-amber-700">
-                  <svg viewBox="0 0 16 16" width="24" height="24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <path d="M8 3.5 4.5 6.25H2.5v3.5h2L8 12.5z" />
-                    <path d="m11 6 3 4M14 6l-3 4" />
-                  </svg>
-                </div>
-                <p className="text-sm font-semibold text-amber-900 mb-1">{t('room.mutedByHost')}</p>
-                <p className="text-xs text-amber-800/80 max-w-xs mx-auto">
-                  {t('room.hostMutedMessage', { name: room.createdBy })}
-                </p>
-              </div>
+              <SpeakBlockedNotice host={room.createdBy} />
             ) : (
               <Composer
                 roomCode={code}

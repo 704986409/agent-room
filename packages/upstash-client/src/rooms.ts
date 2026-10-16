@@ -4,7 +4,7 @@ import type {
   ReplyMode,
   ReplyModeConfig,
 } from '@agent-room/shared';
-import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, hasActiveListenLease, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
+import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, findSpeakerSeat, hasActiveListenLease, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { sha256Hex } from './sha256.js';
 import { RoomNotFoundError, ConcurrencyError } from './errors.js';
@@ -499,15 +499,15 @@ export function approveParticipant(
 // field). All new joiners flow through joinRoom which always sets the
 // field, so undefined only appears for participants from before this code
 // landed.
+//
+// The rule itself lives in @agent-room/shared/speakPermission so the web
+// composer can gate on the same logic the server enforces here.
 export function findSpeaker(
   room: Room,
   name: string,
   clientKind: 'web' | 'cc',
 ): Participant | null {
-  const p = room.participants.find(x => x.name === name && x.client === clientKind);
-  if (!p) return null;
-  if (p.canSpeak === false) return null;
-  return p;
+  return findSpeakerSeat(room, name, clientKind);
 }
 
 // Set or clear reply-mode coordination on a room. Host-only. AI Interview
