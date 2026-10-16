@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { MemorySearchCandidate, MemoryIdentityType } from './types.js';
+import type { MemorySearchCandidate, MemoryProposerIdentityType } from './types.js';
 
 export interface MemorySearchBinding {
   readonly roomInstanceId: string;
-  readonly identityType: MemoryIdentityType;
+  readonly identityType: MemoryProposerIdentityType;
   readonly personaId?: string;
   readonly principalId?: string;
 }

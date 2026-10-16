@@ -9,6 +9,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Message } from '@agent-room/shared';
 import {
+  buildMemoryReviewOutcomeNoticeMessage,
   buildMemoryReviewNoticeMessage,
   buildMemoryReviewNoticeText,
   buildMemorySupersededNoticeMessage,
@@ -40,7 +41,8 @@ describe('memory review notice text', () => {
     expect(text).toContain('Agent A proposes a shared room memory');
     expect(text).toContain('title: "Shared decision".');
     expect(text).toContain('preview: "The room keeps the shared index.".');
-    expect(text).toContain(`memory_review({ action: "approve" | "reject", proposalId: "${PROPOSAL_ID}" })`);
+    expect(text).toContain(`memory_review({ action: "approve", proposalId: "${PROPOSAL_ID}" })`);
+    expect(text).toContain('无关记忆" | "重复记忆" | "格式不合规');
   });
 
   it('addresses every recipient and keeps the update/delete kinds distinct', () => {
@@ -78,6 +80,16 @@ describe('memory review notice text', () => {
     const text = buildMemoryReviewNoticeText(notice({ title: 'T'.repeat(400), preview: 'P'.repeat(400) }));
     expect(text).toContain(`title: "${'T'.repeat(120)}".`);
     expect(text).toContain(`preview: "${'P'.repeat(180)}".`);
+  });
+});
+
+describe('review outcome notice', () => {
+  it('shows the rejection reason and reviewer name to the proposer', () => {
+    const message = buildMemoryReviewOutcomeNoticeMessage({
+      status: 'rejected', proposerName: 'Agent A', reviewerName: 'Jev',
+      title: '部署规则', reason: '重复记忆',
+    }, 1_700_000_000_002);
+    expect(message.text).toBe('@Agent A 记忆提议被驳回（重复记忆）：部署规则（审核员：Jev）');
   });
 });
 

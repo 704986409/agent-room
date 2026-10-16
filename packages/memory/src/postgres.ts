@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { Pool, type PoolClient, type PoolConfig } from 'pg';
 import type { MemoryRepository } from './repository.js';
+import { isMemoryReviewRejectionReason, type MemoryReviewRejectionReason } from './review-reasons.js';
 import { proposalDedupKey } from './normalize.js';
 import {
   MemoryConflictError,
@@ -21,7 +22,7 @@ import {
   type MemoryUpdate,
 } from './types.js';
 
-const REQUIRED_SCHEMA_VERSION = 4;
+const REQUIRED_SCHEMA_VERSION = 5;
 const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
@@ -163,6 +164,12 @@ function assertIdentity(identity: MemoryIdentity): void {
   }
   if (identity.type !== 'persona' && identity.personaId !== undefined) {
     throw new MemoryForbiddenError('Non-Persona identities cannot carry a persona_id.');
+  }
+}
+
+function assertSystemReviewer(identity: MemoryIdentity): void {
+  if (identity.type !== 'system' || identity.id !== 'jev' || identity.personaId !== undefined) {
+    throw new TypeError('Invalid system memory reviewer identity.');
   }
 }
 
@@ -414,8 +421,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return result.rows[0]?.result_json ?? null;
   }
 
-  private async withRequest<T extends MemoryMutationResult>(context: RequestContext, operation: (client: PoolClient) => Promise<T>): Promise<T> {
-    assertIdentity(context.actor);
+  private async withRequest<T extends MemoryMutationResult>(
+    context: RequestContext,
+    operation: (client: PoolClient) => Promise<T>,
+    allowSystem = false,
+  ): Promise<T> {
+    if (allowSystem && context.actor.type === 'system') assertSystemReviewer(context.actor);
+    else assertIdentity(context.actor);
     assertRequestId(context.requestId);
     return this.transaction(async client => {
       const reserved = await client.query(
@@ -709,7 +721,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND id = $2`,
       [roomInstanceId, proposalId],
@@ -723,7 +735,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND id = ANY($2::uuid[]) AND status = 'superseded'
        ORDER BY created_at ASC, id ASC`,
@@ -739,7 +751,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND status = 'pending'
        ORDER BY created_at DESC, id ASC
@@ -755,14 +767,20 @@ export class PostgresMemoryRepository implements MemoryRepository {
     reviewer: MemoryIdentity,
     decision: MemoryReviewDecision,
     requestId: string,
+    reviewReason?: MemoryReviewRejectionReason,
   ): Promise<MemoryMutationResult> {
-    assertIdentity(reviewer);
+    const systemReviewer = reviewer.type === 'system';
+    if (systemReviewer) assertSystemReviewer(reviewer);
+    else assertIdentity(reviewer);
+    if (reviewReason !== undefined && !isMemoryReviewRejectionReason(reviewReason)) {
+      throw new TypeError('Invalid memory review reason.');
+    }
     return this.withRequest({ roomInstanceId, actor: reviewer, requestId }, async client => {
       const selected = await client.query<ProposalRow>(
         `SELECT id, room_instance_id, action, target_memory_id, target_version,
            target_updated_at, payload, proposer_persona_id, proposer_identity_type,
            proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-           request_id, created_at, reviewed_at
+           review_reason, request_id, created_at, reviewed_at
          FROM agent_memory_proposals
          WHERE room_instance_id = $1 AND id = $2 FOR UPDATE`,
         [roomInstanceId, proposalId],
@@ -789,9 +807,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
       await client.query(
         `UPDATE agent_memory_proposals
          SET status = $3, reviewer_identity_type = $4, reviewer_identity_id = $5,
-             reviewed_at = clock_timestamp()
+             review_reason = $6, reviewed_at = clock_timestamp()
          WHERE room_instance_id = $1 AND id = $2 AND status = 'pending'`,
-        [roomInstanceId, proposal.id, targetStatus, reviewer.type, reviewer.id],
+        [roomInstanceId, proposal.id, targetStatus, reviewer.type, reviewer.id, reviewReason ?? null],
       );
       let superseded: string[] = [];
       if (decision === 'approve' && proposal.action !== 'create') {
@@ -814,7 +832,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         ...(appliedVersion === undefined ? {} : { version: appliedVersion }),
         ...(decision === 'approve' ? { superseded } : {}),
       };
-    });
+    }, systemReviewer);
   }
 
   private async applyProposal(client: PoolClient, proposal: MemoryProposal): Promise<number | undefined> {

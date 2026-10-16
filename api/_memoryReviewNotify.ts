@@ -18,6 +18,7 @@
 
 import { redactSecretText } from '@agent-room/shared';
 import type { Message } from '@agent-room/shared';
+import type { MemoryReviewRejectionReason } from '@agent-room/memory';
 
 export type MemoryProposalKind = 'create' | 'update' | 'delete';
 
@@ -39,6 +40,14 @@ export interface MemorySupersededNoticeItem {
   readonly title: string;
   readonly proposerName: string;
   readonly winningProposalId: string;
+}
+
+export interface MemoryReviewOutcomeNotice {
+  readonly status: 'approved' | 'rejected';
+  readonly proposerName: string;
+  readonly reviewerName: string;
+  readonly title: string;
+  readonly reason?: MemoryReviewRejectionReason;
 }
 
 /** The room append seam. `_mcpTools.ts` passes `appendRoomEvent` bound to the room client. */
@@ -83,7 +92,7 @@ export function buildMemoryReviewNoticeText(notice: MemoryReviewNotice): string 
     ...(title ? [`title: "${title}".`] : []),
     ...(preview ? [`preview: "${preview}".`] : []),
     ...(notice.ownerFallback ? ['No reviewer seat is online, so this is the host\'s call.'] : []),
-    `Decide with memory_review({ action: "approve" | "reject", proposalId: "${notice.proposalId}" }).`,
+    `Decide with memory_review({ action: "approve", proposalId: "${notice.proposalId}" }) or reject with reason: "无关记忆" | "重复记忆" | "格式不合规".`,
   ].join(' ');
 }
 
@@ -128,6 +137,42 @@ export function buildMemorySupersededNoticeMessage(
     client: 'cc',
     time: now,
   };
+}
+
+export function buildMemoryReviewOutcomeNoticeMessage(
+  notice: MemoryReviewOutcomeNotice,
+  now: number = Date.now(),
+): Message {
+  const proposer = safeText(notice.proposerName, NAME_MAX_CHARS);
+  const reviewer = safeText(notice.reviewerName, NAME_MAX_CHARS) || '审核员';
+  const title = safeText(notice.title, TITLE_MAX_CHARS) || '记忆';
+  const text = notice.status === 'rejected' && notice.reason
+    ? `@${proposer} 记忆提议被驳回（${notice.reason}）：${title}（审核员：${reviewer}）`
+    : `@${proposer} 记忆提议已通过：${title}（审核员：${reviewer}）`;
+  return {
+    id: now,
+    type: 'sys',
+    name: 'system',
+    initials: 'AR',
+    color: '#5B6AFF',
+    role: 'System',
+    text,
+    client: 'cc',
+    time: now,
+  };
+}
+
+export async function deliverMemoryReviewOutcomeNotice(
+  append: MemoryReviewNoticeAppender,
+  code: string,
+  notice: MemoryReviewOutcomeNotice,
+): Promise<boolean> {
+  try {
+    await append(code, buildMemoryReviewOutcomeNoticeMessage(notice));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function deliverMemorySupersededNotice(

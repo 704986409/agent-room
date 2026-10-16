@@ -60,10 +60,43 @@ describe('MemoryReviewPanel localization', () => {
     expect(rendered).toContain('共享记忆提议');
     expect(rendered).toContain('新增 · 部署流程');
     expect(rendered).toContain('检索关键词：deploy ci');
+    expect(rendered).toContain('驳回原因');
     expect(rendered).toContain('记忆审核 · 1');
     expect(rendered).not.toContain('Shared memory proposals');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body as string).action).toBe('list');
 
+    await act(async () => renderer.unmount());
+  });
+
+  it('requires a rejection reason, sends it, and displays the returned reason in Chinese', async () => {
+    fetchMock.mockImplementation(async (_url: unknown, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.action === 'list') return { ok: true, json: async () => ({ items: [proposal] }) };
+      if (body.action === 'reject') return { ok: true, json: async () => ({ status: 'rejected', reason: '重复记忆' }) };
+      throw new Error(`Unexpected action ${body.action}`);
+    });
+    const renderer = await openPanel();
+    const reject = renderer.root.findByProps({ 'aria-label': '驳回：部署流程' });
+    expect(reject.props.disabled).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renderer.root.findByProps({ 'aria-label': '「部署流程」的驳回原因' }).props.onChange({ target: { value: '重复记忆' } });
+    });
+    expect(renderer.root.findByProps({ 'aria-label': '驳回：部署流程' }).props.disabled).toBe(false);
+    await act(async () => renderer.root.findByProps({ 'aria-label': '驳回：部署流程' }).props.onClick());
+
+    const rejectCall = fetchMock.mock.calls.find((call: [unknown, RequestInit]) =>
+      JSON.parse(String(call[1].body)).action === 'reject');
+    expect(JSON.parse(String(rejectCall?.[1].body))).toMatchObject({ action: 'reject', reason: '重复记忆' });
+    expect(text(renderer)).toContain('记忆提议被驳回（重复记忆）：部署流程');
+    await act(async () => renderer.unmount());
+  });
+
+  it('shows a stored rejection reason on a listed proposal', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ items: [{ ...proposal, reason: '格式不合规' }] }) });
+    const renderer = await openPanel();
+    expect(text(renderer)).toContain('驳回原因：格式不合规');
     await act(async () => renderer.unmount());
   });
 

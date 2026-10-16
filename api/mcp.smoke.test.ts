@@ -1096,7 +1096,8 @@ describe('hosted MCP endpoint', () => {
       expect(heardText).toContain(proposalId);
       expect(heardText).toContain('@Project Analyst');
       expect(heardText).toContain('(create)');
-      expect(heardText).toContain('memory_review({ action: "approve" | "reject"');
+      expect(heardText).toContain('memory_review({ action: "approve"');
+      expect(heardText).toContain('"无关记忆" | "重复记忆" | "格式不合规"');
       expect(heardText).not.toContain(seatA);
       expect(heardText).not.toContain('The Room decided to retain the shared index.');
       // Identical normalized content from another seat with a new requestId reuses the pending proposal.
@@ -1199,6 +1200,7 @@ describe('hosted MCP endpoint', () => {
       })).toMatchObject({ code: 'CONFLICT' });
       expect(await invoke('memory_review', {
         code, seatKey: analystKey, action: 'reject', proposalId: String(twoOnline.proposalId), requestId: `mr-${randomUUID()}`,
+        reason: '重复记忆',
       })).toMatchObject({ code: 'CONFLICT' });
 
       // A stale reviewer seat is skipped for notification and told it is unavailable.

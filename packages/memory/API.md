@@ -20,12 +20,12 @@ All tool inputs are JSON objects. `requestId` is required for write/update/delet
 | `memory_update` | `code`, `seatKey`, `scope`, `id`, `requestId` | Persona updates apply directly; Room updates create a proposal. At least one mutable field is required. |
 | `memory_delete` | `code`, `seatKey`, `scope`, `id`, `requestId` | Persona deletes are soft deletes; Room deletes create a proposal. |
 | `memory_list` | `code`, `seatKey`, `scope` | Returns a paginated `{id,title,preview}` directory, never full bodies. Optional `limit` and `offset`. |
-| `memory_review` | `code`, `seatKey`, `action` | `action: list` lists pending proposals for the expected reviewer. `approve`/`reject` also require `proposalId` and `requestId`. |
+| `memory_review` | `code`, `seatKey`, `action` | `action: list` lists pending proposals for the expected reviewer. `approve` requires `proposalId` and `requestId`; `reject` also requires `reason`, one of `无关记忆`, `重复记忆`, or `格式不合规`. |
 | `memory_brief` | `code`, `seatKey` | Returns the structured Brief only if the one-time marker for this seat session has not been claimed. Normal Brief delivery occurs on `room_join`; `room_listen` never includes it. |
 
-For a Room-scoped write, update, or delete, the response has `code: PENDING_REVIEW` and `proposalId`. Create proposals also return a server-side `notification` descriptor when a reviewer is available. It is a notification adapter result; the memory tool does not post an `@` message to the Room transcript.
+For a Room-scoped write, update, or delete, the response has `code: PENDING_REVIEW` and `proposalId`. Proposals notify the selected reviewer or owner fallback in the Room transcript. Rejection outcomes notify the proposer and include the selected reason code.
 
-The configured reviewer role comes from `MEMORY_REVIEWER_ROLE` (default `project-analyst`). The server resolves that role against a Room participant with a valid seat binding and recent server-recorded activity. If that reviewer is unavailable, the verified Room owner seat is the fallback. The reviewer seat key, not caller-supplied `name` or `role`, authorizes review. Self-review is forbidden.
+The configured reviewer role comes from `MEMORY_REVIEWER_ROLE` (default `project-analyst`). The server resolves that role against a Room participant with a valid seat binding and recent server-recorded activity. If that reviewer is unavailable, the verified Room owner seat is the fallback. When no participant holds the reviewer role, Jev may review automatically if configured; Jev failures return to the owner fallback. The reviewer seat key, not caller-supplied `name` or `role`, authorizes agent review. Self-review is forbidden. Rejection reasons mean: `无关记忆` (status, one-off detail, chatter, or not useful later); `重复记忆` (duplicates an existing memory or pending proposal); `格式不合规` (not Simplified Chinese, bloated, multiple things, or not one concise sentence).
 
 ## Error codes
 

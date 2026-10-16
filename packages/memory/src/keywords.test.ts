@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BORDERLINE_THRESHOLD, DEFAULT_DUPLICATE_THRESHOLD, DUPLICATE_THRESHOLD, classifyDuplicate,
+  BORDERLINE_THRESHOLD, DEFAULT_DUPLICATE_THRESHOLD, DUPLICATE_THRESHOLD, VERIFIER_BORDERLINE_FLOOR, classifyDuplicate,
   isLikelyDuplicate, keywordSimilarity, memoryKeywords,
 } from './keywords.js';
 
@@ -44,8 +44,18 @@ describe('memoryKeywords', () => {
     expect(isLikelyDuplicate(memoryKeywords(pairs[0][0]), memoryKeywords(pairs[0][1]), DEFAULT_DUPLICATE_THRESHOLD)).toBe(true);
     expect(DUPLICATE_THRESHOLD).toBe(0.5);
     expect(BORDERLINE_THRESHOLD).toBe(0.3);
+    expect(VERIFIER_BORDERLINE_FLOOR).toBe(0.15);
     expect(classifications).toEqual([
       'duplicate', 'not_duplicate', 'duplicate', 'not_duplicate', 'not_duplicate', 'not_duplicate', 'borderline',
     ]);
+  });
+
+  it('admits the low lexical GBK pair only when a verifier is configured', () => {
+    const [newMemory, existingMemory] = pairs[1]!;
+    const newKeywords = memoryKeywords(newMemory);
+    const existingKeywords = memoryKeywords(existingMemory);
+    expect(keywordSimilarity(newKeywords, existingKeywords)).toBeCloseTo(0.235, 2);
+    expect(classifyDuplicate(newKeywords, existingKeywords)).toBe('not_duplicate');
+    expect(classifyDuplicate(newKeywords, existingKeywords, { verifier: true })).toBe('borderline');
   });
 });

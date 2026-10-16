@@ -12,6 +12,8 @@ import {
   RedisUrlCommandClient,
   ReviewerPolicy,
   type MemoryIdentity,
+  type MemoryReviewResult,
+  type MemoryReviewRejectionReason,
   type MemoryServiceMutationResult,
   type ReviewerSeat,
   type MemoryContent,
@@ -30,9 +32,11 @@ import {
 } from './_mcpRoomClient.js';
 import {
   deliverMemoryReviewNotice,
+  deliverMemoryReviewOutcomeNotice,
   deliverMemorySupersededNotice,
   type MemoryProposalKind,
 } from './_memoryReviewNotify.js';
+import { tryJevMemoryReview } from './_memoryJevReview.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MEMORY_TOOL_NAMES = new Set([
@@ -230,6 +234,10 @@ function reviewNoticeContext(
 function reviewerNamesFor(room: Room, recipients: readonly MemoryIdentity[]): string[] {
   const names: string[] = [];
   for (const recipient of recipients) {
+    if (recipient.type === 'system') {
+      if (!names.includes('Jev')) names.push('Jev');
+      continue;
+    }
     const seat = room.participants.find(candidate => candidate.client === 'cc'
       && hasSeatHash(candidate)
       && sameIdentity(identityForSeat(candidate), recipient));
@@ -266,6 +274,46 @@ export async function notifySupersededMemoryProposals(
   }
 }
 
+export async function notifyRejectedMemoryProposal(
+  client: RemoteRoomClient,
+  code: string,
+  fallbackRoom: Room,
+  repository: Pick<MemoryRepository, 'getRoomProposal' | 'readEntry'>,
+  result: MemoryReviewResult,
+  reviewerName: string,
+): Promise<boolean | undefined> {
+  if (result.status !== 'rejected' || !result.reason) return undefined;
+  try {
+    const proposal = await repository.getRoomProposal(fallbackRoom.roomInstanceId!, result.proposalId);
+    if (!proposal) return false;
+    const proposer: MemoryIdentity = {
+      type: proposal.proposer_identity_type,
+      id: proposal.proposer_identity_id,
+      ...(proposal.proposer_persona_id ? { personaId: proposal.proposer_persona_id } : {}),
+    };
+    const payload = proposal.payload as Record<string, unknown>;
+    const current = proposal.target_memory_id
+      ? await repository.readEntry({ roomInstanceId: fallbackRoom.roomInstanceId!, scope: 'room' }, proposal.target_memory_id)
+        .catch(() => null)
+      : null;
+    const title = typeof payload.title === 'string' ? payload.title : current?.title ?? proposal.target_memory_id ?? '';
+    const room = await getRoom(client, code).catch(() => fallbackRoom);
+    return await deliverMemoryReviewOutcomeNotice(
+      (roomCode, message) => appendRoomEvent(client, roomCode, message),
+      code,
+      {
+        status: 'rejected',
+        proposerName: reviewerNamesFor(room, [proposer])[0] ?? proposer.id,
+        reviewerName,
+        title,
+        reason: result.reason as MemoryReviewRejectionReason,
+      },
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * New pending proposal -> notify all online reviewers (or the owner fallback with
  * reviewCode REVIEWER_UNAVAILABLE). A duplicateOf result re-notifies nobody.
@@ -279,12 +327,22 @@ export async function notifySupersededMemoryProposals(
 async function withReviewNotifications(
   result: MemoryServiceMutationResult,
   reviews: MemoryReviewService,
+  repository: MemoryRepository,
   roomInstanceId: string,
   notice: ReviewNoticeContext,
 ): Promise<Record<string, unknown>> {
   if (!('code' in result) || result.code !== 'PENDING_REVIEW' || result.duplicateOf) {
     return result as unknown as Record<string, unknown>;
   }
+  const jevResult = await tryJevMemoryReview({
+    result,
+    repository,
+    reviews,
+    roomInstanceId,
+    proposerName: notice.proposerName,
+    appendRoomEvent: message => appendRoomEvent(notice.client, notice.code, message),
+  });
+  if (jevResult) return jevResult;
   try {
     const mention = await reviews.mentionReviewers(roomInstanceId, result.proposalId);
     const room = await getRoom(notice.client, notice.code).catch(() => notice.room);
@@ -443,7 +501,7 @@ export async function dispatchMemoryTool(
         if (!scope) return { code: 'INVALID_INPUT' };
         return await withReviewNotifications(
           await service.createEntry(seat.caller, scope, contentFrom(args), requestId),
-          reviews, seat.caller.roomInstanceId,
+          reviews, repository, seat.caller.roomInstanceId,
           reviewNoticeContext(client, seat, 'create', args),
         );
       }
@@ -452,7 +510,7 @@ export async function dispatchMemoryTool(
         if (!scope) return { code: 'INVALID_INPUT' };
         return await withReviewNotifications(
           await service.updateEntry(seat.caller, scope, text(args.id) ?? '', updateFrom(args), requestId),
-          reviews, seat.caller.roomInstanceId,
+          reviews, repository, seat.caller.roomInstanceId,
           reviewNoticeContext(client, seat, 'update', args),
         );
       }
@@ -461,7 +519,7 @@ export async function dispatchMemoryTool(
         if (!scope) return { code: 'INVALID_INPUT' };
         return await withReviewNotifications(
           await service.deleteEntry(seat.caller, scope, text(args.id) ?? '', requestId),
-          reviews, seat.caller.roomInstanceId,
+          reviews, repository, seat.caller.roomInstanceId,
           reviewNoticeContext(client, seat, 'delete', args),
         );
       }
@@ -489,7 +547,13 @@ export async function dispatchMemoryTool(
           text(args.proposalId) ?? '',
           action,
           requestId,
+          action === 'reject' ? args.reason : undefined,
         );
+        const rejectionNotificationDelivered = action === 'reject'
+          ? await notifyRejectedMemoryProposal(
+            client, seat.room.code, seat.room, repository, result, seat.participant.name,
+          )
+          : undefined;
         const supersededNotificationDelivered = action === 'approve'
           ? await notifySupersededMemoryProposals(
             client, seat.room.code, seat.room, reviews, result.proposalId, result.superseded,
@@ -497,6 +561,7 @@ export async function dispatchMemoryTool(
           : undefined;
         return {
           ...result,
+          ...(rejectionNotificationDelivered === undefined ? {} : { notificationDelivered: rejectionNotificationDelivered }),
           ...(supersededNotificationDelivered === undefined ? {} : { supersededNotificationDelivered }),
         };
       }

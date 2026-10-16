@@ -25,7 +25,7 @@ The eight `memory_*` tools are listed only when `MEMORY_ENABLED=true` (or `1`) a
 
 Join-time Brief loading uses the new seat key as the session key in the existing Redis one-time marker. A repeated `memory_brief` call on that key returns `loaded: false`; a newly issued key gets a new Brief. `room_listen` never carries a Brief. A Brief query reads only Room-shared records and the current Persona's private records.
 
-MCP review maps the server-configured `MEMORY_REVIEWER_ROLE` (default `project-analyst`) to a Room participant with a server-issued seat binding and recent server-recorded activity. When none is available, `ReviewerPolicy` can select the verified Room owner seat. The review notification is an adapter result; it does not write directly to the Room transcript.
+MCP review maps the server-configured `MEMORY_REVIEWER_ROLE` (default `project-analyst`) to a Room participant with a server-issued seat binding and recent server-recorded activity. Jev reviews automatically only when no participant holds that role; Jev errors use the existing Room owner fallback. Rejection requires one of three reasons: `无关记忆` (status, one-off detail, chatter, or not useful later), `重复记忆` (duplicates an existing memory or pending proposal), or `格式不合规` (not Simplified Chinese, bloated, multiple things, or not one concise sentence). Review outcomes notify the proposer in the Room transcript.
 
 ## Search and bounded reads (P3)
 

@@ -26,6 +26,22 @@ npm run migrate:postgres -w packages/memory
 
 `DATABASE_URL` is required by the migration runner. The runner applies numbered migrations under a PostgreSQL advisory transaction lock. Schema version 2 adds the P7 trigram and Room/scope indexes to the original version 1 tables. Schema version 3 adds a nullable `dedup_key` column and a partial unique index so identical pending Room proposals (same action, target, and normalized content) collapse into one; rows created earlier keep `dedup_key` NULL. Re-running the migration command is safe. No Room table is migrated or recreated.
 
+Schema version 5 adds trusted system reviewer identity support and nullable `review_reason` storage constrained to the three rejection codes. Approvals store NULL. Migration `005_system_reviewer.sql` is applied automatically by the numbered migration runner.
+
+### TypeSafe Jev
+
+When `JEV_API_KEY` is configured, TypeSafe Jev can verify borderline room-memory duplicates and review new or updated shared-memory proposals only when no agent holds the configured reviewer role. The reviewer skips delete proposals. Jev errors fall back to the existing owner review flow.
+
+- `JEV_API_KEY`: bearer credential for `https://api.typesafe.ai/v1/systemone`.
+- `JEV_MODEL`: model name; defaults to `jev-1.13.0`.
+- `JEV_API_URL`: full Jev request endpoint override.
+- `JEV_TIMEOUT_MS`: request timeout in milliseconds; defaults to `5000`.
+- `MEMORY_DEDUP_VERIFIER`: duplicate verification is on when a key exists; set to `0`, `false`, or `off` to disable it.
+- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate score cutoff from `0` to `1`; defaults to `0.7`.
+- `MEMORY_DEDUP_JEV_MAX_CANDIDATES`: maximum score-ranked candidates sent together in one request; defaults to `5`.
+- `MEMORY_DEDUP_VERIFIER_URL`: legacy duplicate-verifier endpoint override, retained as a Jev base URL override.
+- `MEMORY_JEV_REVIEW`: proposal review is on when a key exists; set to `0`, `false`, or `off` to disable it.
+
 For a clean database when the runtime role cannot install the extension, the administrator runs:
 
 ```sql

@@ -81,7 +81,15 @@ describe('memory guidance stays static and gated', () => {
       expect(description('memory_write')).toContain('写记忆前先查重');
       expect(description('memory_write')).toContain('若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。');
       expect(description('memory_search')).toContain('Search before unfamiliar work or when a convention may already exist');
-      expect(description('memory_review')).toContain('Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates');
+      expect(description('memory_review')).toContain('Reject requires reason');
+      expect(description('memory_review')).toContain('无关记忆');
+      expect(description('memory_review')).toContain('重复记忆');
+      expect(description('memory_review')).toContain('格式不合规');
+      const reviewTool = tools.find(tool => tool.name === 'memory_review')!;
+      expect(reviewTool.inputSchema.properties.reason.enum).toEqual(['无关记忆', '重复记忆', '格式不合规']);
+      expect(reviewTool.inputSchema.allOf).toEqual(expect.arrayContaining([
+        expect.objectContaining({ then: { required: ['proposalId', 'requestId', 'reason'] } }),
+      ]));
       expect(description('memory_review')).toContain('批准最早');
       const skill = readFileSync(new URL('../integrations/agent-room-skill/SKILL.md', import.meta.url), 'utf8');
       expect(skill).toContain('记忆的标题和内容一律用简体中文');

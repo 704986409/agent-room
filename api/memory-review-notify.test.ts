@@ -16,9 +16,10 @@
 // What is under test is the seam between them and the room.
 
 import { createHash, randomUUID } from 'node:crypto';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message, Participant, Room } from '@agent-room/shared';
 import type { MemoryIdentity } from '@agent-room/memory';
+type FetchArgs = [input: RequestInfo | URL, init?: RequestInit];
 
 const ROOM_INSTANCE_ID = randomUUID();
 const SEAT_KEYS = {
@@ -91,6 +92,10 @@ let mention: {
   recipients: MemoryIdentity[];
   reviewCode?: 'REVIEWER_UNAVAILABLE';
 } | Error = { mode: 'reviewers', recipients: [PERSONA_REVIEWER] };
+let reviewerSet: { mode: 'reviewers' | 'owner_fallback' | 'none'; reviewers: MemoryIdentity[]; offlineReviewers: MemoryIdentity[] } = {
+  mode: 'reviewers', reviewers: [PERSONA_REVIEWER], offlineReviewers: [],
+};
+let systemReviewCalls: unknown[][] = [];
 
 vi.mock('./_mcpRoomClient.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./_mcpRoomClient.js')>();
@@ -119,6 +124,24 @@ vi.mock('@agent-room/memory', async (importOriginal) => {
       async deleteEntry() { return mutation; }
     },
     MemoryReviewService: class {
+      async review(_context: unknown, proposalId: unknown, decision: unknown, _requestId: unknown, reason: unknown) {
+        return {
+          status: decision === 'approve' ? 'approved' : 'rejected',
+          proposalId,
+          ...(decision === 'reject' ? { reason } : {}),
+        };
+      }
+      async reviewAsSystem(...args: unknown[]) {
+        systemReviewCalls.push(args);
+        const [roomInstanceId, proposalId, decision, reason] = args;
+        return {
+          status: decision === 'approve' ? 'approved' : 'rejected',
+          proposalId,
+          ...(decision === 'reject' ? { reason } : {}),
+          ...(roomInstanceId ? { version: 1 } : {}),
+        };
+      }
+      async reviewerSetForProposal() { return reviewerSet; }
       async mentionReviewers() {
         if (mention instanceof Error) throw mention;
         return {
@@ -138,7 +161,35 @@ vi.mock('@agent-room/memory', async (importOriginal) => {
 
 const repository = { close: async () => {} } as never;
 const dependencies = {
-  openRepository: async () => repository,
+  openRepository: async () => ({
+    ...repository,
+    async getRoomProposal(_roomInstanceId: string, proposalId: string) {
+      return {
+        id: proposalId,
+        room_instance_id: ROOM_INSTANCE_ID,
+        action: 'create',
+        target_memory_id: null,
+        target_version: null,
+        target_updated_at: null,
+        payload: {
+          title: 'Shared decision', preview: 'The room keeps the shared index.',
+          content: 'The room decided to retain the shared index.', searchText: 'shared-index-decision',
+        },
+        proposer_persona_id: 'persona-alpha',
+        proposer_identity_type: 'persona',
+        proposer_identity_id: 'persona-alpha',
+        status: 'pending',
+        reviewer_identity_type: null,
+        reviewer_identity_id: null,
+        review_reason: null,
+        request_id: 'write-test',
+        created_at: new Date(0),
+        reviewed_at: null,
+      };
+    },
+    async readEntry() { return null; },
+    async listEntries() { return []; },
+  }),
   redis: { sendCommand: async () => null },
 };
 
@@ -174,8 +225,11 @@ const noticeTexts = () => messages
 
 describe('shared memory proposals reach the reviewer through the room', () => {
   beforeEach(() => {
-    process.env.MEMORY_ENABLED = 'true';
-    process.env.MEMORY_DATABASE_URL = 'postgresql://memory-tools-test/none';
+    vi.stubEnv('MEMORY_ENABLED', 'true');
+    vi.stubEnv('MEMORY_DATABASE_URL', 'postgresql://memory-tools-test/none');
+    vi.stubEnv('JEV_API_KEY', '');
+    vi.stubEnv('MEMORY_JEV_REVIEW', '');
+    vi.stubEnv('MEMORY_DEDUP_VERIFIER', 'false');
     messages = [{
       id: 1, type: 'msg', name: 'Host', initials: 'HO', color: '#000', role: 'host',
       text: 'Let us agree on the shared index.', client: 'web', time: 1,
@@ -184,6 +238,109 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     appendFails = false;
     mutation = { code: 'PENDING_REVIEW', proposalId: randomUUID() };
     mention = { mode: 'reviewers', recipients: [PERSONA_REVIEWER] };
+    reviewerSet = { mode: 'reviewers', reviewers: [PERSONA_REVIEWER], offlineReviewers: [] };
+    systemReviewCalls = [];
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('uses Jev first, commits the decision, and posts a short system event', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
+    reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [] };
+    vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response(JSON.stringify({
+      model: 'jev-1.13.0',
+      answers: {
+        is_chinese: { type: 'noul', noul: 0.9 },
+        durable: { type: 'noul', noul: 0.9 },
+        concise: { type: 'noul', noul: 0.9 },
+        already_known: { type: 'noul', noul: 0.1 },
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+
+    const result = await propose();
+    expect(result).toMatchObject({
+      code: 'APPROVED',
+      status: 'approved',
+      reviewer: 'jev',
+      proposalId: mutation.proposalId,
+    });
+    expect(systemReviewCalls).toHaveLength(1);
+    expect(mention instanceof Error).toBe(false);
+    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议已通过：Shared decision（审核员：Jev）');
+    expect(noticeTexts()).toHaveLength(0);
+  });
+
+  it('does not call Jev when an online reviewer role seat exists', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
+    const fetchMock = vi.fn<FetchArgs, Promise<Response>>();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await propose();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(systemReviewCalls).toHaveLength(0);
+    expect(result).toMatchObject({ code: 'PENDING_REVIEW', notificationDelivered: true });
+  });
+
+  it('does not call Jev when the reviewer role exists only on offline seats', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
+    reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [PERSONA_REVIEWER] };
+    mention = { mode: 'owner_fallback', recipients: [ROOM_OWNER], reviewCode: 'REVIEWER_UNAVAILABLE' };
+    const fetchMock = vi.fn<FetchArgs, Promise<Response>>();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await propose();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ code: 'PENDING_REVIEW', notificationDelivered: true });
+  });
+
+  it('returns the selected agent rejection reason and posts it to the proposer', async () => {
+    const result = await invoke('memory_review', {
+      code: room.code,
+      seatKey: SEAT_KEYS.reviewer,
+      action: 'reject',
+      proposalId: randomUUID(),
+      requestId: 'agent-reject-1',
+      reason: '重复记忆',
+    });
+    expect(result).toMatchObject({ status: 'rejected', reason: '重复记忆', notificationDelivered: true });
+    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议被驳回（重复记忆）：Shared decision（审核员：Project Analyst）');
+  });
+
+  it.each([
+    ['is_chinese', 0.49, '格式不合规'],
+    ['durable', 0.59, '无关记忆'],
+    ['concise', 0.49, '格式不合规'],
+    ['already_known', 0.6, '重复记忆'],
+  ] as const)('lets Jev reject a proposal with the required reason code', async (key, score, reason) => {
+    vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
+    reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [] };
+    const scores = { is_chinese: 0.9, durable: 0.9, concise: 0.9, already_known: 0.1, [key]: score };
+    vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response(JSON.stringify({
+      model: 'jev-1.13.0',
+      answers: Object.fromEntries(Object.entries(scores).map(([id, noul]) => [id, { type: 'noul', noul }])),
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    const result = await propose();
+    expect(result).toMatchObject({ code: 'REJECTED', status: 'rejected', reviewer: 'jev', reason });
+    expect(messages.at(-1)?.text).toBe(`@Agent A 记忆提议被驳回（${reason}）：Shared decision（审核员：Jev）`);
+  });
+
+  it('falls back to reviewer notifications after a Jev API error', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
+    reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [] };
+    mention = { mode: 'owner_fallback', recipients: [ROOM_OWNER], reviewCode: 'REVIEWER_UNAVAILABLE' };
+    vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response('', { status: 429 })));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const result = await propose();
+      expect(result).toMatchObject({ code: 'PENDING_REVIEW', reviewCode: 'REVIEWER_UNAVAILABLE', notificationDelivered: true });
+      expect(systemReviewCalls).toHaveLength(0);
+      expect(mention instanceof Error).toBe(false);
+      expect(noticeTexts()).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith('Jev memory review failed; falling back to the existing review flow.');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('appends exactly one room message that @-mentions the reviewer and carries the proposalId', async () => {
@@ -197,7 +354,8 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     expect(posted.text).toContain(String(result.proposalId));
     expect(posted.text).toContain('(create)');
     expect(posted.text).toContain('Agent A proposes a shared room memory');
-    expect(posted.text).toContain('memory_review({ action: "approve" | "reject"');
+    expect(posted.text).toContain('memory_review({ action: "approve"');
+    expect(posted.text).toContain('"无关记忆" | "重复记忆" | "格式不合规"');
     // The seatKey that authorized the write, and the memory body, stay out of the room.
     expect(posted.text).not.toContain(SEAT_KEYS.proposer);
     expect(posted.text).not.toContain('The room decided to retain the shared index.');

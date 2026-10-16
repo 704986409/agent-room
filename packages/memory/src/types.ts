@@ -2,9 +2,11 @@ export type MemoryScope =
   | { readonly roomInstanceId: string; readonly scope: 'persona'; readonly personaId: string }
   | { readonly roomInstanceId: string; readonly scope: 'room' };
 
-export type MemoryIdentityType = 'persona' | 'room_member' | 'room_owner';
+export type MemoryIdentityType = 'persona' | 'room_member' | 'room_owner' | 'system';
+export type MemoryProposerIdentityType = Exclude<MemoryIdentityType, 'system'>;
 
 export interface MemoryIdentity {
+  /** `system` is reserved for trusted server reviewers such as `{ type: 'system', id: 'jev' }`. */
   readonly type: MemoryIdentityType;
   readonly id: string;
   /** Set only for Persona actors; human identities must not invent a Persona ID. */
@@ -90,11 +92,12 @@ export interface MemoryProposal {
   target_updated_at: Date | null;
   payload: MemoryContent | MemoryUpdate | Record<string, never>;
   proposer_persona_id: string | null;
-  proposer_identity_type: MemoryIdentityType;
+  proposer_identity_type: MemoryProposerIdentityType;
   proposer_identity_id: string;
   status: MemoryProposalStatus;
   reviewer_identity_type: MemoryIdentityType | null;
   reviewer_identity_id: string | null;
+  review_reason: string | null;
   request_id: string;
   created_at: Date;
   reviewed_at: Date | null;

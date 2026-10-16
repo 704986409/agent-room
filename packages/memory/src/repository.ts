@@ -12,6 +12,7 @@ import type {
   MemoryScope,
   MemoryUpdate,
 } from './types.js';
+import type { MemoryReviewRejectionReason } from './review-reasons.js';
 
 /** PostgreSQL persistence contract. Every read/write carries a trusted scope. */
 export interface MemoryRepository {
@@ -78,6 +79,7 @@ export interface MemoryRepository {
     reviewer: MemoryIdentity,
     decision: MemoryReviewDecision,
     requestId: string,
+    reviewReason?: MemoryReviewRejectionReason,
   ): Promise<MemoryMutationResult>;
 
   close(): Promise<void>;

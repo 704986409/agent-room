@@ -139,11 +139,60 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     expect(notification).toEqual({ kind: 'mention', roomInstanceId: roomId, proposalId: proposal.id, recipient: reviewer });
 
     const result = await service.review(
-      reviewerContext(roomId, reviewer), proposal.id, 'approve', `review-approve-${randomUUID()}`,
+      reviewerContext(roomId, reviewer), proposal.id, 'approve', `review-approve-${randomUUID()}`, 'ignored',
     );
     expect(result).toMatchObject({ status: 'approved', proposalId: proposal.id, version: 1 });
+    expect(result).not.toHaveProperty('reason');
+    expect((await repository.getRoomProposal(roomId, proposal.id))?.review_reason).toBeNull();
     expect(await repository.listEntries({ roomInstanceId: roomId, scope: 'room' })).toHaveLength(1);
     expect(await repository.listPendingRoomProposals(roomId)).toEqual([]);
+  });
+
+  it('lets Jev review server-side and persists the reason', async () => {
+    const roomId = randomUUID();
+    const proposal = await proposeCreate(roomId, persona(`jev-proposer-${randomUUID()}`));
+    const { service } = serviceFor(roomId, null);
+
+    const result = await service.reviewAsSystem(
+      roomId, proposal.id, 'approve', undefined, `jev-create-${randomUUID()}`,
+    );
+    expect(result).toMatchObject({ status: 'approved', proposalId: proposal.id });
+    expect(result).not.toHaveProperty('reason');
+    expect(await repository.getRoomProposal(roomId, proposal.id)).toMatchObject({
+      status: 'approved',
+      reviewer_identity_type: 'system',
+      reviewer_identity_id: 'jev',
+      review_reason: null,
+    });
+    expect(await repository.listEntries({ roomInstanceId: roomId, scope: 'room' })).toHaveLength(1);
+  });
+
+  it('stores a Jev rejection code and returns it to the caller', async () => {
+    const roomId = randomUUID();
+    const proposal = await proposeCreate(roomId, persona(`jev-reject-proposer-${randomUUID()}`));
+    const { service } = serviceFor(roomId, null);
+    const result = await service.reviewAsSystem(
+      roomId, proposal.id, 'reject', '重复记忆', `jev-reject-${randomUUID()}`,
+    );
+    expect(result).toMatchObject({ status: 'rejected', proposalId: proposal.id, reason: '重复记忆' });
+    expect((await repository.getRoomProposal(roomId, proposal.id))?.review_reason).toBe('重复记忆');
+  });
+
+  it('supersedes older pending updates when Jev approves an update', async () => {
+    const roomId = randomUUID();
+    const analyst = persona(`system-updater-${randomUUID()}`);
+    const entry = await createEntry(roomId, analyst);
+    const losing = await proposeUpdate(roomId, entry.id, persona(`loser-${randomUUID()}`), 'older');
+    const winning = await proposeUpdate(roomId, entry.id, persona(`winner-${randomUUID()}`), 'newer');
+    const { service } = serviceFor(roomId, null);
+
+    const result = await service.reviewAsSystem(
+      roomId, winning.id, 'approve', undefined, `jev-update-${randomUUID()}`,
+    );
+    expect(result.superseded).toEqual([losing.id]);
+    expect((await repository.getRoomProposal(roomId, losing.id))?.status).toBe('superseded');
+    expect((await repository.readEntry({ roomInstanceId: roomId, scope: 'room' }, entry.id))?.content)
+      .toBe('Replacement newer');
   });
 
   it('rejects a proposal without changing the existing shared memory', async () => {
@@ -161,9 +210,10 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     const { service } = serviceFor(roomId, analyst);
 
     const result = await service.review(
-      reviewerContext(roomId, analyst), update.id, 'reject', `review-reject-${randomUUID()}`,
+      reviewerContext(roomId, analyst), update.id, 'reject', `review-reject-${randomUUID()}`, '无关记忆',
     );
-    expect(result.status).toBe('rejected');
+    expect(result).toMatchObject({ status: 'rejected', reason: '无关记忆' });
+    expect((await repository.getRoomProposal(roomId, update.id))?.review_reason).toBe('无关记忆');
     expect((await repository.readEntry({ roomInstanceId: roomId, scope: 'room' }, current.id))?.content)
       .toBe('Shared memory body');
     expect((await repository.readEntry({ roomInstanceId: roomId, scope: 'room' }, current.id))?.version).toBe(1);
@@ -235,7 +285,7 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     expect(winner.status).toBe('approved');
     await expect(service.review(reviewerContext(roomId, first), proposal.id, 'approve', `l-${randomUUID()}`))
       .rejects.toMatchObject({ code: 'CONFLICT' });
-    await expect(service.review(reviewerContext(roomId, first), proposal.id, 'reject', `l2-${randomUUID()}`))
+    await expect(service.review(reviewerContext(roomId, first), proposal.id, 'reject', `l2-${randomUUID()}`, '无关记忆'))
       .rejects.toMatchObject({ code: 'CONFLICT' });
     expect(await repository.listEntries({ roomInstanceId: roomId, scope: 'room' })).toHaveLength(1);
   });

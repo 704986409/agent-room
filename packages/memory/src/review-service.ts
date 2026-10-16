@@ -9,6 +9,7 @@ import {
   type MemoryReviewDecision,
 } from './types.js';
 import { MemoryServiceError } from './service.js';
+import { isMemoryReviewRejectionReason, type MemoryReviewRejectionReason } from './review-reasons.js';
 
 export interface TrustedMemoryReviewer {
   readonly roomInstanceId: string;
@@ -90,7 +91,7 @@ export class ReviewerPolicy {
   }
 }
 
-/** Future Jev adapter seam. P5 deliberately does not call this provider. */
+/** Legacy review-provider seam retained for adapters outside the default Jev path. */
 export interface ReviewProvider {
   requestDecision(input: {
     readonly roomInstanceId: string;
@@ -126,11 +127,13 @@ export interface MemoryReviewProposalView {
   readonly payload: Readonly<Record<string, string>>;
   readonly current?: { readonly title: string; readonly preview: string; readonly content: string };
   readonly createdAt: string;
+  readonly reason?: MemoryReviewRejectionReason;
 }
 
 export interface MemoryReviewResult {
   readonly status: 'approved' | 'rejected';
   readonly proposalId: string;
+  readonly reason?: MemoryReviewRejectionReason;
   readonly version?: number;
   readonly superseded?: readonly string[];
 }
@@ -190,6 +193,11 @@ function validateDecision(value: unknown): MemoryReviewDecision {
   return value;
 }
 
+function validateRejectionReason(value: unknown): MemoryReviewRejectionReason {
+  if (!isMemoryReviewRejectionReason(value)) throw new TypeError('A valid rejection reason is required.');
+  return value;
+}
+
 function validateRequestId(value: unknown): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 128) {
     throw new TypeError('request_id must contain 1 to 128 characters.');
@@ -209,6 +217,7 @@ function proposalView(proposal: MemoryProposal): MemoryReviewProposalView {
     targetMemoryId: proposal.target_memory_id,
     payload,
     createdAt: proposal.created_at.toISOString(),
+    ...(isMemoryReviewRejectionReason(proposal.review_reason) ? { reason: proposal.review_reason } : {}),
   };
 }
 
@@ -224,6 +233,13 @@ function resultFromRepository(result: MemoryMutationResult, decision: MemoryRevi
   }
   if (result.status === 'pending_review') throw new MemoryServiceError('PENDING_REVIEW');
   throw new MemoryConflictError(`Unexpected result for ${decision}.`);
+}
+
+function withReason(
+  result: MemoryReviewResult,
+  reason: unknown,
+): MemoryReviewResult {
+  return isMemoryReviewRejectionReason(reason) ? { ...result, reason } : result;
 }
 
 /** One business boundary for reviewer selection, authorization, listing, and transactional decisions. */
@@ -275,11 +291,15 @@ export class MemoryReviewService {
     proposalId: string,
     decision: MemoryReviewDecision,
     requestId: string,
+    reason?: unknown,
   ): Promise<MemoryReviewResult> {
     return this.execute(async () => {
       const trusted = validateContext(context);
       const id = validateProposalId(proposalId);
       const choice = validateDecision(decision);
+      const reviewReason = choice === 'reject'
+        ? validateRejectionReason(reason)
+        : undefined;
       const idempotencyKey = validateRequestId(requestId);
       const proposal = await this.repository.getRoomProposal(trusted.roomInstanceId, id);
       if (!proposal) throw new MemoryServiceError('NOT_FOUND');
@@ -302,10 +322,10 @@ export class MemoryReviewService {
           || (proposal.status === 'rejected' && choice !== 'reject')) {
           throw new MemoryServiceError('CONFLICT');
         }
-        return resultFromRepository(
+        return withReason(resultFromRepository(
           await this.repository.reviewRoomProposal(trusted.roomInstanceId, id, trusted.identity, choice, idempotencyKey),
           choice,
-        );
+        ), proposal.review_reason);
       }
 
       const proposerIdentity: MemoryIdentity = {
@@ -314,10 +334,63 @@ export class MemoryReviewService {
         ...(proposal.proposer_persona_id ? { personaId: proposal.proposer_persona_id } : {}),
       };
       await this.assertExpectedReviewer(trusted.roomInstanceId, trusted.identity, proposerIdentity);
-      return resultFromRepository(
-        await this.repository.reviewRoomProposal(trusted.roomInstanceId, id, trusted.identity, choice, idempotencyKey),
+      return withReason(resultFromRepository(
+        await this.repository.reviewRoomProposal(
+          trusted.roomInstanceId, id, trusted.identity, choice, idempotencyKey, reviewReason,
+        ),
         choice,
+      ), reviewReason);
+    });
+  }
+
+  /** Trusted server-only review path used by Jev; it never consults ReviewerPolicy. */
+  async reviewAsSystem(
+    roomInstanceId: string,
+    proposalId: string,
+    decision: MemoryReviewDecision,
+    reason: unknown,
+    requestId: string,
+  ): Promise<MemoryReviewResult> {
+    return this.execute(async () => {
+      if (typeof roomInstanceId !== 'string' || !UUID_PATTERN.test(roomInstanceId)) {
+        throw new TypeError('room_instance_id must be a UUID.');
+      }
+      const id = validateProposalId(proposalId);
+      const choice = validateDecision(decision);
+      const reviewReason = choice === 'reject' ? validateRejectionReason(reason) : undefined;
+      const idempotencyKey = validateRequestId(requestId);
+      const reviewer: MemoryIdentity = { type: 'system', id: 'jev' };
+      const proposal = await this.repository.getRoomProposal(roomInstanceId, id);
+      if (!proposal) throw new MemoryServiceError('NOT_FOUND');
+      if (proposal.status === 'superseded') throw new MemoryServiceError('CONFLICT');
+
+      const targetStatus = choice === 'approve' ? 'approved' : 'rejected';
+      if (proposal.status !== 'pending'
+        && (proposal.status !== targetStatus
+          || proposal.reviewer_identity_type !== reviewer.type
+          || proposal.reviewer_identity_id !== reviewer.id)) {
+        throw new MemoryServiceError('CONFLICT');
+      }
+
+      const mutation = await this.repository.reviewRoomProposal(
+        roomInstanceId, id, reviewer, choice, idempotencyKey, reviewReason,
       );
+      const result = resultFromRepository(mutation, choice);
+      return withReason(result, proposal.review_reason ?? reviewReason);
+    });
+  }
+
+  /** Reviewer role availability for the proposal, excluding its proposer. */
+  async reviewerSetForProposal(roomInstanceId: string, proposalId: string): Promise<ReviewerSet> {
+    return this.execute(async () => {
+      if (typeof roomInstanceId !== 'string' || !UUID_PATTERN.test(roomInstanceId)) {
+        throw new TypeError('room_instance_id must be a UUID.');
+      }
+      const id = validateProposalId(proposalId);
+      const proposal = await this.repository.getRoomProposal(roomInstanceId, id);
+      if (!proposal) throw new MemoryServiceError('NOT_FOUND');
+      if (proposal.status !== 'pending') throw new MemoryServiceError('CONFLICT');
+      return this.reviewerPolicy.reviewerSet(proposal.room_instance_id, proposerOf(proposal));
     });
   }
 

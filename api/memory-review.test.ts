@@ -116,12 +116,38 @@ describe('P5 memory review HTTP API', () => {
       const res = response();
       await handler(request('POST', {
         action: decision, code: 'AAA-BBB-CCC', hostKey: 'valid', proposalId, requestId: `request-${decision}`,
+        ...(decision === 'reject' ? { reason: '重复记忆' } : {}),
       }), res.res);
       expect(res.status()).toBe(200);
       expect(service.review).toHaveBeenLastCalledWith(
         expect.objectContaining({ roomInstanceId }), proposalId, decision, `request-${decision}`,
+        decision === 'reject' ? '重复记忆' : undefined,
       );
     }
+  });
+
+  it('requires one of the reason codes only when rejecting', async () => {
+    const runtime: MemoryReviewHttpRuntime = {
+      resolveRoom: vi.fn(async () => ({ roomInstanceId: randomUUID() })),
+      createContext: vi.fn(async () => { throw new Error('not reached'); }),
+    };
+    const handler = createMemoryReviewHandler(runtime);
+    for (const reason of [undefined, 'other']) {
+      const res = response();
+      await handler(request('POST', {
+        action: 'reject', code: 'AAA-BBB-CCC', hostKey: 'valid', proposalId: randomUUID(),
+        requestId: 'reject-request', ...(reason === undefined ? {} : { reason }),
+      }), res.res);
+      expect(res.status()).toBe(400);
+      expect(res.body()).toEqual({ code: 'INVALID_INPUT' });
+    }
+    const approval = response();
+    await handler(request('POST', {
+      action: 'approve', code: 'AAA-BBB-CCC', hostKey: 'valid', proposalId: randomUUID(),
+      requestId: 'approve-request', reason: 'ignored',
+    }), approval.res);
+    expect(approval.status()).toBe(503);
+    expect(runtime.createContext).toHaveBeenCalledOnce();
   });
 
   it('lets the verified host approve a proposal and attempts its supersede notice', async () => {
@@ -154,9 +180,39 @@ describe('P5 memory review HTTP API', () => {
       proposalId,
       'approve',
       'host-approval',
+      undefined,
     );
     expect(notifySuperseded).toHaveBeenCalledWith(winning);
     expect(res.body()).toMatchObject({ status: 'approved', superseded: winning.superseded });
+  });
+
+  it('passes a required Chinese reason to reject and includes it in the returned result', async () => {
+    const roomInstanceId = randomUUID();
+    const proposalId = randomUUID();
+    const rejected = { status: 'rejected', proposalId, reason: '格式不合规' };
+    const service = { listPending: vi.fn(), review: vi.fn(async () => rejected) };
+    const notifyRejected = vi.fn(async () => true);
+    const runtime: MemoryReviewHttpRuntime = {
+      resolveRoom: async () => ({ roomInstanceId }),
+      createContext: async () => ({
+        service: service as never,
+        caller: { roomInstanceId, identity: { type: 'room_owner', id: roomInstanceId }, verified: true },
+        notifyRejected,
+        close: async () => {},
+      }),
+    };
+    const handler = createMemoryReviewHandler(runtime);
+    const res = response();
+    await handler(request('POST', {
+      action: 'reject', code: 'AAA-BBB-CCC', hostKey: 'valid', proposalId,
+      requestId: 'host-rejection', reason: '格式不合规',
+    }), res.res);
+    expect(res.status()).toBe(200);
+    expect(service.review).toHaveBeenCalledWith(
+      expect.objectContaining({ roomInstanceId }), proposalId, 'reject', 'host-rejection', '格式不合规',
+    );
+    expect(notifyRejected).toHaveBeenCalledWith(rejected);
+    expect(res.body()).toMatchObject({ status: 'rejected', reason: '格式不合规', rejectionNotificationDelivered: true });
   });
 
   it('rejects unsupported methods and actions with stable API errors', async () => {

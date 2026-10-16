@@ -31,6 +31,14 @@ describe('Agent Memory migration source', () => {
     );
     expect(dedup).toContain('ADD COLUMN IF NOT EXISTS dedup_key');
     expect(dedup).toMatch(/CREATE UNIQUE INDEX IF NOT EXISTS uq_memory_proposals_pending_dedup[\s\S]*WHERE status = 'pending' AND dedup_key IS NOT NULL/);
+
+    const reviewer = readFileSync(
+      fileURLToPath(new URL('../migrations/005_system_reviewer.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(reviewer).toContain("'system'");
+    expect(reviewer).toContain('ADD COLUMN IF NOT EXISTS review_reason text NULL');
+    expect(reviewer).toContain("review_reason IN ('无关记忆', '重复记忆', '格式不合规')");
   });
 
   it('uses scoped indexable predicates for long search terms and keeps short-term fallback', () => {

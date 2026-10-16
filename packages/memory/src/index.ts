@@ -4,6 +4,7 @@ export {
   BORDERLINE_THRESHOLD,
   DEFAULT_DUPLICATE_THRESHOLD,
   DUPLICATE_THRESHOLD,
+  VERIFIER_BORDERLINE_FLOOR,
   classifyDuplicate,
   isLikelyDuplicate,
   keywordSimilarity,
@@ -11,6 +12,12 @@ export {
 } from './keywords.js';
 export { resolveDuplicateVerifier } from './dedupVerifier.js';
 export type { DuplicateVerifier } from './dedupVerifier.js';
+export { MEMORY_REVIEW_REJECTION_REASONS, isMemoryReviewRejectionReason } from './review-reasons.js';
+export type { MemoryReviewRejectionReason } from './review-reasons.js';
+export { createJevClient, JevError } from './jevClient.js';
+export type { JevAnswer, JevChoiceAnswer, JevNoulAnswer, JevQuestion } from './jevClient.js';
+export { JEV_REVIEW_THRESHOLDS, resolveJevReviewer } from './jevReviewer.js';
+export type { JevReviewer, JevReviewInput, JevReviewResult } from './jevReviewer.js';
 export { MemorySearchService, MEMORY_READ_MAX_CHARS } from './search-service.js';
 export {
   MemoryReviewService,
@@ -87,6 +94,7 @@ export type {
   MemoryEntry,
   MemoryIdentity,
   MemoryIdentityType,
+  MemoryProposerIdentityType,
   MemoryMutationResult,
   MemoryProposal,
   MemoryProposalAction,

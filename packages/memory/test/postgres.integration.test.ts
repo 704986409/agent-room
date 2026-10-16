@@ -92,9 +92,9 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
 
   it('creates the schema, applies migrations repeatedly, and has no Room table foreign key', async () => {
     const versions = await scopedPool.query<{ count: string }>(
-      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2, 3)',
+      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2, 3, 4, 5)',
     );
-    expect(versions.rows[0]?.count).toBe('3');
+    expect(versions.rows[0]?.count).toBe('5');
 
     const foreignKeys = await scopedPool.query<{ count: string }>(`
       SELECT count(*)::text AS count

@@ -9,7 +9,12 @@ interface MemoryReviewItem {
   payload: { title?: string; preview?: string; content?: string; searchText?: string; sourceMessageId?: string };
   current?: { title: string; preview: string; content: string };
   createdAt: string;
+  reason?: MemoryReviewRejectionReason;
 }
+
+type MemoryReviewRejectionReason = '无关记忆' | '重复记忆' | '格式不合规';
+
+const REJECTION_REASONS: readonly MemoryReviewRejectionReason[] = ['无关记忆', '重复记忆', '格式不合规'];
 
 interface MemoryReviewPanelProps {
   roomCode: string;
@@ -45,6 +50,8 @@ export function MemoryReviewPanel({ roomCode, isHost, ended }: MemoryReviewPanel
   const [items, setItems] = useState<MemoryReviewItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, MemoryReviewRejectionReason | ''>>({});
+  const [lastRejection, setLastRejection] = useState<{ title: string; reason: MemoryReviewRejectionReason } | null>(null);
 
   async function callApi(body: Record<string, unknown>): Promise<Record<string, unknown>> {
     const hostKey = storedHostKey(roomCode);
@@ -82,14 +89,25 @@ export function MemoryReviewPanel({ roomCode, isHost, ended }: MemoryReviewPanel
   }, [open, roomCode]);
 
   async function decide(item: MemoryReviewItem, action: 'approve' | 'reject') {
+    const reason = reasons[item.id];
+    if (action === 'reject' && !reason) return;
     setBusy(true);
     setError(null);
     try {
-      await callApi({
+      const result = await callApi({
         action,
         proposalId: item.id,
         requestId: globalThis.crypto.randomUUID(),
+        ...(action === 'reject' ? { reason } : {}),
       });
+      if (action === 'reject' && reason) {
+        const confirmedReason = REJECTION_REASONS.includes(result.reason as MemoryReviewRejectionReason)
+          ? result.reason as MemoryReviewRejectionReason
+          : reason;
+        setLastRejection({ title: item.payload.title || item.current?.title || item.targetMemoryId || t('memoryReview.untitled'), reason: confirmedReason });
+      } else {
+        setLastRejection(null);
+      }
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : 'STORAGE_ERROR');
@@ -139,6 +157,11 @@ export function MemoryReviewPanel({ roomCode, isHost, ended }: MemoryReviewPanel
                   {errorText(error)}
                 </div>
               )}
+              {lastRejection && (
+                <div role="status" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                  {t('memoryReview.rejectionNotice', { title: lastRejection.title, reason: lastRejection.reason })}
+                </div>
+              )}
               {busy && <div className="py-4 text-center text-xs text-ink-soft">{t('memoryReview.loading')}</div>}
               {!busy && !error && items.length === 0 && <div className="py-4 text-center text-xs text-ink-soft">{t('memoryReview.empty')}</div>}
               <div className="space-y-3">
@@ -155,11 +178,32 @@ export function MemoryReviewPanel({ roomCode, isHost, ended }: MemoryReviewPanel
                         {item.current && <details className="mt-2 rounded bg-white p-2 text-[11px]"><summary className="cursor-pointer font-semibold">{t('memoryReview.currentContent')}</summary><pre className="mt-2 whitespace-pre-wrap break-words text-ink-muted">{item.current.content}</pre></details>}
                         {item.payload.content && <details className="mt-2 rounded bg-white p-2 text-[11px]" open><summary className="cursor-pointer font-semibold">{t('memoryReview.proposedContent')}</summary><pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words text-ink-muted">{item.payload.content}</pre></details>}
                         {item.payload.searchText && <p className="mt-2 break-words text-[10px] text-ink-faint">{t('memoryReview.searchTerms', { terms: item.payload.searchText })}</p>}
+                        {item.reason && <p className="mt-2 text-[11px] font-semibold text-red-700">{t('memoryReview.reviewReason', { reason: item.reason })}</p>}
                         <div className="mt-2 text-[9px] text-ink-faint">{t('memoryReview.proposalMeta', { id: item.id, time: formatDateTime(new Date(item.createdAt)) })}</div>
                       </div>
-                      <div className="flex shrink-0 gap-1.5">
+                      <div className="flex shrink-0 flex-col items-stretch gap-1.5">
                         <button type="button" disabled={busy} onClick={() => void decide(item, 'approve')} className="rounded-md bg-emerald-600 px-2.5 py-1.5 text-[10px] font-semibold text-white disabled:opacity-50">{t('memoryReview.approve')}</button>
-                        <button type="button" disabled={busy} onClick={() => void decide(item, 'reject')} className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-red-700 disabled:opacity-50">{t('memoryReview.reject')}</button>
+                        <label className="text-[10px] text-ink-soft">
+                          {t('memoryReview.rejectReason')}
+                          <select
+                            aria-label={t('memoryReview.rejectReasonFor', { title: item.payload.title || item.current?.title || item.targetMemoryId || t('memoryReview.untitled') })}
+                            required
+                            value={reasons[item.id] ?? ''}
+                            disabled={busy}
+                            onChange={event => setReasons(current => ({ ...current, [item.id]: event.target.value as MemoryReviewRejectionReason | '' }))}
+                            className="mt-0.5 block w-36 rounded border border-border bg-white px-1.5 py-1 text-[10px] text-ink"
+                          >
+                            <option value="">{t('memoryReview.selectRejectReason')}</option>
+                            {REJECTION_REASONS.map(reason => <option key={reason} value={reason}>{reason}</option>)}
+                          </select>
+                        </label>
+                        <button
+                          type="button"
+                          aria-label={t('memoryReview.rejectFor', { title: item.payload.title || item.current?.title || item.targetMemoryId || t('memoryReview.untitled') })}
+                          disabled={busy || !reasons[item.id]}
+                          onClick={() => void decide(item, 'reject')}
+                          className="rounded-md border border-red-200 bg-white px-2.5 py-1.5 text-[10px] font-semibold text-red-700 disabled:opacity-50"
+                        >{t('memoryReview.reject')}</button>
                       </div>
                     </div>
                   </article>

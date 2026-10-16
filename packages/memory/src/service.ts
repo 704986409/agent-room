@@ -1,7 +1,7 @@
 import type { MemoryRepository } from './repository.js';
 import { normalizeForDuplicate } from './normalize.js';
 import { classifyDuplicate, memoryKeywords, keywordSimilarity } from './keywords.js';
-import { resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
+import { maxJevCandidatesFrom, resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
@@ -9,7 +9,7 @@ import {
   type MemoryContent,
   type MemoryEntry,
   type MemoryIdentity,
-  type MemoryIdentityType,
+  type MemoryProposerIdentityType,
   type MemoryMutationResult,
   type MemoryProposalInput,
   type MemoryScope,
@@ -30,7 +30,7 @@ export type MemoryServiceErrorCode =
 /** Trusted context injected by the server after resolving the caller's seat. */
 export interface TrustedMemoryCaller {
   readonly roomInstanceId: string;
-  readonly identityType: MemoryIdentityType;
+  readonly identityType: MemoryProposerIdentityType;
   readonly personaId?: string;
   /** Stable server-assigned identity for room_member / room_owner callers. */
   readonly principalId?: string;
@@ -112,6 +112,8 @@ let warnedAboutDuplicateVerifierFailure = false;
 export interface MemoryServiceOptions {
   /** null explicitly disables verification; omitted resolves from the environment. */
   duplicateVerifier?: DuplicateVerifier | null;
+  /** Overrides MEMORY_DEDUP_JEV_MAX_CANDIDATES for deterministic adapter tests. */
+  duplicateVerifierMaxCandidates?: number;
 }
 
 export class MemoryServiceError extends Error {
@@ -121,7 +123,7 @@ export class MemoryServiceError extends Error {
   }
 }
 
-function isIdentityType(value: unknown): value is MemoryIdentityType {
+function isIdentityType(value: unknown): value is MemoryProposerIdentityType {
   return value === 'persona' || value === 'room_member' || value === 'room_owner';
 }
 
@@ -278,11 +280,16 @@ function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationR
  */
 export class MemoryService {
   private readonly duplicateVerifier: DuplicateVerifier | undefined;
+  private readonly duplicateVerifierMaxCandidates: number;
 
   constructor(private readonly repository: MemoryRepository, options: MemoryServiceOptions = {}) {
     this.duplicateVerifier = options.duplicateVerifier === null
       ? undefined
       : options.duplicateVerifier ?? resolveDuplicateVerifier();
+    this.duplicateVerifierMaxCandidates = Number.isSafeInteger(options.duplicateVerifierMaxCandidates)
+      && options.duplicateVerifierMaxCandidates! > 0
+      ? options.duplicateVerifierMaxCandidates!
+      : maxJevCandidatesFrom();
   }
 
   async readEntry(caller: TrustedMemoryCaller, kind: MemoryScopeKind, id: string): Promise<MemoryEntry> {
@@ -366,7 +373,11 @@ export class MemoryService {
             ...existing,
             score: keywordSimilarity(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)),
           }))
-          .filter(existing => classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) !== 'not_duplicate')
+          .filter(existing => classifyDuplicate(
+            candidateKeywords,
+            memoryKeywords(`${existing.title} ${existing.content}`),
+            { verifier: Boolean(this.duplicateVerifier) },
+          ) !== 'not_duplicate')
           .sort((a, b) => b.score - a.score
             || (a.kind === b.kind ? 0 : a.kind === 'proposal' ? -1 : 1)
             || a.id.localeCompare(b.id));
@@ -378,21 +389,25 @@ export class MemoryService {
             : { status: 'duplicate', id: bestRuleMatch.id, duplicateOf: bestRuleMatch.id, duplicateKind: 'memory' };
         } else {
           const borderline = scored.filter(existing =>
-            classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) === 'borderline')
-            .slice(0, 3);
-          for (const existing of borderline) {
-            if (!this.duplicateVerifier) break;
+            classifyDuplicate(
+              candidateKeywords,
+              memoryKeywords(`${existing.title} ${existing.content}`),
+              { verifier: Boolean(this.duplicateVerifier) },
+            ) === 'borderline')
+            .slice(0, this.duplicateVerifierMaxCandidates);
+          if (this.duplicateVerifier && borderline.length) {
             try {
-              const verified = await this.duplicateVerifier.verify({
+              const duplicateIndex = await this.duplicateVerifier.verifyMany({
                 candidate: { title: content.title, content: content.content },
-                existing: { id: existing.id, kind: existing.kind, title: existing.title, content: existing.content },
-                score: existing.score,
+                existings: borderline.map(({ id, kind, title, content: existingContent, score }) => ({
+                  id, kind, title, content: existingContent, score,
+                })),
               });
-              if (verified) {
+              const existing = duplicateIndex === null ? undefined : borderline[duplicateIndex];
+              if (existing) {
                 nearDuplicateResult = existing.kind === 'proposal'
                   ? { status: 'pending_review', id: existing.id, duplicateOf: existing.id }
                   : { status: 'duplicate', id: existing.id, duplicateOf: existing.id, duplicateKind: 'memory' };
-                break;
               }
             } catch {
               if (!warnedAboutDuplicateVerifierFailure) {
