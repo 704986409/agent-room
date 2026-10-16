@@ -928,6 +928,14 @@ describe('hosted MCP endpoint', () => {
       delete process.env.MEMORY_ENABLED;
       delete process.env.MEMORY_DATABASE_URL;
       expect(listTools('full').some(tool => tool.name.startsWith('memory_'))).toBe(false);
+      const roomClient = createRemoteRoomClient(undefined);
+      const disabledRoom = parsed(await callTool(roomClient, 'full', 'room_create', {
+        topic: 'Memory disabled join', name: 'Host',
+      }));
+      const disabledJoin = parsed(await callTool(roomClient, 'full', 'room_join', {
+        code: String(disabledRoom.code), name: 'Guest',
+      }));
+      expect(disabledJoin.memoryNote).toBeUndefined();
       process.env.MEMORY_ENABLED = 'true';
       process.env.MEMORY_DATABASE_URL = databaseUrl;
       const listedMemoryTools = listTools('full').filter(tool => tool.name.startsWith('memory_'));
@@ -939,7 +947,6 @@ describe('hosted MCP endpoint', () => {
         expect(properties).not.toHaveProperty('personaId');
       }
 
-      const roomClient = createRemoteRoomClient(undefined);
       const schemaByTool = new Map(listedMemoryTools.map(tool => [tool.name, tool.outputSchema]));
       const invoke = async (name: string, args: Record<string, unknown>) => {
         const result = await callTool(roomClient, 'full', name, args, undefined, dependencies);
@@ -962,6 +969,11 @@ describe('hosted MCP endpoint', () => {
       const agentA = await invoke('room_join', {
         code, name: 'Agent A', personaId: 'persona-alpha', role: 'builder',
       });
+      if (typeof agentA.memoryBrief === 'string' && agentA.memoryBrief.trim()) {
+        expect(agentA.memoryNote).toBeUndefined();
+      } else {
+        expect(agentA.memoryNote).toContain('memory_write scope room');
+      }
       let seatA = String(agentA.seatKey);
       expect(agentA.memoryBriefEstimated).toBe(true);
 
@@ -1203,6 +1215,7 @@ describe('hosted MCP endpoint', () => {
       const rotatedKey = String(reconnect.seatKey);
       expect(rotatedKey).not.toBe(seatA);
       expect(reconnect.memoryBrief).toContain(privateId);
+      expect(reconnect.memoryNote).toBeUndefined();
       expect(await invoke('memory_read', { code, seatKey: seatA, id: privateId }))
         .toMatchObject({ code: 'FORBIDDEN' });
       expect(await invoke('memory_brief', { code, seatKey: rotatedKey })).toMatchObject({ loaded: false });

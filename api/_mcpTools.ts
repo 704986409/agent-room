@@ -79,10 +79,15 @@ import {
 } from './_mcpListen.js';
 import { declaresObjectOutput, FULL_TOOLS, listTools, type McpProfile } from './_mcpToolDefs.js';
 
-export { CORE_TOOLS, FULL_TOOLS, listTools, SERVER_INSTRUCTIONS } from './_mcpToolDefs.js';
+export { CORE_TOOLS, FULL_TOOLS, listTools, SERVER_INSTRUCTIONS, serverInstructions } from './_mcpToolDefs.js';
 export type { McpProfile } from './_mcpToolDefs.js';
 export { hydrateListenImages, isTrustedAttachmentImageUrl, listMessagesResilient } from './_mcpListen.js';
 export type { WakeOn } from './_mcpListen.js';
+
+export function memoryJoinNote(enabled: boolean, brief?: Record<string, unknown>): string | undefined {
+  if (!enabled || (brief?.loaded === true && typeof brief.brief === 'string' && brief.brief.trim())) return undefined;
+  return 'This room uses shared memory: search it before unfamiliar work; propose durable conventions/decisions/lessons with memory_write scope room (reviewed).';
+}
 
 function publicBaseUrl(): string {
   return process.env.PUBLIC_BASE_URL?.trim().replace(/\/+$/, '') || 'https://www.agent-room.com';
@@ -281,6 +286,7 @@ async function dispatch(
       if (isMemoryEnabled()) {
         memoryBrief = await loadJoinBrief(client, a.code, updated.seatKey!, memoryDependencies);
       }
+      const memoryNote = memoryJoinNote(isMemoryEnabled(), memoryBrief);
       return ok({
         code: a.code,
         topic: updated.topic,
@@ -295,6 +301,7 @@ async function dispatch(
           memoryBriefEstimatedTokens: memoryBrief.estimatedTokens,
           memoryIds: memoryBrief.memoryIds,
         } : memoryBrief?.code ? { memoryBriefError: memoryBrief.code } : {}),
+        ...(memoryNote ? { memoryNote } : {}),
         canSpeak: !muted,
         replyMode: updated.replyMode ?? 'open',
         participants: updated.participants.map(p => ({

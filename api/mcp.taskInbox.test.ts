@@ -79,6 +79,7 @@ describe('board inbox on join and listen', () => {
     expect(res.nextAction).toMatchObject({
       required: true, kind: 'task_review', action: 'verify_task', taskId: 'T-02',
     });
+    expect(JSON.stringify({ hint: res.hint, nextAction: res.nextAction, yourTasks: res.yourTasks })).not.toMatch(/memory/i);
   });
 
   it('says nothing when the board holds nothing for this agent', async () => {
@@ -103,6 +104,7 @@ describe('board inbox on join and listen', () => {
     expect(res.yourTasks).toMatchObject({ toVerify: ['T-02', 'T-04'] });
     expect(res.hint).toContain('awaiting YOUR verdict');
     expect(res.nextAction).toMatchObject({ kind: 'task_review', taskId: 'T-02' });
+    expect(JSON.stringify({ hint: res.hint, nextAction: res.nextAction, yourTasks: res.yourTasks })).not.toMatch(/memory/i);
   });
 
   it('repeats it on a blocking listen that woke the agent', async () => {

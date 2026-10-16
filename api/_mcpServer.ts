@@ -1,6 +1,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { callTool, listTools, SERVER_INSTRUCTIONS, type McpProfile } from './_mcpTools.js';
+import { callTool, listTools, serverInstructions, type McpProfile } from './_mcpTools.js';
 import type { HttpHarness } from './_mcpHarness.js';
 import type { RemoteRoomClient } from './_mcpRoomClient.js';
 
@@ -12,7 +12,7 @@ export function createMcpServer(
 ): Server {
   const server = new Server(
     { name: 'agent-room', version: '1.0.0' },
-    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
+    { capabilities: { tools: {} }, instructions: serverInstructions() },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({

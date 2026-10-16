@@ -1,7 +1,7 @@
 // Tool descriptions and SERVER_INSTRUCTIONS text hygiene test for agent-room-oss
 
 import { describe, it, expect } from 'vitest';
-import { CORE_TOOLS, FULL_TOOLS } from './_mcpTools.js';
+import { CORE_TOOLS, FULL_TOOLS, listTools, memoryJoinNote, serverInstructions } from './_mcpTools.js';
 import { AGENT_ROOM_CODEX_CONTINUE } from '@agent-room/shared';
 
 // The hosted endpoint serves `full`, which is both lists.
@@ -20,6 +20,54 @@ describe('OSS self-hosted MCP tools stay available', () => {
 
   it('essential self-hosted tools are available on the full surface', () => {
     for (const name of OSS_ESSENTIALS) expect(surface()).toContain(name);
+  });
+});
+
+describe('memory guidance stays static and gated', () => {
+  it('adds a room_join note only when memory is enabled and the brief is empty', () => {
+    expect(memoryJoinNote(true, { loaded: false, brief: null })).toContain('search it before unfamiliar work');
+    expect(memoryJoinNote(true, { loaded: true, brief: 'Existing room guidance', memoryIds: ['id'] })).toBeUndefined();
+    expect(memoryJoinNote(true, { loaded: true, brief: '  ', memoryIds: [] })).toContain('memory_write scope room');
+    expect(memoryJoinNote(false, { loaded: false, brief: null })).toBeUndefined();
+  });
+
+  it('adds server guidance only while memory tools are enabled', () => {
+    const previousEnabled = process.env.MEMORY_ENABLED;
+    const previousDatabase = process.env.MEMORY_DATABASE_URL;
+    try {
+      delete process.env.MEMORY_ENABLED;
+      delete process.env.MEMORY_DATABASE_URL;
+      expect(serverInstructions()).not.toContain('MEMORY:');
+      process.env.MEMORY_ENABLED = 'true';
+      process.env.MEMORY_DATABASE_URL = 'configured';
+      expect(serverInstructions()).toContain('MEMORY: judge for yourself — will this matter for future tasks in this room?');
+      expect(listTools('full').some(tool => tool.name === 'memory_write')).toBe(true);
+    } finally {
+      if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
+      else process.env.MEMORY_ENABLED = previousEnabled;
+      if (previousDatabase === undefined) delete process.env.MEMORY_DATABASE_URL;
+      else process.env.MEMORY_DATABASE_URL = previousDatabase;
+    }
+  });
+
+  it('puts the judgment and review rules on the memory tools', () => {
+    const previousEnabled = process.env.MEMORY_ENABLED;
+    const previousDatabase = process.env.MEMORY_DATABASE_URL;
+    try {
+      process.env.MEMORY_ENABLED = 'true';
+      process.env.MEMORY_DATABASE_URL = 'configured';
+      const tools = listTools('full');
+      const description = (name: string) => tools.find(tool => tool.name === name)!.description;
+      expect(description('memory_write')).toContain('Judge whether this may matter for future tasks');
+      expect(description('memory_write')).toContain('don’t propose trivia or duplicates');
+      expect(description('memory_search')).toContain('Search before unfamiliar work or when a convention may already exist');
+      expect(description('memory_review')).toContain('Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates');
+    } finally {
+      if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
+      else process.env.MEMORY_ENABLED = previousEnabled;
+      if (previousDatabase === undefined) delete process.env.MEMORY_DATABASE_URL;
+      else process.env.MEMORY_DATABASE_URL = previousDatabase;
+    }
   });
 });
 

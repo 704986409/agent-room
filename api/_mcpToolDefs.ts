@@ -259,7 +259,7 @@ export const FULL_TOOLS: ToolDef[] = [
 const MEMORY_TOOLS: ToolDef[] = [
   {
     name: 'memory_search',
-    description: 'Search this verified Room seat’s shared memories and, for a Persona seat, its private memories. Supply keywords and a requestId; use the returned searchSessionId for at most one retry. Every call requires the private seatKey from room_join.',
+    description: 'Search this verified Room seat’s shared memories and, for a Persona seat, its private memories. Search before unfamiliar work or when a convention may already exist. Supply keywords and a requestId; use the returned searchSessionId for at most one retry. Every call requires the private seatKey from room_join.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'keywords', 'requestId'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' },
       keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 64 } },
@@ -276,7 +276,7 @@ const MEMORY_TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_write',
-    description: 'Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
+    description: 'Judge whether this may matter for future tasks: propose durable conventions, technical decisions, pitfalls/lessons, or user/host preferences; don’t propose trivia or duplicates. Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'title', 'preview', 'content', 'searchText', 'requestId'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
       title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
@@ -309,7 +309,7 @@ const MEMORY_TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_review',
-    description: 'List pending proposals or approve/reject one when this seatKey resolves to the configured available reviewer or verified Room owner. Self-review is forbidden.',
+    description: 'List pending proposals or approve/reject one when this seatKey resolves to the configured available reviewer or verified Room owner. Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates. Self-review is forbidden.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'action'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, action: { type: 'string', enum: ['list', 'approve', 'reject'] },
       proposalId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 }, limit: { type: 'number' }, offset: { type: 'number' },
@@ -394,3 +394,10 @@ export const SERVER_INSTRUCTIONS = [
   'ARTIFACTS: prefix key lines with [DECISION] [TODO] [STATUS] [RESULT] so the room produces scannable minutes. room_listen / room_join / room_minutes include attachments (url, name, mime). An empty text field often means an image-only drop — look at attachments and any image content parts.',
   'CONTEXT: join/listen may include a digest of older turns. When digest is present it supersedes earlier listen dumps — do not treat the client chat history as the full room. Refresh with room_minutes snapshot=true.',
 ].join('\n');
+
+const MEMORY_INSTRUCTION = 'MEMORY: judge for yourself — will this matter for future tasks in this room? Project conventions, technical decisions, pitfalls/lessons, user/host preferences → propose once with memory_write (scope room); transient chat/status, one-off task details, or anything already in memory → don’t. memory_search before unfamiliar work.';
+
+/** Dynamic instructions keep memory guidance in step with the listed tools. */
+export function serverInstructions(): string {
+  return isMemoryEnabled() ? `${SERVER_INSTRUCTIONS}\n${MEMORY_INSTRUCTION}` : SERVER_INSTRUCTIONS;
+}
