@@ -949,6 +949,15 @@ describe('hosted MCP endpoint', () => {
         code: otherRoomCode, seatKey: String(samePersonaOtherRoom.seatKey), id: privateId,
       })).toMatchObject({ code: 'NOT_FOUND' });
 
+      // A proposal has to reach the reviewer through the room, not only through
+      // the proposer's tool result — an analyst sitting in room_listen is the
+      // normal case, and polling memory_review is not.
+      const roomNotices = async () => ((await invoke('room_listen', {
+        code, name: 'Host', since: 0, timeoutMs: 0,
+      })).messages as { text: string }[]).filter(message => message.text.includes('Memory review needed'));
+      const cursorBeforeProposal = Number((await invoke('room_listen', {
+        code, name: 'Project Analyst', since: 0, timeoutMs: 0,
+      })).cursor);
       const sharedWrite = await invoke('memory_write', {
         code, seatKey: seatA, scope: 'room', title: 'Shared decision', preview: 'Shared preview',
         content: 'The Room decided to retain the shared index.', searchText: 'shared-index-decision',
@@ -958,7 +967,20 @@ describe('hosted MCP endpoint', () => {
       expect(sharedWrite.notification).toMatchObject({
         kind: 'mention', recipient: { type: 'persona', id: 'persona-reviewer' },
       });
+      expect(sharedWrite.notificationDelivered).toBe(true);
       const proposalId = String(sharedWrite.proposalId);
+      expect(await roomNotices()).toHaveLength(1);
+      const woken = await invoke('room_listen', {
+        code, name: 'Project Analyst', since: cursorBeforeProposal, timeoutMs: 1500, wakeOn: 'addressed',
+      });
+      expect(woken.addressedYou).toBe(true);
+      const heardText = (woken.messages as { text: string }[]).map(message => message.text).join('\n');
+      expect(heardText).toContain(proposalId);
+      expect(heardText).toContain('@Project Analyst');
+      expect(heardText).toContain('(create)');
+      expect(heardText).toContain('memory_review({ action: "approve" | "reject"');
+      expect(heardText).not.toContain(seatA);
+      expect(heardText).not.toContain('The Room decided to retain the shared index.');
       // Identical normalized content from another seat with a new requestId reuses the pending proposal.
       const duplicateWrite = await invoke('memory_write', {
         code, seatKey: otherPersonaKey, scope: 'room', title: '  shared DECISION ', preview: 'Shared preview',
@@ -966,6 +988,8 @@ describe('hosted MCP endpoint', () => {
         sourceMessageId: 'message-17', requestId: `shared-write-dup-${randomUUID()}`,
       });
       expect(duplicateWrite).toMatchObject({ code: 'PENDING_REVIEW', proposalId, duplicateOf: proposalId });
+      expect(duplicateWrite.notificationDelivered).toBeUndefined();
+      expect(await roomNotices()).toHaveLength(1);
       expect(await invoke('memory_review', { code, seatKey: hostSeatKey, action: 'list' }))
         .toMatchObject({ code: 'FORBIDDEN' });
       expect(await invoke('memory_review', {
@@ -1051,6 +1075,12 @@ describe('hosted MCP endpoint', () => {
       const allOffline = await proposeShared('All reviewers offline');
       expect(allOffline.reviewCode).toBe('REVIEWER_UNAVAILABLE');
       expect(recipients(allOffline)).toEqual([`room_owner:${storedRoom.roomInstanceId}`]);
+      // The owner fallback is a web host, so the notice has to be addressed by name in the room.
+      expect(allOffline.notificationDelivered).toBe(true);
+      const ownerNotice = (await roomNotices()).at(-1)!.text;
+      expect(ownerNotice).toContain(String(allOffline.proposalId));
+      expect(ownerNotice).toContain('@Host');
+      expect(ownerNotice).toContain('No reviewer seat is online');
       expect(await invoke('memory_review', {
         code, seatKey: analystKey, action: 'approve', proposalId: String(allOffline.proposalId), requestId: `mr-${randomUUID()}`,
       })).toMatchObject({ code: 'REVIEWER_UNAVAILABLE' });

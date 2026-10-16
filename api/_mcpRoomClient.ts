@@ -499,16 +499,25 @@ export async function appendMessage(
   kind: 'message' | 'status' = 'message',
 ): Promise<unknown> {
   const result = await guarded(() => storeAppendMessage(client.store, code, message, kind));
-  // Fan out to resident webhooks. The hosted server does this from its send
-  // path; storage does not do it for us, so without this a registered webhook
-  // would be a row in Redis that never fires — a tool that appears to work and
-  // silently does nothing, which is worse than one that refuses.
-  //
-  // Best-effort and never fatal: a subscriber's broken endpoint must not turn
-  // a delivered message into a failed room_send.
+  await fanOutAppended(client, code, message, (result as { cursor?: number } | null)?.cursor ?? null);
+  return result;
+}
+
+// Fan out to resident webhooks. The hosted server does this from its send
+// path; storage does not do it for us, so without this a registered webhook
+// would be a row in Redis that never fires — a tool that appears to work and
+// silently does nothing, which is worse than one that refuses.
+//
+// Best-effort and never fatal: a subscriber's broken endpoint must not turn
+// a delivered message into a failed room_send.
+async function fanOutAppended(
+  client: RemoteRoomClient,
+  code: string,
+  message: Message,
+  cursor: number | null,
+): Promise<void> {
   try {
     const room = await storeGetRoom(client.store, code);
-    const cursor = (result as { cursor?: number } | null)?.cursor ?? null;
     await dispatchRoomWebhooks(client.store, room, message, cursor);
     // Deliver: the host's message is either the go for a waiting plan or a
     // goal the lead should plan for. The web client does the same after its
@@ -517,7 +526,23 @@ export async function appendMessage(
       await onDeliverHostMessage(client.store, code, room, message.text ?? '');
     }
   } catch { /* delivery is not the sender's problem */ }
-  return result;
+}
+
+/**
+ * A server-originated room event (`type: 'sys'`, synthetic sender).
+ *
+ * Bypasses the speaker/mute/turn gates the way appendSystemMessage does — the
+ * server is not a participant and must not consume anyone's turn — but still
+ * fans out to webhooks like appendMessage, because an event nobody is woken by
+ * is not an event. No hostKey: the caller here is our own code, not a request.
+ */
+export async function appendRoomEvent(
+  client: RemoteRoomClient,
+  code: string,
+  message: Message,
+): Promise<void> {
+  await guarded(() => storeAppendSystemMessage(client.store, code, message));
+  await fanOutAppended(client, code, message, null);
 }
 
 export async function appendSystemMessage(

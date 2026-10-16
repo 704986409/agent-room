@@ -21,7 +21,14 @@ import {
   type TrustedMemoryCaller,
   type TrustedMemoryReviewer,
 } from '@agent-room/memory';
-import { getRoom, isMemorySeatOnline, RemoteRoomApiError, type RemoteRoomClient } from './_mcpRoomClient.js';
+import {
+  appendRoomEvent,
+  getRoom,
+  isMemorySeatOnline,
+  RemoteRoomApiError,
+  type RemoteRoomClient,
+} from './_mcpRoomClient.js';
+import { deliverMemoryReviewNotice, type MemoryProposalKind } from './_memoryReviewNotify.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MEMORY_TOOL_NAMES = new Set([
@@ -179,25 +186,96 @@ function memoryReviewerContext(seat: ResolvedSeat): TrustedMemoryReviewer {
   };
 }
 
+/** Who and what the room event announces. Assembled per memory_* call that can propose. */
+interface ReviewNoticeContext {
+  readonly client: RemoteRoomClient;
+  readonly code: string;
+  /** The room as the seat resolver read it; the fallback when a fresh read fails. */
+  readonly room: Room;
+  readonly kind: MemoryProposalKind;
+  readonly proposerName: string;
+  readonly title?: string | undefined;
+  readonly preview?: string | undefined;
+}
+
+function reviewNoticeContext(
+  client: RemoteRoomClient,
+  seat: ResolvedSeat,
+  kind: MemoryProposalKind,
+  args: Record<string, unknown>,
+): ReviewNoticeContext {
+  return {
+    client,
+    code: seat.room.code,
+    room: seat.room,
+    kind,
+    proposerName: seat.participant.name,
+    title: text(args.title),
+    preview: text(args.preview),
+  };
+}
+
+/**
+ * Reviewer identities back to the names the room addresses people by.
+ *
+ * The owner fallback is the one identity that may not be matchable this way —
+ * a host who only ever spoke through the web client has no `cc` seat — so it
+ * falls back to the room's recorded creator, which is the name the web host
+ * answers to.
+ */
+function reviewerNamesFor(room: Room, recipients: readonly MemoryIdentity[]): string[] {
+  const names: string[] = [];
+  for (const recipient of recipients) {
+    const seat = room.participants.find(candidate => candidate.client === 'cc'
+      && hasSeatHash(candidate)
+      && sameIdentity(identityForSeat(candidate), recipient));
+    const name = seat?.name ?? (recipient.type === 'room_owner' ? room.createdBy : undefined);
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 /**
  * New pending proposal -> notify all online reviewers (or the owner fallback with
  * reviewCode REVIEWER_UNAVAILABLE). A duplicateOf result re-notifies nobody.
+ *
+ * The notification objects are the answer to "who may review this"; the room
+ * event posted alongside them is what actually reaches that reviewer. Posting
+ * it is best-effort by design — the proposal is already committed, so a room
+ * that refuses the message must still return a successful write, reported as
+ * notificationDelivered: false.
  */
 async function withReviewNotifications(
   result: MemoryServiceMutationResult,
   reviews: MemoryReviewService,
   roomInstanceId: string,
+  notice: ReviewNoticeContext,
 ): Promise<Record<string, unknown>> {
   if (!('code' in result) || result.code !== 'PENDING_REVIEW' || result.duplicateOf) {
     return result as unknown as Record<string, unknown>;
   }
   try {
     const mention = await reviews.mentionReviewers(roomInstanceId, result.proposalId);
+    const room = await getRoom(notice.client, notice.code).catch(() => notice.room);
+    const notificationDelivered = await deliverMemoryReviewNotice(
+      (code, message) => appendRoomEvent(notice.client, code, message),
+      notice.code,
+      {
+        proposalId: result.proposalId,
+        kind: notice.kind,
+        recipientNames: reviewerNamesFor(room, mention.notifications.map(entry => entry.recipient)),
+        proposerName: notice.proposerName,
+        title: notice.title,
+        preview: notice.preview,
+        ...(mention.mode === 'owner_fallback' ? { ownerFallback: true } : {}),
+      },
+    );
     return {
       ...result,
       notification: mention.notifications[0],
       notifications: mention.notifications,
       ...(mention.reviewCode ? { reviewCode: mention.reviewCode } : {}),
+      notificationDelivered,
     };
   } catch (error) {
     if (error instanceof MemoryServiceError && error.code === 'REVIEW_REQUIRED') {
@@ -335,6 +413,7 @@ export async function dispatchMemoryTool(
         return await withReviewNotifications(
           await service.createEntry(seat.caller, scope, contentFrom(args), requestId),
           reviews, seat.caller.roomInstanceId,
+          reviewNoticeContext(client, seat, 'create', args),
         );
       }
       case 'memory_update': {
@@ -343,6 +422,7 @@ export async function dispatchMemoryTool(
         return await withReviewNotifications(
           await service.updateEntry(seat.caller, scope, text(args.id) ?? '', updateFrom(args), requestId),
           reviews, seat.caller.roomInstanceId,
+          reviewNoticeContext(client, seat, 'update', args),
         );
       }
       case 'memory_delete': {
@@ -351,6 +431,7 @@ export async function dispatchMemoryTool(
         return await withReviewNotifications(
           await service.deleteEntry(seat.caller, scope, text(args.id) ?? '', requestId),
           reviews, seat.caller.roomInstanceId,
+          reviewNoticeContext(client, seat, 'delete', args),
         );
       }
       case 'memory_list': {

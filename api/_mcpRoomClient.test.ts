@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message, Participant, Room } from '@agent-room/shared';
 import { createHash, randomUUID } from 'node:crypto';
-import { HostNameTakenError } from '@agent-room/upstash-client';
+import { HostNameTakenError, RoomNotFoundError } from '@agent-room/upstash-client';
 import type { RemoteRoomClient } from './_mcpRoomClient.js';
 
 const storeMocks = vi.hoisted(() => ({
@@ -47,6 +47,7 @@ vi.mock('@agent-room/upstash-client', async (importOriginal) => {
 });
 
 import {
+  appendRoomEvent,
   appendSystemMessage,
   createRemoteRoomClient,
   endRoom,
@@ -292,6 +293,20 @@ describe('_mcpRoomClient HTTP helpers', () => {
     expect(storeMocks.verifyHostKey).toHaveBeenCalledWith(
       client.store, room.code, 'valid-host-key',
     );
+  });
+
+  // Server-originated events (a memory review request, for one) have no
+  // requester and no hostKey to present — the server is the sender.
+  it('appends a server-originated room event without a host key', async () => {
+    await appendRoomEvent(client, room.code, message);
+    expect(storeMocks.appendSystemMessage).toHaveBeenCalledWith(client.store, room.code, message);
+    expect(storeMocks.verifyHostKey).not.toHaveBeenCalled();
+  });
+
+  it('translates a storage failure on a room event into the tool layer error', async () => {
+    storeMocks.appendSystemMessage.mockRejectedValueOnce(new RoomNotFoundError(room.code));
+    await expect(appendRoomEvent(client, room.code, message))
+      .rejects.toMatchObject({ status: 404, code: 'RoomNotFoundError' });
   });
 
   it('requires a valid host key before ending a room', async () => {
