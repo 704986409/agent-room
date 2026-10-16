@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Buffer } from 'node:buffer';
+import { execFile } from 'node:child_process';
 import { Readable } from 'node:stream';
+import { createServer, type Server, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 
 const mocks = vi.hoisted(() => ({
   send: vi.fn(async () => ({})),
@@ -22,7 +25,20 @@ vi.mock('@aws-sdk/client-s3', () => {
   return { S3Client, PutObjectCommand };
 });
 
-import handler, { storageContentType } from './upload.js';
+import handler, {
+  DRAIN_CEILING_BYTES,
+  MAX_FILE_BYTES,
+  MAX_REQUEST_BYTES,
+  storageContentType,
+} from './upload.js';
+
+// deploy/vps/server.ts already exports createVpsApp (used by
+// api/vps-routes.test.ts), so the real request pipeline is testable as-is.
+// Imported dynamically so its module-level env reads see these defaults.
+process.env.UPSTASH_REDIS_REST_URL ??= 'https://upload.upstash.invalid';
+process.env.UPSTASH_REDIS_REST_TOKEN ??= 'upload-token';
+const { createVpsApp } = await import('../deploy/vps/server.js');
+type VpsApp = ReturnType<typeof createVpsApp>;
 
 describe('storageContentType', () => {
   it('appends utf-8 to textual types that carry no charset', () => {
@@ -115,6 +131,45 @@ async function upload(parts: PartSpec[]) {
   return res;
 }
 
+const MULTIPART_HEADER = `multipart/form-data; boundary=${BOUNDARY}`;
+
+// A request that announces a size but never emits a byte: if the handler
+// answers at all, it answered without reading the body.
+function silentRequest(contentLength: number): VercelRequest {
+  const req = new Readable({ autoDestroy: false, read() { /* client sends nothing yet */ } }) as unknown as VercelRequest;
+  Object.assign(req, {
+    method: 'POST',
+    headers: { 'content-type': MULTIPART_HEADER, 'content-length': String(contentLength) },
+  });
+  return req;
+}
+
+// A chunked request with no Content-Length, i.e. the handler only finds out
+// how big it is by reading it.
+function chunkedRequest(totalBytes: number, chunkSize = 256 * 1024): VercelRequest {
+  let sent = 0;
+  const req = new Readable({
+    autoDestroy: false,
+    read() {
+      if (sent >= totalBytes) {
+        this.push(null);
+        return;
+      }
+      const size = Math.min(chunkSize, totalBytes - sent);
+      sent += size;
+      this.push(Buffer.alloc(size, 0x61));
+    },
+  }) as unknown as VercelRequest;
+  Object.assign(req, { method: 'POST', headers: { 'content-type': MULTIPART_HEADER } });
+  return req;
+}
+
+const TOO_LARGE_BODY = {
+  error: 'file_too_large',
+  message: `File exceeds ${MAX_FILE_BYTES} bytes (10 MB).`,
+  maxBytes: MAX_FILE_BYTES,
+};
+
 const R2_ENV = {
   R2_ACCOUNT_ID: 'acct',
   R2_BUCKET: 'bucket',
@@ -191,4 +246,320 @@ describe('POST /api/upload', () => {
     expect(res.statusCode).toBe(415);
     expect(mocks.putInputs).toHaveLength(0);
   });
+});
+
+describe('POST /api/upload over-size handling', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.putInputs.length = 0;
+    mocks.send.mockResolvedValue({});
+    Object.assign(process.env, R2_ENV);
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(R2_ENV)) delete process.env[key];
+  });
+
+  it('answers a Content-Length over the read cap without reading the body', async () => {
+    const req = silentRequest(12 * 1024 * 1024);
+    const res = makeResponse();
+
+    await handler(req, res as unknown as VercelResponse);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual(TOO_LARGE_BODY);
+    // Keep-alive: `Connection: close` would have node destroy the socket as
+    // soon as this response flushes, i.e. while the client is still writing.
+    expect(res.headers.Connection).toBeUndefined();
+    expect(mocks.send).not.toHaveBeenCalled();
+    // Nothing was ever emitted, so the 413 cannot have come from the body.
+    expect(req.destroyed).toBe(false);
+    req.destroy();
+  });
+
+  it('closes the connection for a body it is never going to drain', async () => {
+    const req = silentRequest(DRAIN_CEILING_BYTES + 1);
+    const res = makeResponse();
+
+    await handler(req, res as unknown as VercelResponse);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual(TOO_LARGE_BODY);
+    expect(res.headers.Connection).toBe('close');
+    req.destroy();
+  });
+
+  it('answers a chunked body that outgrows the read cap with no Content-Length', async () => {
+    const req = chunkedRequest(12 * 1024 * 1024);
+    const res = makeResponse();
+
+    await handler(req, res as unknown as VercelResponse);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual(TOO_LARGE_BODY);
+    expect(res.headers.Connection).toBeUndefined();
+    expect(mocks.send).not.toHaveBeenCalled();
+
+    // The rest of the upload is drained rather than cut off.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(req.readableEnded).toBe(true);
+    expect(req.destroyed).toBe(false);
+  });
+
+  it('rejects a 10 MB + 10 byte file that still fits the read cap', async () => {
+    const fileBytes = Buffer.alloc(MAX_FILE_BYTES + 10, 0x61);
+    const body = buildMultipart([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: 'big.txt', contentType: 'text/plain', data: fileBytes },
+    ]);
+    expect(body.length).toBeLessThan(MAX_REQUEST_BYTES);
+
+    const req = Readable.from([body]) as unknown as VercelRequest;
+    Object.assign(req, {
+      method: 'POST',
+      headers: { 'content-type': MULTIPART_HEADER, 'content-length': String(body.length) },
+    });
+    const res = makeResponse();
+    await handler(req, res as unknown as VercelResponse);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual(TOO_LARGE_BODY);
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a small valid upload', async () => {
+    const res = await upload([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: 'ok.txt', contentType: 'text/plain', data: 'small enough' },
+    ]);
+
+    expect(res.statusCode).toBe(201);
+    expect(mocks.putInputs).toHaveLength(1);
+  });
+});
+
+// Regression guard for the ECONNRESET bug: the handler used to destroy the
+// request socket the moment the read cap was passed, so an over-size upload
+// reached the client as a transport error instead of a 413. Only a real
+// socket can show that, hence a real http server.
+// The slice of VercelResponse the upload handler uses, over a real
+// ServerResponse — same shape deploy/vps/server.ts builds.
+function vercelResponse(response: ServerResponse): VercelResponse {
+  const result = response as unknown as VercelResponse;
+  result.status = (statusCode: number) => {
+    response.statusCode = statusCode;
+    return result;
+  };
+  result.json = (body: unknown) => {
+    if (!response.headersSent && !response.hasHeader('Content-Type')) {
+      response.setHeader('Content-Type', 'application/json; charset=utf-8');
+    }
+    response.end(JSON.stringify(body));
+    return result;
+  };
+  return result;
+}
+
+describe('POST /api/upload over node http', () => {
+  let server: Server;
+  let base: string;
+
+  beforeAll(async () => {
+    Object.assign(process.env, R2_ENV);
+    server = createServer((request, response) => {
+      void handler(request as VercelRequest, vercelResponse(response));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/upload`;
+  });
+
+  afterAll(async () => {
+    for (const key of Object.keys(R2_ENV)) delete process.env[key];
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.putInputs.length = 0;
+    mocks.send.mockResolvedValue({});
+  });
+
+  it('returns a parsable 413 for a 12 MB upload sent with Content-Length', async () => {
+    const body = buildMultipart([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: 'huge.bin', contentType: 'application/pdf', data: Buffer.alloc(12 * 1024 * 1024, 0x61) },
+    ]);
+
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'content-type': MULTIPART_HEADER },
+      body,
+    });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual(TOO_LARGE_BODY);
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it('returns a parsable 413 for a 12 MB chunked upload with no Content-Length', async () => {
+    const chunk = Buffer.alloc(256 * 1024, 0x61);
+    let remaining = 12 * 1024 * 1024;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (remaining <= 0) {
+          controller.close();
+          return;
+        }
+        remaining -= chunk.length;
+        controller.enqueue(new Uint8Array(chunk));
+      },
+    });
+
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'content-type': MULTIPART_HEADER },
+      body: stream,
+      // Required by undici when streaming a request body.
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' });
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual(TOO_LARGE_BODY);
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it('still returns 201 for a small upload over a real socket', async () => {
+    const body = buildMultipart([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: 'ok.txt', contentType: 'text/plain', data: '真的很小' },
+    ]);
+
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'content-type': MULTIPART_HEADER },
+      body,
+    });
+
+    expect(res.status).toBe(201);
+    expect((await res.json() as { mime: string }).mime).toBe('text/plain');
+  });
+});
+
+// Regression guard for the EPIPE bug. The 413 used to carry
+// `Connection: close`, which makes node's http server destroySoon() the
+// socket as soon as the response flushes — an RST lands on a client that is
+// still writing its upload, and undici reports `TypeError: fetch failed`
+// (cause EPIPE) instead of handing back the 413.
+//
+// The client has to live in its own process. When it shares this process's
+// event loop it reliably wins the race against the teardown and the bug
+// hides, which is exactly why the in-process cases above passed against a
+// server that failed every time in production.
+const UPLOAD_CLIENT_SCRIPT = `
+const [url, ...sizes] = process.argv.slice(1);
+void (async () => {
+  const results = [];
+  for (const size of sizes) {
+    const fd = new FormData();
+    fd.append('roomCode', 'ABC-DEF-GHJ');
+    fd.append('file', new Blob([Buffer.alloc(Number(size), 97)], { type: 'text/plain' }), 'big.txt');
+    try {
+      const res = await fetch(url, { method: 'POST', body: fd });
+      results.push({ status: res.status, body: await res.text() });
+    } catch (error) {
+      results.push({
+        failed: String(error),
+        cause: error && error.cause ? (error.cause.code ?? String(error.cause)) : undefined,
+      });
+    }
+  }
+  process.stdout.write(JSON.stringify(results));
+})();
+`;
+
+interface ClientResult {
+  status?: number;
+  body?: string;
+  failed?: string;
+  cause?: string;
+}
+
+// One child process per call; several sizes reuse the same connection pool,
+// so passing more than one also covers keep-alive reuse after a 413.
+function uploadFromOwnProcess(url: string, ...byteSizes: number[]): Promise<ClientResult[]> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ['-e', UPLOAD_CLIENT_SCRIPT, '--', url, ...byteSizes.map(String)],
+      { timeout: 60_000 },
+      (error, stdout, stderr) => {
+        if (!stdout) {
+          reject(new Error(`upload client printed nothing: ${error?.message ?? ''} ${stderr}`));
+          return;
+        }
+        resolve(JSON.parse(stdout) as ClientResult[]);
+      },
+    );
+  });
+}
+
+describe('POST /api/upload from a client in its own process', () => {
+  let bareServer: Server;
+  let bareUrl: string;
+  let vpsApp: VpsApp;
+  let vpsUrl: string;
+
+  beforeAll(async () => {
+    Object.assign(process.env, R2_ENV);
+
+    bareServer = createServer((request, response) => {
+      void handler(request as VercelRequest, vercelResponse(response));
+    });
+    await new Promise<void>((resolve) => bareServer.listen(0, '127.0.0.1', resolve));
+    bareUrl = `http://127.0.0.1:${(bareServer.address() as AddressInfo).port}/api/upload`;
+
+    // The real pipeline: same routing, body handling and response adapter the
+    // VPS runs, just on an ephemeral port.
+    vpsApp = createVpsApp({ host: '127.0.0.1', port: 0 });
+    await new Promise<void>((resolve) => vpsApp.server.listen(0, '127.0.0.1', resolve));
+    vpsUrl = `http://127.0.0.1:${(vpsApp.server.address() as AddressInfo).port}/api/upload`;
+  });
+
+  afterAll(async () => {
+    for (const key of Object.keys(R2_ENV)) delete process.env[key];
+    await vpsApp?.close();
+    await new Promise<void>((resolve) => bareServer.close(() => resolve()));
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.putInputs.length = 0;
+    mocks.send.mockResolvedValue({});
+  });
+
+  for (const megabytes of [12, 40]) {
+    it(`resolves a ${megabytes} MB fetch+FormData upload with 413 on a bare http server`, async () => {
+      const [result] = await uploadFromOwnProcess(bareUrl, megabytes * 1024 * 1024);
+
+      expect(result).toEqual(expect.objectContaining({ status: 413 }));
+      expect(JSON.parse(result!.body!)).toEqual(TOO_LARGE_BODY);
+      expect(mocks.send).not.toHaveBeenCalled();
+    }, 60_000);
+
+    it(`resolves a ${megabytes} MB fetch+FormData upload with 413 through the VPS pipeline`, async () => {
+      const [result] = await uploadFromOwnProcess(vpsUrl, megabytes * 1024 * 1024);
+
+      expect(result).toEqual(expect.objectContaining({ status: 413 }));
+      expect(JSON.parse(result!.body!)).toEqual(TOO_LARGE_BODY);
+      expect(mocks.send).not.toHaveBeenCalled();
+    }, 60_000);
+  }
+
+  it('leaves the connection usable for the next upload after a 413', async () => {
+    const [tooLarge, accepted] = await uploadFromOwnProcess(vpsUrl, 12 * 1024 * 1024, 64);
+
+    expect(tooLarge).toEqual(expect.objectContaining({ status: 413 }));
+    expect(accepted).toEqual(expect.objectContaining({ status: 201 }));
+    expect(mocks.putInputs).toHaveLength(1);
+  }, 60_000);
 });

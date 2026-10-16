@@ -12,57 +12,61 @@
 // Authorization: anyone with the room code can upload (matches the read
 // model — anyone with the code can join). The roomCode prefix in the
 // object key lets us batch-delete by room when the meeting ends.
+//
+// Body reading / multipart parsing lives in ./_uploadMultipart.js and the
+// mime rules in ./_uploadMime.js; both are re-exported below so existing
+// importers keep working.
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import {
+  DRAIN_CEILING_BYTES,
+  MAX_FILE_BYTES,
+  MAX_REQUEST_BYTES,
+  declaredContentLength,
+  drainRequest,
+  parseMultipart,
+  readRequestBody,
+} from './_uploadMultipart.js';
+import { ALLOWED_MIMES, baseMime, storageContentType } from './_uploadMime.js';
+import type { ParsedPart } from './_uploadMultipart.js';
 
-const MAX_BYTES = 10 * 1024 * 1024;
-const ALLOWED_MIMES = new Set([
-  'image/png',
-  'image/jpeg',
-  'image/jpg',
-  'image/webp',
-  'image/gif',
-  'image/svg+xml',
-  'application/pdf',
-  'text/plain',
-  'text/markdown',
-  'text/html',
-  'text/csv',
-  'application/json',
-  'application/zip',
-  'application/vnd.ms-excel',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-]);
+export {
+  DRAIN_CEILING_BYTES,
+  DRAIN_TIMEOUT_MS,
+  MAX_FILE_BYTES,
+  MAX_REQUEST_BYTES,
+  MULTIPART_OVERHEAD_BYTES,
+  declaredContentLength,
+  drainRequest,
+  parseMultipart,
+  readRequestBody,
+} from './_uploadMultipart.js';
+export type { ParsedPart } from './_uploadMultipart.js';
+export { ALLOWED_MIMES, TEXTUAL_MIMES, baseMime, storageContentType } from './_uploadMime.js';
 
 export const config = { api: { bodyParser: false } };
 
-// Types that are byte-for-byte text but whose MIME name doesn't start with
-// `text/`. Anything with a `+json`/`+xml` suffix counts too.
-const TEXTUAL_MIMES = new Set([
-  'application/json',
-  'application/xml',
-  'application/javascript',
-  'image/svg+xml',
-]);
+// One body for every over-size path — a declared Content-Length over the
+// read cap, a stream that runs past it, and a file that parses out too big
+// all read identically on the client.
+const TOO_LARGE_BODY = {
+  error: 'file_too_large',
+  message: `File exceeds ${MAX_FILE_BYTES} bytes (10 MB).`,
+  maxBytes: MAX_FILE_BYTES,
+};
 
-// Drop the parameters a client may append ('text/plain; charset=utf-8') so
-// the allow-list is matched on the base type alone.
-function baseMime(raw: string): string {
-  return raw.split(';')[0]!.trim().toLowerCase();
-}
-
-// R2 serves objects with the stored ContentType verbatim, and a `text/*`
-// response without a charset makes browsers fall back to a locale default —
-// UTF-8 Chinese then renders as mojibake straight from the r2.dev URL.
-export function storageContentType(mime: string): string {
-  if (/;\s*charset\s*=/i.test(mime)) return mime;
-  const base = baseMime(mime);
-  const textual = base.startsWith('text/') || TEXTUAL_MIMES.has(base) || /\+(json|xml)$/.test(base);
-  return textual ? `${mime}; charset=utf-8` : mime;
+// Deliberately keep-alive. `Connection: close` makes node's http server
+// destroySoon() the socket the moment this response flushes, and the client
+// is still writing its upload: the RST reaches it as EPIPE before it reads
+// the 413. Staying keep-alive lets drainRequest swallow the rest of the body
+// (so it is never mistaken for a pipelined request) while the client reads
+// the answer. `close` is only for bodies we will not drain to the end.
+function sendTooLarge(res: VercelResponse, closeConnection = false): void {
+  if (closeConnection) res.setHeader('Connection', 'close');
+  res.status(413).json(TOO_LARGE_BODY);
 }
 
 interface R2Env {
@@ -117,6 +121,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     return;
   }
 
+  // Answer before touching the body when the client already told us it is
+  // too big, then discard the bytes it is still pushing.
+  const declared = declaredContentLength(req);
+  if (declared !== null && declared > MAX_REQUEST_BYTES) {
+    // Over the drain ceiling we are never going to read this body out, so
+    // there is nothing to keep the connection alive for.
+    sendTooLarge(res, declared > DRAIN_CEILING_BYTES);
+    drainRequest(req, res);
+    return;
+  }
+
   const contentType = String(req.headers['content-type'] ?? '');
   const boundaryMatch = /boundary=("?)([^";]+)\1/.exec(contentType);
   if (!boundaryMatch) {
@@ -125,14 +140,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
   const boundary = boundaryMatch[2]!;
 
-  let body: Buffer;
-  try {
-    body = await readRequestBody(req, MAX_BYTES + 1 * 1024 * 1024);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : 'read failed';
-    res.status(413).json({ error: 'body_too_large', message: msg });
+  const read = await readRequestBody(req, MAX_REQUEST_BYTES);
+  if (!read.ok) {
+    // No (or a lying) Content-Length: we only learn the size by reading.
+    // The reader stopped buffering and left the socket alive for this 413.
+    sendTooLarge(res);
+    drainRequest(req, res, { receivedBytes: read.receivedBytes });
     return;
   }
+  const body: Buffer = read.body;
 
   let parts: ParsedPart[];
   try {
@@ -161,8 +177,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(400).json({ error: 'empty_file', message: 'File is empty.' });
     return;
   }
-  if (filePart.data.length > MAX_BYTES) {
-    res.status(413).json({ error: 'file_too_large', message: `File exceeds ${MAX_BYTES} bytes (10 MB).` });
+  if (filePart.data.length > MAX_FILE_BYTES) {
+    res.status(413).json(TOO_LARGE_BODY);
     return;
   }
   const mime = baseMime(filePart.contentType ?? 'application/octet-stream');
@@ -213,74 +229,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   };
 
   res.status(201).json(attachment);
-}
-
-// --- Multipart helpers ---
-
-function readRequestBody(req: VercelRequest, maxBytes: number): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let total = 0;
-    req.on('data', (chunk: Buffer | string) => {
-      const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
-      total += buf.length;
-      if (total > maxBytes) {
-        reject(new Error(`Request body too large (${total} bytes > ${maxBytes}).`));
-        req.destroy();
-        return;
-      }
-      chunks.push(buf);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
-
-interface ParsedPart {
-  name: string;
-  filename?: string;
-  contentType?: string;
-  data: Buffer;
-}
-
-function parseMultipart(body: Buffer, boundary: string): ParsedPart[] {
-  const dashBoundary = Buffer.from(`--${boundary}`);
-  const parts: ParsedPart[] = [];
-
-  let i = body.indexOf(dashBoundary);
-  if (i < 0) throw new Error('Boundary not found in body.');
-  i += dashBoundary.length;
-  if (body[i] === 0x0d && body[i + 1] === 0x0a) i += 2;
-
-  while (i < body.length) {
-    const next = body.indexOf(dashBoundary, i);
-    if (next < 0) throw new Error('Truncated multipart body.');
-
-    const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'), i);
-    if (headerEnd < 0 || headerEnd > next) throw new Error('Malformed part headers.');
-    const headersRaw = body.slice(i, headerEnd).toString('utf8');
-    let dataEnd = next - 2;
-    if (dataEnd < headerEnd + 4) dataEnd = headerEnd + 4;
-    const data = body.slice(headerEnd + 4, dataEnd);
-
-    const part: ParsedPart = { name: '', data };
-    for (const line of headersRaw.split('\r\n')) {
-      const lower = line.toLowerCase();
-      if (lower.startsWith('content-disposition:')) {
-        const nameMatch = /name="([^"]*)"/.exec(line);
-        const fileMatch = /filename="([^"]*)"/.exec(line);
-        if (nameMatch) part.name = nameMatch[1]!;
-        if (fileMatch) part.filename = fileMatch[1]!;
-      } else if (lower.startsWith('content-type:')) {
-        part.contentType = line.slice(line.indexOf(':') + 1).trim();
-      }
-    }
-    parts.push(part);
-
-    i = next + dashBoundary.length;
-    if (body[i] === 0x2d && body[i + 1] === 0x2d) break;
-    if (body[i] === 0x0d && body[i + 1] === 0x0a) i += 2;
-  }
-
-  return parts;
 }
