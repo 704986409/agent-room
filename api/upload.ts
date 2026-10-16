@@ -40,6 +40,31 @@ const ALLOWED_MIMES = new Set([
 
 export const config = { api: { bodyParser: false } };
 
+// Types that are byte-for-byte text but whose MIME name doesn't start with
+// `text/`. Anything with a `+json`/`+xml` suffix counts too.
+const TEXTUAL_MIMES = new Set([
+  'application/json',
+  'application/xml',
+  'application/javascript',
+  'image/svg+xml',
+]);
+
+// Drop the parameters a client may append ('text/plain; charset=utf-8') so
+// the allow-list is matched on the base type alone.
+function baseMime(raw: string): string {
+  return raw.split(';')[0]!.trim().toLowerCase();
+}
+
+// R2 serves objects with the stored ContentType verbatim, and a `text/*`
+// response without a charset makes browsers fall back to a locale default —
+// UTF-8 Chinese then renders as mojibake straight from the r2.dev URL.
+export function storageContentType(mime: string): string {
+  if (/;\s*charset\s*=/i.test(mime)) return mime;
+  const base = baseMime(mime);
+  const textual = base.startsWith('text/') || TEXTUAL_MIMES.has(base) || /\+(json|xml)$/.test(base);
+  return textual ? `${mime}; charset=utf-8` : mime;
+}
+
 interface R2Env {
   accountId: string;
   bucket: string;
@@ -140,7 +165,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     res.status(413).json({ error: 'file_too_large', message: `File exceeds ${MAX_BYTES} bytes (10 MB).` });
     return;
   }
-  const mime = filePart.contentType ?? 'application/octet-stream';
+  const mime = baseMime(filePart.contentType ?? 'application/octet-stream');
   if (!ALLOWED_MIMES.has(mime)) {
     res.status(415).json({ error: 'mime_not_allowed', message: `Unsupported MIME type: ${mime}` });
     return;
@@ -155,7 +180,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       Bucket: env.bucket,
       Key: key,
       Body: filePart.data,
-      ContentType: mime,
+      ContentType: storageContentType(mime),
       // Cache aggressively: object keys are content-addressable
       // (uuid in path) so an attachment's bytes never change.
       CacheControl: 'public, max-age=31536000, immutable',
