@@ -23,6 +23,13 @@ export type ToolDef = {
 const CODE_PROP = { type: 'string', description: '9-character dashed room code, e.g. ABC-DEF-GHJ' };
 const NAME_PROP = { type: 'string', description: 'Your display name' };
 
+// Declaring this is a promise to the client: every non-error result from the
+// tool carries structuredContent holding the same payload as its text. The
+// fields themselves are deliberately left open — they vary by call (a listen
+// result grows yourTasks, a digest, a policy line only when there is one), and
+// pinning them here would turn every payload addition into a schema migration.
+const OBJECT_OUTPUT = { type: 'object', additionalProperties: true };
+
 export const CORE_TOOLS: ToolDef[] = [
   {
     name: 'room_create',
@@ -38,6 +45,7 @@ export const CORE_TOOLS: ToolDef[] = [
         personaId: { type: 'string', description: 'Optional stable Persona identity for a new seat. A valid seatKey resume keeps its stored Persona.' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_join',
@@ -55,6 +63,7 @@ export const CORE_TOOLS: ToolDef[] = [
         seatKey: { type: 'string', description: 'The opaque server-issued key from a previous room_join. Send it to resume the same seat; a successful resume rotates the key. Keep it private.' },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_send',
@@ -108,6 +117,7 @@ export const CORE_TOOLS: ToolDef[] = [
         },
       },
     },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_minutes',
@@ -195,7 +205,7 @@ export const FULL_TOOLS: ToolDef[] = [
         reason: { type: 'string', description: 'cancel: optional reason shown in the cancelled lane' },
       },
     },
-    outputSchema: { type: 'object', additionalProperties: true },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'room_webhook',
@@ -244,14 +254,14 @@ const MEMORY_TOOLS: ToolDef[] = [
       keywords: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', maxLength: 64 } },
       searchSessionId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
     } },
-    outputSchema: { type: 'object', additionalProperties: true },
+    outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_read',
     description: 'Read an authorized memory body in bounded cursor pages. Requires the private seatKey from room_join.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'id'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, id: { type: 'string' }, cursor: { type: 'string' }, limit: { type: 'number' },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_write',
@@ -260,7 +270,7 @@ const MEMORY_TOOLS: ToolDef[] = [
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
       title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
       sourceMessageId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_update',
@@ -269,14 +279,14 @@ const MEMORY_TOOLS: ToolDef[] = [
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] }, id: { type: 'string' },
       title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
       sourceMessageId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_delete',
     description: 'Delete a verified Persona memory or create a pending Room deletion proposal. Requires target id and requestId; caller identity comes only from seatKey.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'id', 'requestId'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] }, id: { type: 'string' }, requestId: { type: 'string', maxLength: 128 },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_list',
@@ -284,7 +294,7 @@ const MEMORY_TOOLS: ToolDef[] = [
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
       limit: { type: 'number' }, offset: { type: 'number' },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_review',
@@ -292,16 +302,36 @@ const MEMORY_TOOLS: ToolDef[] = [
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'action'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, action: { type: 'string', enum: ['list', 'approve', 'reject'] },
       proposalId: { type: 'string' }, requestId: { type: 'string', maxLength: 128 }, limit: { type: 'number' }, offset: { type: 'number' },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
   {
     name: 'memory_brief',
     description: 'Return the structured Room plus caller Persona Brief at most once per seatKey session. Normal injection happens on room_join; this is a secured one-time recovery path.',
     inputSchema: { type: 'object', required: ['code', 'seatKey'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' },
-    } }, outputSchema: { type: 'object', additionalProperties: true },
+    } }, outputSchema: OBJECT_OUTPUT,
   },
 ];
+
+const OBJECT_OUTPUT_TOOLS = new Set(
+  [...CORE_TOOLS, ...FULL_TOOLS, ...MEMORY_TOOLS]
+    .filter(tool => tool.outputSchema)
+    .map(tool => tool.name),
+);
+
+/**
+ * Does this tool promise an object result?
+ *
+ * The dispatcher asks before shaping a result, so the declared surface above
+ * is the only place the decision is made. Reading the flag off the definitions
+ * rather than keeping a second list is what stops a tool from advertising an
+ * outputSchema while returning text alone — the bug this exists to prevent.
+ * Memory tools are included whether or not they are currently listed: a
+ * disabled tool is never dispatched, so the answer only matters when it is.
+ */
+export function declaresObjectOutput(name: string): boolean {
+  return OBJECT_OUTPUT_TOOLS.has(name);
+}
 
 /**
  * The tool list, tailored to the caller where that matters.

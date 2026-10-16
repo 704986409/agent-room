@@ -73,7 +73,7 @@ import {
   runListen,
   type WakeOn,
 } from './_mcpListen.js';
-import { FULL_TOOLS, listTools, type McpProfile } from './_mcpToolDefs.js';
+import { declaresObjectOutput, FULL_TOOLS, listTools, type McpProfile } from './_mcpToolDefs.js';
 
 export { CORE_TOOLS, FULL_TOOLS, listTools, SERVER_INSTRUCTIONS } from './_mcpToolDefs.js';
 export type { McpProfile } from './_mcpToolDefs.js';
@@ -253,37 +253,45 @@ export async function callTool(
     return await dispatch(client, name, args, harness, profile, memoryDependencies);
   } catch (e) {
     if (e instanceof RemoteRoomApiError) {
+      // A handled API error is still a normal result, not an isError one — a
+      // seat conflict or an unknown code comes back here for room_join and
+      // room_listen. So it is covered by their declared outputSchema and has
+      // to carry structuredContent like any other result of theirs.
+      const handled = (value: Record<string, unknown>) => ok(value, [], declaresObjectOutput(name));
       if (e.code === 'MutedError') {
-        return ok({ sent: false, error: 'muted', hint: `${e.message} Wait via room_listen; do not retry until unmuted.` });
+        return handled({ sent: false, error: 'muted', hint: `${e.message} Wait via room_listen; do not retry until unmuted.` });
       }
       if (e.code === 'NotYourTurnError') {
-        return ok({ sent: false, error: 'not_your_turn', hint: `${e.message} Wait for your turn via room_listen.` });
+        return handled({ sent: false, error: 'not_your_turn', hint: `${e.message} Wait for your turn via room_listen.` });
       }
       if (e.code === 'garbled_text') {
-        return ok({
+        return handled({
           sent: false,
           error: 'garbled_text',
           hint: `${e.message} Nothing was posted — the room is still waiting on you, so compose the message again and call room_send once more.`,
         });
       }
       if (e.code === 'NotHostError') {
-        return ok({ ok: false, error: 'not_host', hint: `${e.message} Only the host (with the hostKey from room_create) can do this.` });
+        return handled({ ok: false, error: 'not_host', hint: `${e.message} Only the host (with the hostKey from room_create) can do this.` });
       }
       if (e.code === 'HostNameTakenError') {
-        return ok({ error: 'host_name_taken', hint: 'That name is reserved for the room\'s host. Pick a different display name.' });
+        return handled({ error: 'host_name_taken', hint: 'That name is reserved for the room\'s host. Pick a different display name.' });
       }
       if (e.code === 'RoomNotFoundError') {
-        return ok({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
+        return handled({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
       }
       if (e.code === 'SEAT_IN_USE') {
-        return ok({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
+        return handled({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
       }
       if (e.code === 'NotParticipantError') {
-        return ok({ error: 'not_participant', hint: `${e.message} Call room_join first.` });
+        return handled({ error: 'not_participant', hint: `${e.message} Call room_join first.` });
       }
       if (e.code === 'WebhookLimitError') {
-        return ok({ error: 'webhook_limit', hint: `${e.message} Unregister one first (room_webhook action="unregister").` });
+        return handled({ error: 'webhook_limit', hint: `${e.message} Unregister one first (room_webhook action="unregister").` });
       }
+      // isError results stay as they are: the spec exempts them from an
+      // outputSchema, and the memory tools — which declare one — do not add
+      // structuredContent here either.
       return { ...ok({ error: e.code, message: e.message }), isError: true };
     }
     throw e;
@@ -320,6 +328,9 @@ async function dispatch(
   // Memory tools declare an object outputSchema, so every result (including
   // error-code objects) must also carry structuredContent per the MCP spec.
   if (isMemoryToolName(name)) return ok(await dispatchMemoryTool(client, name, a, memoryDependencies), [], true);
+  // Same promise, same obligation, for every other tool that declares one:
+  // room_create, room_join, room_listen and room_task.
+  const structured = declaresObjectOutput(name);
   switch (name) {
     case 'room_create': {
       const created = await createRoom(client, { topic: a.topic, createdBy: a.name });
@@ -348,7 +359,7 @@ async function dispatch(
         seatKey: hostSeat.seatKey,
         roleBrief: roleBriefFor(a.role ?? ''),
         hint: `Room created — share the joinUrl; keep the hostKey private. ${NEXT_LISTEN(code, msgs.length)} ${listenWindowHint(harness)}`,
-      });
+      }, [], structured);
     }
 
     case 'room_join': {
@@ -434,7 +445,7 @@ async function dispatch(
           // being handed a task listens, and the task sits.
           ...(inboxRequiresWork(joinInbox) ? [] : [NEXT_LISTEN(a.code, msgs.length), listenWindowHint(harness)]),
         ].filter(Boolean).join(' '),
-      }, await hydrateListenImages(recentMessages));
+      }, await hydrateListenImages(recentMessages), structured);
     }
 
     case 'room_send': {
@@ -521,7 +532,7 @@ async function dispatch(
             ...listenStatusFields(),
             nextAction: nextListenAction(a.code, since, selfName),
             hint: `Transient listMessages failure — retry. ${NEXT_LISTEN(a.code, since)}`,
-          });
+          }, [], structured);
         }
         const cursor = since + listed.messages.length;
         const all = since === 0
@@ -545,7 +556,7 @@ async function dispatch(
           hint: readMustWork
             ? readInbox.hint
             : [readInbox.hint, NEXT_LISTEN(a.code, cursor)].filter(Boolean).join(' '),
-        }, await hydrateListenImages(messages));
+        }, await hydrateListenImages(messages), structured);
       }
       // A hold longer than the client's own tool-call timeout does not return
       // messages — it returns a tool error, and a tool error is the single
@@ -624,7 +635,7 @@ async function dispatch(
           inbox.hint,
           mustWork ? `${messages.length} new message(s). BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.` : result.hint,
         ].filter(Boolean).join(' '),
-      }, await hydrateListenImages(messages));
+      }, await hydrateListenImages(messages), structured);
     }
 
     case 'room_minutes': {
