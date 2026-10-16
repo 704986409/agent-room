@@ -31,6 +31,7 @@ import {
   readRequestBody,
 } from './_uploadMultipart.js';
 import { ALLOWED_MIMES, baseMime, storageContentType } from './_uploadMime.js';
+import { MAX_FILENAME_BYTES, isFilenameTooLong } from '@agent-room/shared';
 import type { ParsedPart } from './_uploadMultipart.js';
 
 export {
@@ -66,8 +67,10 @@ export function publicObjectUrl(base: string, key: string): string {
 // batch-delete by) and control characters have no business in a key at all;
 // both become '_'. Chinese, spaces and the rest stay — the key is raw UTF-8
 // and `name` on the attachment keeps the original filename regardless.
+// No truncation: the handler rejects anything over MAX_FILENAME_BYTES before
+// it gets here, so the key is already bounded well under R2's 1024-byte cap.
 export function keyFilename(filename: string | undefined): string {
-  const name = (filename ?? 'file').replace(/[/\\\u0000-\u001f\u007f]/g, '_').slice(0, 200);
+  const name = (filename ?? 'file').replace(/[/\\\u0000-\u001f\u007f]/g, '_');
   return name || 'file';
 }
 
@@ -206,6 +209,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   const mime = baseMime(filePart.contentType ?? 'application/octet-stream');
   if (!ALLOWED_MIMES.has(mime)) {
     res.status(415).json({ error: 'mime_not_allowed', message: `Unsupported MIME type: ${mime}` });
+    return;
+  }
+  // Last check before the key is built, so size and mime still answer first:
+  // an over-size file keeps its 413 and a banned type its 415 whatever its
+  // name is. Measured on the filename as sent, in UTF-8 bytes, because that
+  // is what the R2 key carries (keyFilename only swaps characters, never
+  // shortens). Same rule the web composer preflights with.
+  if (isFilenameTooLong(filePart.filename ?? '')) {
+    res.status(400).json({
+      error: 'filename_too_long',
+      message: '文件名称太长，不支持上传',
+      maxBytes: MAX_FILENAME_BYTES,
+    });
     return;
   }
 

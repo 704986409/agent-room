@@ -62,6 +62,11 @@ describe('web locale catalog', () => {
     }
   });
 
+  it('carries the over-long filename refusal in both locales', () => {
+    expect(translate('zh-CN', 'upload.filenameTooLong')).toBe('文件名称太长，不支持上传');
+    expect(translate('en', 'upload.filenameTooLong')).toBe('File name is too long and can’t be uploaded.');
+  });
+
   it('translates role labels while leaving role values unchanged', () => {
     for (const preset of ROLE_PRESETS) {
       expect(localizedRoleLabel(preset.id, 'zh-CN')).not.toBe(preset.role);

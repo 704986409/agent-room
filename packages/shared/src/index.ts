@@ -4,6 +4,7 @@ export * from './presence.js';
 export * from './codeGen.js';
 export * from './roles.js';
 export * from './artifacts.js';
+export * from './attachments.js';
 export * from './text.js';
 export * from './toolCallRecovery.js';
 export * from './projectMemory.js';

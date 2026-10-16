@@ -25,6 +25,7 @@ vi.mock('@aws-sdk/client-s3', () => {
   return { S3Client, PutObjectCommand };
 });
 
+import { MAX_FILENAME_BYTES } from '@agent-room/shared';
 import handler, {
   DRAIN_CEILING_BYTES,
   MAX_FILE_BYTES,
@@ -137,6 +138,14 @@ describe('keyFilename', () => {
   it('falls back to a name when there is nothing usable left', () => {
     expect(keyFilename(undefined)).toBe('file');
     expect(keyFilename('')).toBe('file');
+  });
+
+  // It used to cut at 200 utf-16 units, which both mangled names and still
+  // let 600 utf-8 bytes of Chinese through. Length is the handler's business
+  // now (MAX_FILENAME_BYTES), so this only ever substitutes characters.
+  it('never shortens a name', () => {
+    const name = `${'a'.repeat(300)}.txt`;
+    expect(keyFilename(name)).toBe(name);
   });
 });
 
@@ -342,6 +351,56 @@ describe('POST /api/upload', () => {
     const attachment = res.body as { mime: string; type: string };
     expect(attachment.mime).toBe('image/png');
     expect(attachment.type).toBe('image');
+  });
+
+  it('rejects a filename over the byte budget before touching R2', async () => {
+    // 41 Chinese characters = 123 utf-8 bytes, three over the budget, yet
+    // only 41 utf-16 units: the old 200-unit cut would have stored it whole.
+    const res = await upload([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename: `${'会'.repeat(41)}.txt`, contentType: 'text/plain', data: '内容' },
+    ]);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      error: 'filename_too_long',
+      message: '文件名称太长，不支持上传',
+      maxBytes: MAX_FILENAME_BYTES,
+    });
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.putInputs).toHaveLength(0);
+  });
+
+  it('stores a name that sits exactly on the budget in full', async () => {
+    const filename = '会'.repeat(40); // 120 bytes, the last accepted size
+    expect(new TextEncoder().encode(filename).length).toBe(MAX_FILENAME_BYTES);
+
+    const res = await upload([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      { name: 'file', filename, contentType: 'text/plain', data: '内容' },
+    ]);
+
+    expect(res.statusCode).toBe(201);
+    const attachment = res.body as { storageKey: string; name: string };
+    expect(attachment.storageKey.endsWith(`/${filename}`)).toBe(true);
+    expect(mocks.putInputs[0]!.Key).toBe(attachment.storageKey);
+    expect(attachment.name).toBe(filename);
+  });
+
+  it('answers 413 for an over-size file whatever its name costs', async () => {
+    const res = await upload([
+      { name: 'roomCode', data: 'ABC-DEF-GHJ' },
+      {
+        name: 'file',
+        filename: `${'会'.repeat(41)}.txt`,
+        contentType: 'text/plain',
+        data: Buffer.alloc(MAX_FILE_BYTES + 1, 0x61),
+      },
+    ]);
+
+    expect(res.statusCode).toBe(413);
+    expect(res.body).toEqual(TOO_LARGE_BODY);
+    expect(mocks.send).not.toHaveBeenCalled();
   });
 
   it('still rejects a type outside the allow-list', async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import type { MessageAttachment } from '@agent-room/shared';
+import { isFilenameTooLong, type MessageAttachment } from '@agent-room/shared';
 import { MAX_ATTACHMENTS_PER_MESSAGE, uploadAttachment } from '../lib/upload.js';
 
 export interface PendingUpload { id: string; name: string }
@@ -8,6 +8,8 @@ interface UseAttachmentUploadsOptions {
   roomCode: string;
   /** More files were picked than the message has room for. */
   onLimit: (max: number) => void;
+  /** A picked file's name is too long for the storage key; it was dropped. */
+  onFilenameTooLong: () => void;
   /** One file failed to upload; its placeholder has already been dropped. */
   onFailure: (error: unknown) => void;
 }
@@ -32,7 +34,7 @@ let uploadSeq = 0;
  * before this, a text-only message went out mid-upload and the finished
  * attachment leaked into whatever the user typed next.
  */
-export function useAttachmentUploads({ roomCode, onLimit, onFailure }: UseAttachmentUploadsOptions): AttachmentUploads {
+export function useAttachmentUploads({ roomCode, onLimit, onFilenameTooLong, onFailure }: UseAttachmentUploadsOptions): AttachmentUploads {
   const [attachments, setAttachments] = useState<MessageAttachment[]>([]);
   const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   // Concurrent uploads each resolve on their own tick, so slot accounting
@@ -52,10 +54,18 @@ export function useAttachmentUploads({ roomCode, onLimit, onFailure }: UseAttach
   const addFiles = useCallback(async (files: FileList | File[]) => {
     const incoming = Array.from(files);
     if (!incoming.length) return;
+    // A name over the byte budget can only come back as a 400, so it never
+    // takes a slot or a placeholder chip — the rest of the batch goes on.
+    const named = incoming.filter(file => {
+      if (!isFilenameTooLong(file.name)) return true;
+      onFilenameTooLong();
+      return false;
+    });
+    if (!named.length) return;
     const used = attachmentsRef.current.length + pendingRef.current.length;
     const slots = Math.max(0, MAX_ATTACHMENTS_PER_MESSAGE - used);
-    const selected = incoming.slice(0, slots);
-    if (incoming.length > slots) onLimit(MAX_ATTACHMENTS_PER_MESSAGE);
+    const selected = named.slice(0, slots);
+    if (named.length > slots) onLimit(MAX_ATTACHMENTS_PER_MESSAGE);
     if (!selected.length) return;
 
     const queued = selected.map(file => ({ id: `upload-${++uploadSeq}`, name: file.name, file }));
@@ -71,7 +81,7 @@ export function useAttachmentUploads({ roomCode, onLimit, onFailure }: UseAttach
         writePending(prev => prev.filter(item => item.id !== id));
       }
     }));
-  }, [roomCode, onLimit, onFailure, writeAttachments, writePending]);
+  }, [roomCode, onLimit, onFilenameTooLong, onFailure, writeAttachments, writePending]);
 
   const removeAttachment = useCallback((id: string) => {
     writeAttachments(prev => prev.filter(item => item.id !== id));

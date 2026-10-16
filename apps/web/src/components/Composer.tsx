@@ -2,7 +2,7 @@ import { useCallback, useRef, useState, type ClipboardEvent, type DragEvent, typ
 import type { MessageAttachment } from '@agent-room/shared';
 import { useLocale } from '../i18n/LocaleProvider.js';
 import { useAttachmentUploads } from '../hooks/useAttachmentUploads.js';
-import { ALLOWED_ATTACHMENT_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, formatBytes } from '../lib/upload.js';
+import { ALLOWED_ATTACHMENT_TYPES, MAX_ATTACHMENTS_PER_MESSAGE, UploadError, formatBytes } from '../lib/upload.js';
 import { showToast } from './Toast.js';
 
 // Cap auto-grow at ~8 lines so the input never eats the whole feed.
@@ -52,10 +52,19 @@ export function Composer({
   const onLimit = useCallback((count: number) => {
     showToast(t('room.attachLimit', { count }), 'info');
   }, [t]);
+  const onFilenameTooLong = useCallback(() => {
+    showToast(t('upload.filenameTooLong'), 'error');
+  }, [t]);
   const onFailure = useCallback((e: unknown) => {
+    // The server's own message for this one is Chinese-only; the user gets
+    // the same sentence the preflight shows, in their locale.
+    if (e instanceof UploadError && e.code === 'filename_too_long') {
+      showToast(t('upload.filenameTooLong'), 'error');
+      return;
+    }
     showToast(t('room.attachmentFailed', { error: e instanceof Error ? e.message : t('common.unknownError') }), 'error');
   }, [t]);
-  const uploads = useAttachmentUploads({ roomCode, onLimit, onFailure });
+  const uploads = useAttachmentUploads({ roomCode, onLimit, onFilenameTooLong, onFailure });
   const { attachments, pendingUploads, uploading } = uploads;
 
   async function addFiles(files: FileList | File[]) {

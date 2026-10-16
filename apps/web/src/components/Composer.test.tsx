@@ -3,6 +3,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'rea
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessageAttachment } from '@agent-room/shared';
 import { Composer } from './Composer.js';
+import { UploadError } from '../lib/upload.js';
 
 const uploadAttachment = vi.hoisted(() => vi.fn());
 const showToast = vi.hoisted(() => vi.fn());
@@ -214,6 +215,63 @@ describe('Composer upload gating', () => {
     expect(showToast).toHaveBeenCalledWith('Send failed: Upstash HTTP 502', 'error');
     expect(textarea(renderer).props.value).toBe('minutes attached');
     expect(rendered(renderer)).toContain('notes.pdf');
+
+    await act(async () => renderer.unmount());
+  });
+
+  it('refuses a name over the byte budget without uploading it or holding a slot', async () => {
+    uploadAttachment.mockResolvedValue(attachmentFor('ok.pdf'));
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    // 41 Chinese characters = 123 utf-8 bytes, past MAX_FILENAME_BYTES.
+    const tooLong = `${'会'.repeat(41)}.pdf`;
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(<Harness onSubmit={onSubmit} />); });
+
+    await pickFiles(renderer, [fileLike(tooLong)]);
+
+    expect(uploadAttachment).not.toHaveBeenCalled();
+    expect(showToast).toHaveBeenCalledWith('File name is too long and can’t be uploaded.', 'error');
+    expect(renderer.root.findAllByProps({ 'data-uploading': 'true' })).toHaveLength(0);
+    expect(rendered(renderer)).not.toContain(tooLong);
+    expect(sendButton(renderer).props.disabled).toBe(true); // nothing to send
+
+    await act(async () => renderer.unmount());
+  });
+
+  it('keeps uploading the rest of a batch when one name is too long', async () => {
+    uploadAttachment.mockResolvedValue(attachmentFor('spec.pdf'));
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(<Harness onSubmit={onSubmit} />); });
+
+    await pickFiles(renderer, [fileLike(`${'会'.repeat(41)}.pdf`), fileLike('spec.pdf')]);
+
+    expect(uploadAttachment).toHaveBeenCalledTimes(1);
+    expect(uploadAttachment.mock.calls[0]![0]).toMatchObject({ name: 'spec.pdf' });
+    expect(showToast).toHaveBeenCalledWith('File name is too long and can’t be uploaded.', 'error');
+    expect(rendered(renderer)).toContain('spec.pdf');
+
+    await act(async () => renderer.unmount());
+  });
+
+  it('localizes the server’s filename_too_long answer instead of echoing it', async () => {
+    const upload = deferred<MessageAttachment>();
+    uploadAttachment.mockReturnValue(upload.promise);
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => { renderer = create(<Harness onSubmit={onSubmit} />); });
+
+    await pickFiles(renderer, [fileLike('plan.pdf')]);
+    await act(async () => {
+      upload.reject(new UploadError('filename_too_long', 400, '文件名称太长，不支持上传'));
+      await Promise.resolve();
+    });
+
+    expect(showToast).toHaveBeenCalledWith('File name is too long and can’t be uploaded.', 'error');
+    expect(rendered(renderer)).not.toContain('plan.pdf');
 
     await act(async () => renderer.unmount());
   });
