@@ -1142,6 +1142,17 @@ describe('hosted MCP endpoint', () => {
       const storedSharedId = String((sharedListed.results as { id: string }[])[0]!.id);
       expect(storedSharedId).toBeTruthy();
 
+      const noticeCountBeforeApprovedDuplicate = (await roomNotices()).length;
+      const approvedDuplicate = await invoke('memory_write', {
+        code, seatKey: otherPersonaKey, scope: 'room', title: 'Shared decision', preview: 'Shared preview',
+        content: 'The Room decided to retain the shared index.', searchText: 'shared-index-decision',
+        requestId: `approved-shared-write-dup-${randomUUID()}`,
+      });
+      expect(approvedDuplicate).toMatchObject({ status: 'duplicate_candidates' });
+      expect(approvedDuplicate.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ id: storedSharedId })]));
+      expect(approvedDuplicate.notificationDelivered).toBeUndefined();
+      expect(await roomNotices()).toHaveLength(noticeCountBeforeApprovedDuplicate);
+
       const updateProposal = await invoke('memory_update', {
         code, seatKey: seatA, scope: 'room', id: storedSharedId, preview: 'Updated shared preview',
         content: 'The Room decided to retain the shared index after review.',

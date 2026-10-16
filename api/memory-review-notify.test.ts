@@ -81,6 +81,7 @@ const ROOM_OWNER: MemoryIdentity = { type: 'room_owner', id: ROOM_INSTANCE_ID };
 /** The room's message list, which `appendRoomEvent` writes and `room_listen` reads. */
 let messages: Message[] = [];
 let appendFails = false;
+let appendCalls = 0;
 
 /** What the stubbed MemoryService returns for the next write. */
 let mutation: Record<string, unknown> = {};
@@ -101,6 +102,7 @@ vi.mock('./_mcpRoomClient.js', async (importOriginal) => {
     setListenUntil: async () => {},
     listMessages: async (_client: unknown, _code: string, since: number) => messages.slice(since),
     appendRoomEvent: async (_client: unknown, _code: string, message: Message) => {
+      appendCalls += 1;
       if (appendFails) throw new actual.RemoteRoomApiError('Room storage is unavailable.', 503, 'RoomNotFoundError');
       messages.push(message);
     },
@@ -178,6 +180,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
       id: 1, type: 'msg', name: 'Host', initials: 'HO', color: '#000', role: 'host',
       text: 'Let us agree on the shared index.', client: 'web', time: 1,
     }];
+    appendCalls = 0;
     appendFails = false;
     mutation = { code: 'PENDING_REVIEW', proposalId: randomUUID() };
     mention = { mode: 'reviewers', recipients: [PERSONA_REVIEWER] };
@@ -222,14 +225,28 @@ describe('shared memory proposals reach the reviewer through the room', () => {
   });
 
   // The proposal already exists; re-announcing it would wake every reviewer twice.
-  it('posts nothing for a duplicate of a pending proposal', async () => {
+  it.each(['exact', 'near'] as const)('posts nothing for an %s duplicate of a pending proposal', async () => {
     const first = await propose();
     const before = messages.length;
+    const appendsBefore = appendCalls;
     mutation = { code: 'PENDING_REVIEW', proposalId: first.proposalId, duplicateOf: first.proposalId };
     const duplicate = await propose({ seatKey: SEAT_KEYS.proposer });
     expect(duplicate).toMatchObject({ code: 'PENDING_REVIEW', duplicateOf: first.proposalId });
     expect(duplicate.notificationDelivered).toBeUndefined();
     expect(messages).toHaveLength(before);
+    expect(appendCalls).toBe(appendsBefore);
+  });
+
+  it('posts nothing for a DUPLICATE of an approved entry', async () => {
+    await propose();
+    const before = messages.length;
+    const appendsBefore = appendCalls;
+    mutation = { code: 'DUPLICATE', duplicateOf: randomUUID(), duplicateKind: 'memory' };
+    const duplicate = await propose();
+    expect(duplicate).toMatchObject({ code: 'DUPLICATE', duplicateOf: mutation.duplicateOf });
+    expect(duplicate.notificationDelivered).toBeUndefined();
+    expect(messages).toHaveLength(before);
+    expect(appendCalls).toBe(appendsBefore);
   });
 
   it('addresses the host when every reviewer seat is offline', async () => {

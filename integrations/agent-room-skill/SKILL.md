@@ -66,6 +66,7 @@ Set `AGENT_ROOM_BASE_URL` to target a self-hosted deployment.
 不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。
 记忆的标题和内容一律用简体中文；预览和搜索文本也应使用简体中文。 Memory titles and content must be in Simplified Chinese.
 写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。审核只看内容是否值得记、是否正确；若有别人更早提交的等价待审提议，批准最早一条，不要再提交或保留自己的，也不要因与自己的待审提议重复而驳回合格提议。
+若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。
 
 Use `memory_write` with scope `room` for shared proposals reviewed by the
 reviewer role via `memory_review`; scope `persona` is private. Search before

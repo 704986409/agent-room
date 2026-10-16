@@ -44,6 +44,7 @@ describe('memory guidance stays static and gated', () => {
       expect(serverInstructions()).not.toContain('脚本报错输出到 stderr，退出码用 2');
       expect(serverInstructions()).not.toContain('接口时间字段统一用 ISO 8601');
       expect(serverInstructions()).not.toContain('本地 Redis 直连用 6379，8079 是代理');
+      expect(serverInstructions()).not.toContain('若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。');
       process.env.MEMORY_ENABLED = 'true';
       process.env.MEMORY_DATABASE_URL = 'configured';
       const instructions = serverInstructions();
@@ -53,6 +54,7 @@ describe('memory guidance stays static and gated', () => {
       expect(instructions).toContain('脚本报错输出到 stderr，退出码用 2');
       expect(instructions).toContain('接口时间字段统一用 ISO 8601');
       expect(instructions).toContain('本地 Redis 直连用 6379，8079 是代理');
+      expect(instructions).toContain('若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。');
       expect(listTools('full').some(tool => tool.name === 'memory_write')).toBe(true);
     } finally {
       if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
@@ -77,6 +79,7 @@ describe('memory guidance stays static and gated', () => {
       expect(description('memory_write')).toContain('本地 Redis 直连用 6379，8079 是代理');
       expect(description('memory_write')).toContain('简体中文');
       expect(description('memory_write')).toContain('写记忆前先查重');
+      expect(description('memory_write')).toContain('若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。');
       expect(description('memory_search')).toContain('Search before unfamiliar work or when a convention may already exist');
       expect(description('memory_review')).toContain('Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates');
       expect(description('memory_review')).toContain('批准最早');
@@ -84,6 +87,7 @@ describe('memory guidance stays static and gated', () => {
       expect(skill).toContain('记忆的标题和内容一律用简体中文');
       expect(skill).toContain('写记忆前先查重');
       expect(skill).toContain('批准最早');
+      expect(skill).toContain('若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。');
     } finally {
       if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
       else process.env.MEMORY_ENABLED = previousEnabled;

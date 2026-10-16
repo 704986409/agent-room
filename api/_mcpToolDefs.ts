@@ -276,7 +276,7 @@ const MEMORY_TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_write',
-    description: '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。记忆标题和内容一律用简体中文，预览和搜索文本也应使用简体中文。写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。 Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
+    description: '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。记忆标题和内容一律用简体中文，预览和搜索文本也应使用简体中文。写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。 Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs. 若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'title', 'preview', 'content', 'searchText', 'requestId'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
       title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
@@ -395,7 +395,7 @@ export const SERVER_INSTRUCTIONS = [
   'CONTEXT: join/listen may include a digest of older turns. When digest is present it supersedes earlier listen dumps — do not treat the client chat history as the full room. Refresh with room_minutes snapshot=true.',
 ].join('\n');
 
-const MEMORY_INSTRUCTION = '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：\n- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。\n- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。\n- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。\n不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。记忆标题和内容一律用简体中文，预览和搜索文本也应使用简体中文。写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。审核记忆只看内容是否值得记、是否正确；已有别人提交的等价待审提议时，批准最早的一条，不要再提交或保留自己的；不要因与自己的待审提议重复而驳回合格提议。';
+const MEMORY_INSTRUCTION = '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：\n- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。\n- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。\n- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。\n不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。记忆标题和内容一律用简体中文，预览和搜索文本也应使用简体中文。写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。审核记忆只看内容是否值得记、是否正确；已有别人提交的等价待审提议时，批准最早的一条，不要再提交或保留自己的；不要因与自己的待审提议重复而驳回合格提议。\n若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。';
 
 /** Dynamic instructions keep memory guidance in step with the listed tools. */
 export function serverInstructions(): string {
