@@ -47,8 +47,8 @@ import {
   RoomNotFoundError,
   getTaskBoard,
   claimTask,
-  submitTask,
-  reassignTaskRoles,
+  submitRoomTask,
+  reassignRoomTaskRoles,
   registerRoomWebhook,
   listRoomWebhooks,
   unregisterRoomWebhook,
@@ -144,11 +144,13 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
         }
         return await claimTask(store, code, str(p.id), agent(p.name));
       }
-      case 'taskSubmit':
-        return await submitTask(
+      case 'taskSubmit': {
+        const submitted = await submitRoomTask(
           store, code, str(p.id), agent(p.name),
-          p.evidence as Parameters<typeof submitTask>[4],
+          p.evidence as Parameters<typeof submitRoomTask>[4],
         );
+        return submitted;
+      }
       case 'taskVerify':
         return await verifyRoomTask(
           store, code, await storeGetRoom(store, code), str(p.id), agent(p.name),
@@ -157,11 +159,13 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           Date.now(),
           p.followUp as Parameters<typeof verifyRoomTask>[8],
         );
-      case 'taskReassign':
-        return await reassignTaskRoles(store, code, str(p.id), {
+      case 'taskReassign': {
+        const reassigned = await reassignRoomTaskRoles(store, code, await storeGetRoom(store, code), str(p.id), {
           ...(p.owner ? { owner: str(p.owner), ownerClient: 'cc' as const } : {}),
           ...(p.verifier ? { verifier: str(p.verifier), verifierClient: 'cc' as const } : {}),
         }, agent(p.requesterName));
+        return reassigned;
+      }
       case 'taskCancel':
         return await cancelRoomTask(
           store, code, await storeGetRoom(store, code), str(p.id), agent(p.requesterName),

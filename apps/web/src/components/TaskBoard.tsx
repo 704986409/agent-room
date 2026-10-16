@@ -6,7 +6,7 @@ import {
   cancelTask,
   createRoomTask,
   createTask,
-  reassignTaskRoles,
+  reassignRoomTaskRoles,
   updateTask,
   verifyTask,
 } from '@agent-room/upstash-client';
@@ -157,6 +157,7 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
               <TaskCard
                 key={task.id}
                 task={task}
+                room={room}
                 me={me}
                 isHost={isHost}
                 ended={ended}
@@ -182,6 +183,7 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
                   <TaskCard
                     key={task.id}
                     task={task}
+                    room={room}
                     me={me}
                     isHost={isHost}
                     ended={ended}
@@ -208,8 +210,9 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
   );
 }
 
-function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention }: {
+function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMention }: {
   task: Task;
+  room?: Room;
   me: { name: string };
   isHost: boolean;
   ended: boolean;
@@ -428,7 +431,9 @@ function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention 
               onCancel={closePanel}
               onSubmit={async (patch) => {
                 const ok = await run(
-                  c => reassignTaskRoles(c, code, task.id, patch, { name: me.name, client: 'web' }),
+                  async (c) => {
+                    await reassignRoomTaskRoles(c, code, room ?? {}, task.id, patch, { name: me.name, client: 'web' });
+                  },
                   t('task.reassignFailed'),
                 );
                 if (ok) closePanel();

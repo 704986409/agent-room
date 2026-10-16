@@ -414,9 +414,15 @@ async function dispatch(
         digestFields = contextFields(all);
       }
       const messages = result.messages.map(slimMessage);
-      const inbox = result.messages.length > 0 && !result.terminated
-        ? await boardInbox(client, profile, a.code, selfName ?? '', result.addressedYou === true, room?.replyMode)
-        : { toVerify: [], toDo: [], current: [], queued: [], hint: '' };
+      // Read the board on EVERY hold that returns, not only the ones that
+      // returned messages. A quiet hold used to skip it to stay lean, which
+      // meant an agent holding 40s–240s with an open task of its own got
+      // `nextAction: presence` back and dutifully went back to listening —
+      // the board said "work", the result said "wait". One board read per
+      // returned hold (not per 2s poll) is what that costs.
+      const inbox = result.terminated
+        ? { toVerify: [], toDo: [], current: [], queued: [], hint: '' }
+        : await boardInbox(client, profile, a.code, selfName ?? '', result.addressedYou === true, room?.replyMode);
       const mustWork = inboxRequiresWork(inbox);
       return ok({
         messages,
@@ -440,7 +446,10 @@ async function dispatch(
             ? "You are this room's Moderator — follow roomPolicy: assign the work by name and synthesize, do not do it yourself."
             : '',
           inbox.hint,
-          mustWork ? `${messages.length} new message(s). BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.` : result.hint,
+          mustWork
+            ? `${messages.length > 0 ? `${messages.length} new message(s). ` : ''}`
+              + 'BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.'
+            : result.hint,
         ].filter(Boolean).join(' '),
       }, await hydrateListenImages(messages), structured);
     }

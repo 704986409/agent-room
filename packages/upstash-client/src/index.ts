@@ -3,6 +3,7 @@ export * from './errors.js';
 export * from './rooms.js';
 export * from './turnState.js';
 export * from './tasks.js';
+export * from './boardEvents.js';
 export * from './messageNormalize.js';
 export * from './messages.js';
 export * from './reports.js';

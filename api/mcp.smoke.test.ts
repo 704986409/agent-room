@@ -188,6 +188,16 @@ function parsed(value: unknown): Record<string, any> {
   return JSON.parse(content[0]!.text);
 }
 
+/**
+ * The one official ruling, as opposed to the board's other events. create and
+ * submit now post their own sys lines (the owner's assignment, the verifier's
+ * review request), so "a sys message naming this task" no longer identifies a
+ * verdict — 验收通过 / 验收未通过 does.
+ */
+function isReviewNotice(message: { type: string; text: string }): boolean {
+  return message.type === 'sys' && message.text.includes('验收');
+}
+
 async function openRawSse(): Promise<{
   response: Response;
   endpoint: URL;
@@ -397,9 +407,7 @@ describe('hosted MCP endpoint', () => {
     const noPrematureNotice = parsed(await mcp.callTool({
       name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
     }));
-    expect((noPrematureNotice.messages as { type: string; text: string }[]).some(
-      message => message.type === 'sys' && message.text.includes('MCP notification smoke'),
-    )).toBe(false);
+    expect((noPrematureNotice.messages as { type: string; text: string }[]).some(isReviewNotice)).toBe(false);
 
     const verifyResult = await mcp.callTool({
       name: 'room_task',
@@ -434,8 +442,7 @@ describe('hosted MCP endpoint', () => {
     const listened = parsed(await mcp.callTool({
       name: 'room_listen', arguments: { code, name: 'Follow-up Agent', since: 0, timeoutMs: 1000, wakeOn: 'addressed' },
     }));
-    const notices = (listened.messages as { type: string; text: string }[])
-      .filter(message => message.type === 'sys' && message.text.includes('MCP notification smoke'));
+    const notices = (listened.messages as { type: string; text: string }[]).filter(isReviewNotice);
     expect(notices).toHaveLength(1);
     expect(notices[0]!.text).toContain('@Follow-up Agent Please confirm whether the rollout window works for you.');
     expect(notices[0]!.text).toContain('验收通过');
@@ -476,10 +483,107 @@ describe('hosted MCP endpoint', () => {
       name: 'room_listen', arguments: { code, name: 'Follow-up Agent', since: 0, timeoutMs: 0 },
     }));
     const systemNotices = (allNotices.messages as { type: string; text: string }[]).filter(message => message.type === 'sys');
-    expect(systemNotices).toHaveLength(2);
-    expect(systemNotices[1]!.text).toContain('验收通过');
-    expect(systemNotices[1]!.text).not.toContain('审核意见：');
-    expect(systemNotices[1]!.text).not.toContain('后续处理：');
+    // Two tasks now add owner-assignment and verifier-request events, in
+    // addition to the two official rulings. The rulings remain exactly one
+    // per successful verify.
+    const rulings = systemNotices.filter(isReviewNotice);
+    expect(systemNotices).toHaveLength(6);
+    expect(rulings).toHaveLength(2);
+    expect(rulings[1]!.text).toContain('验收通过');
+    expect(rulings[1]!.text).not.toContain('审核意见：');
+    expect(rulings[1]!.text).not.toContain('后续处理：');
+  }, 20_000);
+
+  it('wakes task owners and reviewers, and keeps board work in quiet listen results', async () => {
+    const roomClient = createRemoteRoomClient(undefined);
+    const invoke = async (name: string, args: Record<string, unknown>) =>
+      parsed(await callTool(roomClient, 'full', name, args));
+    const host = await invoke('room_create', { topic: 'task lifecycle wakeups', name: 'Wake Host' });
+    const code = String(host.code);
+    await invoke('room_join', { code, name: 'Worker' });
+    await invoke('room_join', { code, name: 'Reviewer' });
+    await invoke('room_join', { code, name: 'Other' });
+
+    const ownerCursor = Number((await invoke('room_listen', { code, name: 'Worker', since: 0, timeoutMs: 0 })).cursor);
+    const createStarted = Date.now();
+    const ownerListenPromise = invoke('room_listen', {
+      code, name: 'Worker', since: ownerCursor, timeoutMs: 8_000, wakeOn: 'addressed',
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const created = await invoke('room_task', {
+      code, name: 'Reviewer', action: 'create', title: 'Lifecycle wake fixture',
+      owner: 'Worker', verifier: 'Reviewer', dod: 'A fixture for task wakeup coverage.',
+    });
+    const taskId = String((created.task as { id: string }).id);
+    const ownerWoken = await ownerListenPromise;
+    expect(Date.now() - createStarted).toBeLessThan(3_000);
+    expect(ownerWoken.nextAction).toMatchObject({ kind: 'task_work', action: 'claim', arguments: { id: taskId } });
+
+    await invoke('room_task', { code, name: 'Worker', action: 'claim', id: taskId });
+    const quietOwner = await invoke('room_listen', {
+      code, name: 'Worker', since: Number(ownerWoken.cursor), timeoutMs: 1_000,
+    });
+    expect(quietOwner.messages).toEqual([]);
+    expect(quietOwner.nextAction).toMatchObject({ kind: 'task_work', action: 'execute_task', taskId });
+
+    const reviewerCursor = Number((await invoke('room_listen', {
+      code, name: 'Reviewer', since: 0, timeoutMs: 0,
+    })).cursor);
+    const submitStarted = Date.now();
+    const reviewerListenPromise = invoke('room_listen', {
+      code, name: 'Reviewer', since: reviewerCursor, timeoutMs: 8_000, wakeOn: 'addressed',
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await invoke('room_task', {
+      code, name: 'Worker', action: 'submit', id: taskId,
+      fileListing: 'src/example.ts', fileExcerpt: 'Lifecycle wake fixture',
+      checks: 'The task is ready for review.',
+    });
+    const reviewerWoken = await reviewerListenPromise;
+    expect(Date.now() - submitStarted).toBeLessThan(3_000);
+    expect(reviewerWoken.nextAction).toMatchObject({ kind: 'task_review', taskId });
+
+    const ownerAfterSubmitCursor = Number((await invoke('room_listen', {
+      code, name: 'Worker', since: Number(ownerWoken.cursor), timeoutMs: 0,
+    })).cursor);
+    const rejectedOwnerListenPromise = invoke('room_listen', {
+      code, name: 'Worker', since: ownerAfterSubmitCursor, timeoutMs: 8_000,
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await invoke('room_task', {
+      code, name: 'Reviewer', action: 'verify', id: taskId,
+      verdict: 'rejected', note: 'Please fix the failing check.',
+    });
+    const rejectedOwner = await rejectedOwnerListenPromise;
+    expect(rejectedOwner.cursor).toBeGreaterThan(ownerAfterSubmitCursor);
+    expect((rejectedOwner.messages as { type: string; text: string }[]).some(isReviewNotice)).toBe(true);
+    expect(rejectedOwner.nextAction).toMatchObject({ kind: 'task_work', action: 'execute_task', taskId });
+
+    await invoke('room_task', { code, name: 'Reviewer', action: 'reopen', id: taskId, state: 'in_progress' });
+    const reopenedOwner = await invoke('room_listen', {
+      code, name: 'Worker', since: Number(rejectedOwner.cursor), timeoutMs: 1_000,
+    });
+    expect(reopenedOwner.messages).toEqual([]);
+    expect(reopenedOwner.nextAction).toMatchObject({ kind: 'task_work', action: 'execute_task', taskId });
+
+    const unassigned = await invoke('room_task', {
+      code, name: 'Reviewer', action: 'create', title: 'Reassignment wake fixture', verifier: 'Reviewer',
+    });
+    const reassignedTaskId = String((unassigned.task as { id: string }).id);
+    const otherCursor = Number((await invoke('room_listen', {
+      code, name: 'Other', since: 0, timeoutMs: 0,
+    })).cursor);
+    const reassignmentListenPromise = invoke('room_listen', {
+      code, name: 'Other', since: otherCursor, timeoutMs: 8_000, wakeOn: 'addressed',
+    });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await invoke('room_task', {
+      code, name: 'Reviewer', action: 'reassign', id: reassignedTaskId, owner: 'Other',
+    });
+    const reassignedOwner = await reassignmentListenPromise;
+    expect(reassignedOwner.nextAction).toMatchObject({
+      kind: 'task_work', action: 'claim', arguments: { id: reassignedTaskId },
+    });
   }, 20_000);
 
   it('does not address a suffixed cc seat from the host mention in a review notice', async () => {
@@ -543,10 +647,6 @@ describe('hosted MCP endpoint', () => {
     const code = created.code as string;
     await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
     await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer' } });
-    // Task roles must be seated agents; their join greetings precede the checks below.
-    const baseCursor = (parsed(await mcp.callTool({
-      name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
-    })).cursor as number);
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
       arguments: {
@@ -564,6 +664,12 @@ describe('hosted MCP endpoint', () => {
         checks: 'The task is ready for the required review.',
       },
     });
+    // Taken here, not before the task: the join greetings, the owner's
+    // assignment event and the verifier's review-request event are all legal
+    // traffic. What must add nothing to the room is a REFUSED verify.
+    const baseCursor = (parsed(await mcp.callTool({
+      name: 'room_listen', arguments: { code, since: 0, timeoutMs: 0 },
+    })).cursor as number);
 
     const invalidReasons: Array<{ label: string; note?: string }> = [
       { label: 'missing' },

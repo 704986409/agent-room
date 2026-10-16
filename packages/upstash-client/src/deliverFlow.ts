@@ -33,6 +33,7 @@ import {
   isDeliverStartReply,
 } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
+import { announceReviewRequested, announceTaskAssigned } from './boardEvents.js';
 import { appendSystemMessage } from './messages.js';
 import { isParticipantStale, taskRoleSeatProblem } from './rooms.js';
 import {
@@ -42,6 +43,7 @@ import {
   hostSetTaskState,
   markDeliverPlanReported,
   reassignTaskRoles,
+  submitTask,
   recordDeliverEscalation,
   recordDeliverGoal,
   recordDeliverGoalEscalated,
@@ -143,6 +145,12 @@ export async function createRoomTask(
     } : {}),
   });
   const { plan, planOpened } = created;
+  // Outside deliver mode, opening a task for somebody IS the hand-off, and
+  // nothing else tells them: the board is a Redis key, room_listen holds on
+  // the message list. In deliver mode the owner must wait for the host's
+  // Start, and announcePlanStart names them then — a second "this is yours"
+  // here would be telling them to begin before they may.
+  if (!deliver) await announceTaskAssigned(client, code, created.task);
   if (plan && planOpened) {
     const now = Date.now();
     try {
@@ -157,6 +165,48 @@ export async function createRoomTask(
     } catch { /* best-effort */ }
   }
   return { board: created.board, task: created.task, ...(plan ? { plan } : {}) };
+}
+
+/**
+ * submitTask for any room, plus the one thing the board write cannot do: tell
+ * the verifier. The submitter gets `awaiting_review` back in its own result;
+ * the agent that now has to rule learns nothing from a Redis key.
+ */
+export async function submitRoomTask(
+  client: UpstashClient,
+  code: string,
+  id: string,
+  submitter: Seat,
+  evidence: Parameters<typeof submitTask>[4],
+  now: number = Date.now(),
+): Promise<Awaited<ReturnType<typeof submitTask>>> {
+  const result = await submitTask(client, code, id, submitter, evidence, now);
+  await announceReviewRequested(client, code, result.task);
+  return result;
+}
+
+/**
+ * reassignTaskRoles for any room, announcing to whoever just inherited the
+ * work — a hand-off nobody hears is the same silence as an unannounced create.
+ *
+ * Deliver rooms are excluded for the reason createRoomTask excludes them: an
+ * owner there waits for the host's Start, and the sweep's own verifier
+ * hand-off already posts its message and calls reassignTaskRoles directly.
+ */
+export async function reassignRoomTaskRoles(
+  client: UpstashClient,
+  code: string,
+  room: Pick<Room, 'replyMode'>,
+  id: string,
+  patch: Parameters<typeof reassignTaskRoles>[3],
+  requester: Seat,
+): Promise<Awaited<ReturnType<typeof reassignTaskRoles>>> {
+  const result = await reassignTaskRoles(client, code, id, patch, requester);
+  // A deliver owner waits for the host's Start event; a new verifier still
+  // needs to hear about a submission already awaiting review.
+  if (room.replyMode !== 'deliver' && patch.owner) await announceTaskAssigned(client, code, result.task);
+  if (patch.verifier) await announceReviewRequested(client, code, result.task);
+  return result;
 }
 
 /**

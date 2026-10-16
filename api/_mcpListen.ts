@@ -339,10 +339,18 @@ export async function boardInbox(
   try {
     const board = await client
       .post<{ board: TaskBoard }>({ action: 'taskBoard', code })
-      .then(b => b.board)
-      .catch(() => null);
+      .then(b => b.board);
     return taskInboxFor(board, name, { addressed, replyMode });
-  } catch {
+  } catch (error) {
+    // A board read that fails is indistinguishable, in the result, from a
+    // board that holds nothing for this agent — so the agent is told to keep
+    // listening while its own task waits. Degrading to "nothing" is still the
+    // right answer (a board outage must not fail a listen), but it must not
+    // be a silent one: this is the only trace that the inbox was guessed.
+    console.warn(
+      `[room_listen] board inbox unavailable for ${name} in ${code}: `
+      + (error instanceof Error ? error.message : String(error)),
+    );
     return none;
   }
 }

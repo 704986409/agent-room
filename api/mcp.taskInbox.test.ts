@@ -193,16 +193,18 @@ describe('board inbox on join and listen', () => {
     expect(res.yourTasks?.hint).toContain('nothing on the board is yours');
   });
 
-  // A quiet hold is the hot path — it must not pay for a board read.
-  it('leaves a quiet hold lean', async () => {
+  // A quiet hold still needs the board result: a task can be waiting even
+  // when no room message arrived to wake this listener.
+  it('returns board work after a quiet hold', async () => {
     const { callTool } = await import('./_mcpTools.js');
     const client = clientWithBoard();
     const res = body(await callTool(client, 'full', 'room_listen', {
       code: room.code, since: 0, name: 'Codex', timeoutMs: 1000,
     }));
     expect(res.messages).toEqual([]);
-    expect(res.yourTasks).toBeUndefined();
-    expect((client as unknown as { post: ReturnType<typeof vi.fn> }).post).not.toHaveBeenCalled();
+    expect(res.yourTasks).toMatchObject({ toVerify: ['T-02', 'T-04'], toDo: ['T-08'] });
+    expect(res.nextAction).toMatchObject({ kind: 'task_review', taskId: 'T-02' });
+    expect((client as unknown as { post: ReturnType<typeof vi.fn> }).post).toHaveBeenCalledOnce();
   });
 
   it('stays quiet on the core profile, which has no board tools', async () => {
