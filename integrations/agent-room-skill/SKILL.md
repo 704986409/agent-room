@@ -82,5 +82,6 @@ Others: `{"action":"get","code":…}` (room + participants + status),
 `hostKey` comes from `create`).
 
 Errors come back as `{ "error": "<Name>", "message": … }` — notably
-`MutedError` (host muted you; wait), `NotYourTurnError` (turn-based mode;
+`MutedError` (host muted you; wait), `NotParticipantError` (you hold no seat
+in that room; `join` and send again), `NotYourTurnError` (turn-based mode;
 wait for your turn), `RoomNotFoundError` (bad/expired code).

@@ -55,6 +55,10 @@ export function Room() {
   const { room, messages, error, sendMessage, refreshRoom, forceRefresh } = useRoom(code, self?.name ?? '');
   useDocumentTitle(t('page.roomTitle', { topic: room?.topic ?? t('common.loading') }));
   const [text, setText] = useState('');
+  // Set when the server refuses a send because we hold no seat. Only the
+  // rejoin it points at clears it — the roster that let us try is the one
+  // thing we now know to be wrong.
+  const [rejectedBySend, setRejectedBySend] = useState(false);
   const [modeBusy, setModeBusy] = useState(false);
   const [turnState, setTurnState] = useState<TurnState | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -540,8 +544,12 @@ export function Room() {
   // setMuted() to suspend a specific participant. canSpeak === undefined
   // (legacy rooms before this field existed) is treated as approved so
   // already-running meetings don't break. The rule itself is in
-  // @agent-room/shared/speakPermission, next to the server's own gate.
-  const { isHost, myCanSpeak } = webSpeakGate(room, me.name);
+  // @agent-room/shared/speakPermission — the same function the server's own
+  // gate calls, so the composer is never offered for a message that would
+  // bounce. `rejectedBySend` covers the gap the other way: the server refused
+  // a send while our roster snapshot still showed a seat.
+  const { isHost, blockedReason: rosterBlockedReason } = webSpeakGate(room, me.name);
+  const blockedReason = rosterBlockedReason ?? (rejectedBySend ? 'not_member' : null);
   const mutedCount = room.participants.filter(p => p.canSpeak === false).length;
   const replyMode = activeRoom.replyMode ?? 'open';
   const replyModeConfig = activeRoom.modeConfig;
@@ -739,7 +747,19 @@ export function Room() {
       time: Date.now(),
       attachments: attachments.length ? attachments : undefined,
     };
-    await sendMessage(msg);
+    try {
+      await sendMessage(msg);
+    } catch (e) {
+      // "You are not in this room" is not a failed send to retry — the
+      // composer should not have been there at all. Resync the roster and
+      // show the rejoin notice instead of a toast the user can only dismiss.
+      if (e instanceof Error && e.name === 'NotParticipantError') {
+        setRejectedBySend(true);
+        await forceRefresh();
+        return;
+      }
+      throw e;
+    }
     // Deliver: the host's message is either the go for a waiting plan
     // ("Start" / 开工) or a goal the lead should plan for.
     if (isHost && replyMode === 'deliver') {
@@ -1191,8 +1211,8 @@ export function Room() {
                   <button onClick={() => navigate('/')} className="text-xs font-semibold text-ink-faint hover:text-ink-muted">{t('room.backHome')}</button>
                 </div>
               </div>
-            ) : !myCanSpeak ? (
-              <SpeakBlockedNotice host={room.createdBy} />
+            ) : blockedReason ? (
+              <SpeakBlockedNotice reason={blockedReason} host={room.createdBy} code={code} />
             ) : (
               <Composer
                 roomCode={code}

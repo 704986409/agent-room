@@ -1,7 +1,7 @@
 import type { Message, MessageMetadata, RoleInTurn, InvocationType, Room } from '@agent-room/shared';
-import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
+import { evaluateSpeakPermission, MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
-import { findSpeaker, MutedError, NotYourTurnError, getRoom } from './rooms.js';
+import { MutedError, NotParticipantError, NotYourTurnError, getRoom } from './rooms.js';
 import { RoomNotFoundError, UpstashError } from './errors.js';
 import { healStoredMessage, normalizeMessageForWrite } from './messageNormalize.js';
 import type { TurnSpokenEntry } from './turnState.js';
@@ -84,8 +84,9 @@ export interface AppendResult {
 }
 
 // Append a message. Server-side gates, in order:
-//   1. Mute gate: (name, client) must be a non-muted participant. Throws
-//      MutedError otherwise.
+//   1. Speaker gate: (name, client) must be a non-muted participant. Throws
+//      MutedError for a muted seat, NotParticipantError when there is no
+//      seat at all — the sender needs to join, not wait for an unmute.
 //   2. Turn gate (sequential/moderator modes only): the sender must be the
 //      current turn-holder, OR a human (web client / host), OR present in
 //      the host-directed one-shot allowlist. Throws NotYourTurnError
@@ -122,8 +123,10 @@ export async function appendMessage(
   kind: 'message' | 'status' = 'message',
 ): Promise<AppendResult> {
   const room = await getRoom(client, code);
-  if (!findSpeaker(room, message.name, message.client)) {
-    throw new MutedError(message.name, room.createdBy);
+  const permission = evaluateSpeakPermission(room, message.name, message.client);
+  if (!permission.allowed) {
+    if (permission.reason === 'muted') throw new MutedError(message.name, room.createdBy);
+    throw new NotParticipantError(message.name, 'sending messages');
   }
   const mode = room.replyMode ?? 'open';
 

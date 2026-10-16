@@ -375,8 +375,8 @@ export async function joinRoom(
     //
     // Once joined, the host can mute (canSpeak → false) any participant
     // via setMuted(); muted participants stay in the room (presence intact,
-    // can read) but room_send is rejected by appendMessage's findSpeaker
-    // gate. Unmute is just setMuted(..., false) flipping it back.
+    // can read) but room_send is rejected by appendMessage's speaker gate
+    // with a MutedError. Unmute is just setMuted(..., false) flipping it back.
     if (next.canSpeak === undefined) {
       next = { ...next, canSpeak: true };
     }
@@ -656,6 +656,21 @@ export class MutedError extends Error {
 
 /** @deprecated Same shape as MutedError, kept for backward compat. */
 export const NotApprovedError = MutedError;
+
+/**
+ * Thrown when someone who holds no seat in the room tries to act as a member
+ * of it — sending a message, registering a webhook. Distinct from MutedError:
+ * a muted participant waits for the host, a non-participant joins.
+ *
+ * `action` completes the sentence so each caller says what was refused.
+ * Re-exported from webhooks.ts, which threw this first.
+ */
+export class NotParticipantError extends Error {
+  constructor(name: string, action = 'registering a webhook') {
+    super(`"${name}" is not a participant of this room — join it before ${action}.`);
+    this.name = 'NotParticipantError';
+  }
+}
 
 // Remove a participant from the room. Only the host (createdBy) may kick.
 // Upstash has no per-call auth so this is a soft guard inside the CAS — anyone

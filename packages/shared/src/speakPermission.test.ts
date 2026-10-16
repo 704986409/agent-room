@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findSpeakerSeat, webSpeakGate } from './speakPermission.js';
+import { evaluateSpeakPermission, findSpeakerSeat, webSpeakGate } from './speakPermission.js';
 import type { Participant, Room } from './types.js';
 
 function seat(over: Partial<Participant> = {}): Participant {
@@ -15,6 +15,36 @@ function room(participants: Participant[], createdBy = 'Robin'): Room {
     status: 'active', version: 1, participants,
   };
 }
+
+describe('evaluateSpeakPermission', () => {
+  it('allows a seated participant who is not muted', () => {
+    const r = room([seat(), seat({ name: 'Claude', client: 'cc' })]);
+    expect(evaluateSpeakPermission(r, 'Claude', 'cc')).toEqual({
+      allowed: true, participant: r.participants[1],
+    });
+  });
+
+  // The distinction issue #6 is about: these two were both `null` before, so
+  // a stranger was told the host had muted them.
+  it('separates a muted seat from a missing one', () => {
+    const muted = seat({ canSpeak: false });
+    expect(evaluateSpeakPermission(room([muted]), 'Robin', 'web')).toEqual({
+      allowed: false, reason: 'muted', participant: muted,
+    });
+    expect(evaluateSpeakPermission(room([]), 'Robin', 'web')).toEqual({
+      allowed: false, reason: 'not_member',
+    });
+  });
+
+  it('treats a legacy seat without canSpeak as allowed', () => {
+    expect(evaluateSpeakPermission(room([seat({ canSpeak: undefined })]), 'Robin', 'web').allowed).toBe(true);
+  });
+
+  it('counts a seat on another client as a different seat', () => {
+    const r = room([seat({ name: 'Claude', client: 'cc' })]);
+    expect(evaluateSpeakPermission(r, 'Claude', 'web')).toEqual({ allowed: false, reason: 'not_member' });
+  });
+});
 
 describe('findSpeakerSeat (server rule)', () => {
   it('returns the seat for a matching (name, client) that can speak', () => {
@@ -36,37 +66,47 @@ describe('findSpeakerSeat (server rule)', () => {
     expect(findSpeakerSeat(room([], 'Robin'), 'Robin', 'web')).toBeNull();
   });
 
-  // The overload issue #6 is about: a muted seat and an absent seat are both
-  // null here, so callers cannot tell the two apart.
   it('returns null for both a muted seat and a missing seat', () => {
     expect(findSpeakerSeat(room([seat({ canSpeak: false })]), 'Robin', 'web')).toBeNull();
     expect(findSpeakerSeat(room([]), 'Robin', 'web')).toBeNull();
   });
 });
 
-describe('webSpeakGate (composer rule, as shipped)', () => {
+describe('webSpeakGate (composer rule)', () => {
   it('allows a seated participant who is not muted', () => {
     const gate = webSpeakGate(room([seat({ name: 'Guest' })], 'Robin'), 'Guest');
-    expect(gate).toMatchObject({ isHost: false, myCanSpeak: true });
+    expect(gate).toMatchObject({ isHost: false, blockedReason: null });
   });
 
   it('blocks a seated participant the host muted', () => {
     const gate = webSpeakGate(room([seat({ name: 'Guest', canSpeak: false })], 'Robin'), 'Guest');
-    expect(gate.myCanSpeak).toBe(false);
+    expect(gate.blockedReason).toBe('muted');
   });
 
-  // Both of these disagree with findSpeakerSeat above — the gap issue #6
-  // closes. Pinned so the alignment shows up as a deliberate change.
-  it('allows the host even with no seat on the roster', () => {
-    expect(webSpeakGate(room([], 'Robin'), 'Robin').myCanSpeak).toBe(true);
+  // The host the room actually has: created the room, joined through the web,
+  // holds a seat. Removing the host exemption must not touch this person.
+  it('allows the host that joined through the web, like any other seat', () => {
+    const gate = webSpeakGate(room([seat({ name: 'Robin' })], 'Robin'), 'Robin');
+    expect(gate).toMatchObject({ isHost: true, blockedReason: null });
   });
 
-  it('allows a non-member whose seat is absent', () => {
-    expect(webSpeakGate(room([seat({ name: 'Guest' })], 'Robin'), 'Stranger').myCanSpeak).toBe(true);
+  // Both of these used to disagree with findSpeakerSeat — the gap issue #6
+  // closes. The composer now refuses exactly what the server refuses.
+  it('blocks the host when the roster has no seat for them', () => {
+    expect(webSpeakGate(room([], 'Robin'), 'Robin').blockedReason).toBe('not_member');
+  });
+
+  it('blocks a non-member whose seat is absent', () => {
+    expect(webSpeakGate(room([seat({ name: 'Guest' })], 'Robin'), 'Stranger').blockedReason).toBe('not_member');
   });
 
   it('ignores a cc seat when judging the web viewer', () => {
     const r = room([seat({ name: 'Claude', client: 'cc', canSpeak: false })], 'Robin');
     expect(webSpeakGate(r, 'Claude').myParticipant).toBeUndefined();
+  });
+
+  it('keeps the muted seat available to the caller', () => {
+    const r = room([seat({ name: 'Guest', canSpeak: false })], 'Robin');
+    expect(webSpeakGate(r, 'Guest').myParticipant?.name).toBe('Guest');
   });
 });

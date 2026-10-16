@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, Room } from '@agent-room/shared';
 import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
-import { appendSystemMessage, createClient, appendMessage, listMessages, NotApprovedError, NotYourTurnError } from '../src/index.js';
+import { appendSystemMessage, createClient, appendMessage, listMessages, NotApprovedError, NotParticipantError, NotYourTurnError } from '../src/index.js';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
 function mockResp(body: unknown) { return new Response(JSON.stringify(body)); }
@@ -157,11 +157,24 @@ describe('appendMessage', () => {
     await expect(appendMessage(client, 'ABC-DEF-GHJ', MSG)).rejects.toBeInstanceOf(NotApprovedError);
   });
 
-  it('throws NotApprovedError when the sender is not in the participants list', async () => {
+  // A sender with no seat was told the host had muted them, which sent agents
+  // into a wait that nothing could end. They are not muted; they never joined.
+  it('throws NotParticipantError when the sender is not in the participants list', async () => {
     const emptyRoom: Room = { ...APPROVED_ROOM, participants: [] };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResp({ result: JSON.stringify(emptyRoom) })));
     const client = createClient(ENV);
-    await expect(appendMessage(client, 'ABC-DEF-GHJ', MSG)).rejects.toBeInstanceOf(NotApprovedError);
+    const error = await appendMessage(client, 'ABC-DEF-GHJ', MSG).catch(e => e);
+    expect(error).toBeInstanceOf(NotParticipantError);
+    expect(error).not.toBeInstanceOf(NotApprovedError);
+    expect(error.message).toContain('join it before sending messages');
+  });
+
+  // Same name, wrong client: the web seat does not let an agent speak as itself.
+  it('throws NotParticipantError when only the other client kind holds the seat', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResp({ result: JSON.stringify(APPROVED_ROOM) })));
+    const client = createClient(ENV);
+    await expect(appendMessage(client, 'ABC-DEF-GHJ', { ...MSG, client: 'cc' }))
+      .rejects.toBeInstanceOf(NotParticipantError);
   });
 });
 

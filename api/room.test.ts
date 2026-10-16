@@ -45,6 +45,7 @@ vi.mock('./_mcpRoomClient.js', async (importOriginal) => {
 });
 
 import handler from './room.js';
+import { NotParticipantError } from '@agent-room/upstash-client';
 import { RemoteRoomApiError } from './_mcpRoomClient.js';
 
 const room: Room & { hostKey: string } = {
@@ -213,6 +214,17 @@ describe('POST /api/room', () => {
     });
     expect(mocks.appendMessage).toHaveBeenCalledWith(mocks.client, room.code, message, 'status');
     expect(res.body).toEqual({ result });
+  });
+
+  // Not 404: whether that room code exists is not this sender's business.
+  it('refuses a send from a non-member with 403', async () => {
+    mocks.appendMessage.mockRejectedValue(new NotParticipantError('Stranger', 'sending messages'));
+    const res = await callHandler('POST', { action: 'send', code: room.code, message });
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toEqual({
+      error: 'NotParticipantError',
+      message: '"Stranger" is not a participant of this room — join it before sending messages.',
+    });
   });
 
   it('returns a host authorization error for systemMessage', async () => {

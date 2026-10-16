@@ -293,6 +293,9 @@ function translate(e: unknown): never {
   if (e instanceof DeliverRuleError) throw new RemoteRoomApiError(e.message, 400, 'bad_request');
   if (e instanceof VerifyNoteRequiredError) throw new RemoteRoomApiError(e.message, 400, 'VerifyNoteRequiredError');
   if (e instanceof MutedError) throw new RemoteRoomApiError(e.message, 403, 'MutedError');
+  // appendMessage throws this for a sender with no seat. Same 403 as a mute —
+  // both mean "not your seat", and a 404 would leak whether the code exists.
+  if (e instanceof NotParticipantError) throw new RemoteRoomApiError(e.message, 403, 'NotParticipantError');
   if (e instanceof NotYourTurnError) throw new RemoteRoomApiError(e.message, 409, 'NotYourTurnError');
   if (e instanceof NotHostError) throw new RemoteRoomApiError(e.message, 403, 'NotHostError');
   if (e instanceof HostNameTakenError) throw new RemoteRoomApiError(e.message, 409, 'HostNameTakenError');

@@ -420,5 +420,5 @@ cd apps/web && nohup npx vite --host 127.0.0.1 --port 5173 > /tmp/agent-room-web
 ```
 - `api.env`：`HOST=127.0.0.1 PORT=3000 PUBLIC_BASE_URL=http://127.0.0.1:3000 UPSTASH_REDIS_REST_URL=http://127.0.0.1:8079 UPSTASH_REDIS_REST_TOKEN=local-dev-token SRH_WEB_URL=http://127.0.0.1:8079 SRH_WEB_TOKEN=local-dev-token WEB_PROXY_TOKEN=local-web-proxy-token`
 - `apps/web/.env.local`：`VITE_PUBLIC_BASE_URL=http://127.0.0.1:3000`、`VITE_UPSTASH_REDIS_REST_URL=http://127.0.0.1:3000/redis`、`VITE_UPSTASH_REDIS_REST_TOKEN=local-web-proxy-token`（和 WEB_PROXY_TOKEN 一样）。
-- 验证：`curl -s localhost:3000/api/room -H 'content-type: application/json' -d '{"action":"create","topic":"t","createdBy":"me"}'`，然后用 `{"action":"get","code":"..."}` 读回来。发消息前要先带 `hostKey` 用同一个名字 `join`，不然会返回 MutedError。
+- 验证：`curl -s localhost:3000/api/room -H 'content-type: application/json' -d '{"action":"create","topic":"t","createdBy":"me"}'`，然后用 `{"action":"get","code":"..."}` 读回来。发消息前要先带 `hostKey` 用同一个名字 `join`，不然会返回 NotParticipantError。
 - 本地数据不落盘（`--save ""`），Redis 重启后房间就没了。

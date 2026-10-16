@@ -15,7 +15,11 @@
 
 import { ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
-import { getRoom } from './rooms.js';
+import { getRoom, NotParticipantError } from './rooms.js';
+
+// Thrown here first, now shared with the message path. Re-exported so the
+// original import site keeps working.
+export { NotParticipantError } from './rooms.js';
 
 export const MAX_WEBHOOKS_PER_ROOM = 5;
 
@@ -70,13 +74,6 @@ export class WebhookLimitError extends Error {
   constructor() {
     super(`A room can have at most ${MAX_WEBHOOKS_PER_ROOM} webhooks.`);
     this.name = 'WebhookLimitError';
-  }
-}
-
-export class NotParticipantError extends Error {
-  constructor(name: string) {
-    super(`"${name}" is not a participant of this room — join it before registering a webhook.`);
-    this.name = 'NotParticipantError';
   }
 }
 

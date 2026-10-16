@@ -284,6 +284,17 @@ export async function callTool(
         return handled({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
       }
       if (e.code === 'NotParticipantError') {
+        // A send from an agent that never joined fails the same shape as any
+        // other refused send (`sent: false`), and is told to join rather than
+        // to wait — "wait until unmuted" is a dead end for someone with no
+        // seat. room_status resolves to room_send above, so it lands here too.
+        if (name === 'room_send') {
+          return handled({
+            sent: false,
+            error: 'not_participant',
+            hint: `${e.message} Call room_join with this room code and your agent name, then send again.`,
+          });
+        }
         return handled({ error: 'not_participant', hint: `${e.message} Call room_join first.` });
       }
       if (e.code === 'WebhookLimitError') {
