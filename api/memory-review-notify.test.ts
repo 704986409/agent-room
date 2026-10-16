@@ -284,6 +284,33 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     }
   });
 
+  it('posts one supersede room event mentioning the affected proposer', async () => {
+    const { notifySupersededMemoryProposals } = await import('./_memoryTools.js');
+    const winningProposalId = randomUUID();
+    const supersededProposalId = randomUUID();
+    const result = await notifySupersededMemoryProposals(
+      {} as never,
+      room.code,
+      room,
+      {
+        supersededProposalNotices: async () => [{
+          id: supersededProposalId,
+          title: 'Shared decision',
+          proposer: { type: 'persona', id: 'persona-alpha', personaId: 'persona-alpha' },
+        }],
+      } as never,
+      winningProposalId,
+      [supersededProposalId],
+    );
+    const event = messages.at(-1)!;
+    expect(result).toBe(true);
+    expect(messages.filter(message => message.text.includes('superseded'))).toHaveLength(1);
+    expect(event.text).toContain('@Agent A');
+    expect(event.text).toContain(supersededProposalId);
+    expect(event.text).toContain(winningProposalId);
+    expect(event.text).toContain('Re-propose against the latest version');
+  });
+
   it('announces update and delete proposals with their own kind', async () => {
     await invoke('memory_update', {
       code: room.code, seatKey: SEAT_KEYS.proposer, scope: 'room', id: randomUUID(),

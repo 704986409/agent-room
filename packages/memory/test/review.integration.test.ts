@@ -86,6 +86,30 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     );
   }
 
+  async function createEntry(roomInstanceId: string, reviewer: MemoryIdentity) {
+    const proposal = await proposeCreate(roomInstanceId, owner(roomInstanceId));
+    await approveDirectly(roomInstanceId, proposal.id, reviewer);
+    return (await repository.listEntries({ roomInstanceId, scope: 'room' }))[0]!;
+  }
+
+  async function proposeUpdate(roomInstanceId: string, targetMemoryId: string, proposer: MemoryIdentity, suffix: string) {
+    return repository.createRoomProposal(
+      { roomInstanceId, scope: 'room' },
+      { action: 'update', targetMemoryId, update: { content: `Replacement ${suffix}` } },
+      proposer,
+      `review-update-${suffix}-${randomUUID()}`,
+    );
+  }
+
+  async function proposeDelete(roomInstanceId: string, targetMemoryId: string, proposer: MemoryIdentity, suffix: string) {
+    return repository.createRoomProposal(
+      { roomInstanceId, scope: 'room' },
+      { action: 'delete', targetMemoryId },
+      proposer,
+      `review-delete-${suffix}-${randomUUID()}`,
+    );
+  }
+
   async function approveDirectly(roomInstanceId: string, proposalId: string, reviewer: MemoryIdentity) {
     return repository.reviewRoomProposal(
       roomInstanceId,
@@ -295,6 +319,101 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
     )).rejects.toMatchObject({ code: 'CONFLICT' });
     expect((await repository.readEntry({ roomInstanceId: roomId, scope: 'room' }, entry.id))?.content)
       .toBe('Newer accepted change');
+  });
+
+  it('supersedes older pending updates atomically and leaves other targets pending', async () => {
+    const roomId = randomUUID();
+    const analyst = persona(`analyst-${randomUUID()}`);
+    const firstEntry = await createEntry(roomId, analyst);
+    const otherEntryProposal = await proposeCreate(roomId, owner(roomId), content({ title: 'Another fact' }));
+    await approveDirectly(roomId, otherEntryProposal.id, analyst);
+    const secondEntry = (await repository.listEntries({ roomInstanceId: roomId, scope: 'room' }))
+      .find(entry => entry.id !== firstEntry.id)!;
+    const losing = await proposeUpdate(roomId, firstEntry.id, persona(`loser-${randomUUID()}`), randomUUID());
+    const winning = await proposeUpdate(roomId, firstEntry.id, persona(`winner-${randomUUID()}`), randomUUID());
+    const unrelated = await proposeUpdate(roomId, secondEntry.id, persona(`other-${randomUUID()}`), randomUUID());
+    const { service } = serviceFor(roomId, analyst);
+
+    const approved = await service.review(
+      reviewerContext(roomId, analyst), winning.id, 'approve', `supersede-${randomUUID()}`,
+    );
+    expect(approved).toMatchObject({ status: 'approved', superseded: [losing.id] });
+    expect((await repository.getRoomProposal(roomId, losing.id))?.status).toBe('superseded');
+    expect((await repository.getRoomProposal(roomId, unrelated.id))?.status).toBe('pending');
+    expect((await service.listPending(reviewerContext(roomId, analyst))).map(item => item.id))
+      .toEqual([unrelated.id]);
+    await expect(service.review(
+      reviewerContext(roomId, analyst), losing.id, 'approve', `stale-${randomUUID()}`,
+    )).rejects.toMatchObject({ code: 'CONFLICT' });
+    const supersededRow = await repository.getRoomProposal(roomId, losing.id);
+    expect(supersededRow).toMatchObject({
+      reviewer_identity_type: analyst.type,
+      reviewer_identity_id: analyst.id,
+      status: 'superseded',
+    });
+    expect(supersededRow?.reviewed_at).toBeInstanceOf(Date);
+  });
+
+  it('supersedes a pending delete when an update is approved', async () => {
+    const roomId = randomUUID();
+    const analyst = persona(`analyst-${randomUUID()}`);
+    const entry = await createEntry(roomId, analyst);
+    const deletion = await proposeDelete(roomId, entry.id, persona(`deleter-${randomUUID()}`), randomUUID());
+    const update = await proposeUpdate(roomId, entry.id, persona(`updater-${randomUUID()}`), randomUUID());
+    const { service } = serviceFor(roomId, analyst);
+    const result = await service.review(
+      reviewerContext(roomId, analyst), update.id, 'approve', `approve-update-${randomUUID()}`,
+    );
+    expect(result.superseded).toEqual([deletion.id]);
+    expect((await repository.getRoomProposal(roomId, deletion.id))?.status).toBe('superseded');
+  });
+
+  it('supersedes every pending update or delete when a delete is approved', async () => {
+    const roomId = randomUUID();
+    const analyst = persona(`analyst-${randomUUID()}`);
+    const entry = await createEntry(roomId, analyst);
+    const update = await proposeUpdate(roomId, entry.id, persona(`updater-${randomUUID()}`), randomUUID());
+    const winner = await proposeDelete(roomId, entry.id, persona(`winner-${randomUUID()}`), randomUUID());
+    const { service } = serviceFor(roomId, analyst);
+    const result = await service.review(
+      reviewerContext(roomId, analyst), winner.id, 'approve', `approve-delete-${randomUUID()}`,
+    );
+    expect(result.superseded).toEqual([update.id]);
+    expect((await repository.getRoomProposal(roomId, update.id))?.status).toBe('superseded');
+    expect(await repository.readEntry({ roomInstanceId: roomId, scope: 'room' }, entry.id)).toBeNull();
+  });
+
+  it('routes a reviewer proposer to the host when no other online reviewer remains', async () => {
+    const roomId = randomUUID();
+    const soleReviewer = persona(`sole-reviewer-${randomUUID()}`);
+    const proposal = await proposeCreate(roomId, soleReviewer);
+    const service = multiServiceFor(roomId, [{ identity: soleReviewer, online: true }]);
+    const mention = await service.mentionReviewers(roomId, proposal.id);
+    expect(mention).toMatchObject({ mode: 'owner_fallback', reviewCode: 'REVIEWER_UNAVAILABLE' });
+    expect(mention.notifications.map(item => item.recipient)).toEqual([owner(roomId)]);
+    await expect(service.review(
+      reviewerContext(roomId, soleReviewer), proposal.id, 'approve', `self-${randomUUID()}`,
+    )).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    const listed = await service.listPending(reviewerContext(roomId, owner(roomId)));
+    expect(listed.map(item => item.id)).toContain(proposal.id);
+    expect((await service.review(
+      reviewerContext(roomId, owner(roomId)), proposal.id, 'approve', `host-${randomUUID()}`,
+    )).status).toBe('approved');
+  });
+
+  it('routes to a second online reviewer when the proposer is also a reviewer seat', async () => {
+    const roomId = randomUUID();
+    const proposer = persona(`reviewer-proposer-${randomUUID()}`);
+    const secondReviewer = persona(`reviewer-second-${randomUUID()}`);
+    const proposal = await proposeCreate(roomId, proposer);
+    const service = multiServiceFor(roomId, [
+      { identity: proposer, online: true }, { identity: secondReviewer, online: true },
+    ]);
+    const mention = await service.mentionReviewers(roomId, proposal.id);
+    expect(mention.notifications.map(item => item.recipient)).toEqual([secondReviewer]);
+    await expect(service.listPending(reviewerContext(roomId, proposer)))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect((await service.listPending(reviewerContext(roomId, secondReviewer))).map(item => item.id)).toContain(proposal.id);
   });
 
   it('requires verifiable reviewer identity before showing or changing proposals', async () => {

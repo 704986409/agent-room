@@ -132,6 +132,13 @@ export interface MemoryReviewResult {
   readonly status: 'approved' | 'rejected';
   readonly proposalId: string;
   readonly version?: number;
+  readonly superseded?: readonly string[];
+}
+
+export interface MemorySupersededProposalNotice {
+  readonly id: string;
+  readonly title: string;
+  readonly proposer: MemoryIdentity;
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -212,6 +219,7 @@ function resultFromRepository(result: MemoryMutationResult, decision: MemoryRevi
       status: result.status,
       proposalId: result.id,
       ...(result.version === undefined ? {} : { version: result.version }),
+      ...(result.superseded === undefined ? {} : { superseded: result.superseded }),
     };
   }
   if (result.status === 'pending_review') throw new MemoryServiceError('PENDING_REVIEW');
@@ -232,9 +240,22 @@ export class MemoryReviewService {
   ): Promise<MemoryReviewProposalView[]> {
     return this.execute(async () => {
       const trusted = validateContext(context);
-      await this.assertExpectedReviewer(trusted.roomInstanceId, trusted.identity);
       const proposals = await this.repository.listPendingRoomProposals(trusted.roomInstanceId, options);
-      return Promise.all(proposals.map(async proposal => {
+      const visible = [];
+      let denied: MemoryServiceError | undefined;
+      for (const proposal of proposals) {
+        try {
+          await this.assertExpectedReviewer(trusted.roomInstanceId, trusted.identity, proposerOf(proposal));
+          visible.push(proposal);
+        } catch (error) {
+          if (!(error instanceof MemoryServiceError)
+            || !['FORBIDDEN', 'REVIEW_REQUIRED', 'REVIEWER_UNAVAILABLE'].includes(error.code)) throw error;
+          denied ??= error;
+        }
+      }
+      if (proposals.length === 0) await this.assertExpectedReviewer(trusted.roomInstanceId, trusted.identity);
+      if (proposals.length > 0 && visible.length === 0 && denied) throw denied;
+      return Promise.all(visible.map(async proposal => {
         const current = proposal.target_memory_id
           ? await this.repository.readEntry(
             { roomInstanceId: trusted.roomInstanceId, scope: 'room' },
@@ -262,6 +283,7 @@ export class MemoryReviewService {
       const idempotencyKey = validateRequestId(requestId);
       const proposal = await this.repository.getRoomProposal(trusted.roomInstanceId, id);
       if (!proposal) throw new MemoryServiceError('NOT_FOUND');
+      if (proposal.status === 'superseded') throw new MemoryServiceError('CONFLICT');
       if (proposal.proposer_identity_type === trusted.identity.type
         && proposal.proposer_identity_id === trusted.identity.id) {
         throw new MemoryServiceError('FORBIDDEN');
@@ -296,6 +318,24 @@ export class MemoryReviewService {
         await this.repository.reviewRoomProposal(trusted.roomInstanceId, id, trusted.identity, choice, idempotencyKey),
         choice,
       );
+    });
+  }
+
+  async supersededProposalNotices(
+    roomInstanceId: string,
+    proposalIds: readonly string[],
+  ): Promise<MemorySupersededProposalNotice[]> {
+    if (typeof roomInstanceId !== 'string' || !UUID_PATTERN.test(roomInstanceId)) {
+      throw new TypeError('room_instance_id must be a UUID.');
+    }
+    const proposals = await this.repository.getRoomProposals(roomInstanceId, proposalIds);
+    return proposals.map(proposal => {
+      const payload = proposal.payload as Record<string, unknown>;
+      return {
+        id: proposal.id,
+        title: typeof payload.title === 'string' ? payload.title : 'Untitled memory',
+        proposer: proposerOf(proposal),
+      };
     });
   }
 

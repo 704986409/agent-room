@@ -11,7 +11,9 @@ import type { Message } from '@agent-room/shared';
 import {
   buildMemoryReviewNoticeMessage,
   buildMemoryReviewNoticeText,
+  buildMemorySupersededNoticeMessage,
   deliverMemoryReviewNotice,
+  deliverMemorySupersededNotice,
   type MemoryReviewNotice,
 } from './_memoryReviewNotify.js';
 
@@ -91,6 +93,26 @@ describe('memory review notice message', () => {
       role: 'System',
     });
     expect(message.text).toContain(PROPOSAL_ID);
+  });
+});
+
+describe('superseded proposal notice', () => {
+  it('mentions the proposer and names the winning proposal', async () => {
+    const append = vi.fn(async (_code: string, _message: Message) => ({ appended: true }));
+    const items = [{
+      proposalId: PROPOSAL_ID,
+      title: 'Shared decision',
+      proposerName: 'Agent A',
+      winningProposalId: '8d4494c0-2806-4aec-9d5f-f57fc6d8030b',
+    }];
+    const message = buildMemorySupersededNoticeMessage(items, 1_700_000_000_001);
+    expect(message.text).toContain('@Agent A');
+    expect(message.text).toContain('Memory proposal');
+    expect(message.text).toContain('superseded');
+    expect(message.text).toContain('Shared decision');
+    expect(message.text).toContain(items[0]!.winningProposalId);
+    expect(await deliverMemorySupersededNotice(append, 'AAA-BBB-CCC', items)).toBe(true);
+    expect(append).toHaveBeenCalledTimes(1);
   });
 });
 

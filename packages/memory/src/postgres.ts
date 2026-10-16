@@ -21,7 +21,7 @@ import {
   type MemoryUpdate,
 } from './types.js';
 
-const REQUIRED_SCHEMA_VERSION = 2;
+const REQUIRED_SCHEMA_VERSION = 4;
 const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
@@ -689,6 +689,21 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return result.rows[0] ? proposalFromRow(result.rows[0]) : null;
   }
 
+  async getRoomProposals(roomInstanceId: string, proposalIds: readonly string[]): Promise<MemoryProposal[]> {
+    if (proposalIds.length === 0) return [];
+    const result = await this.pool.query<ProposalRow>(
+      `SELECT id, room_instance_id, action, target_memory_id, target_version,
+         target_updated_at, payload, proposer_persona_id, proposer_identity_type,
+         proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
+         request_id, created_at, reviewed_at
+       FROM agent_memory_proposals
+       WHERE room_instance_id = $1 AND id = ANY($2::uuid[]) AND status = 'superseded'
+       ORDER BY created_at ASC, id ASC`,
+      [roomInstanceId, [...proposalIds]],
+    );
+    return result.rows.map(proposalFromRow);
+  }
+
   async listPendingRoomProposals(roomInstanceId: string, options: ListMemoryOptions = {}): Promise<MemoryProposal[]> {
     if (!roomInstanceId.trim()) throw new TypeError('room_instance_id is required.');
     const { limit, offset } = assertValidPage(options);
@@ -750,10 +765,26 @@ export class PostgresMemoryRepository implements MemoryRepository {
          WHERE room_instance_id = $1 AND id = $2 AND status = 'pending'`,
         [roomInstanceId, proposal.id, targetStatus, reviewer.type, reviewer.id],
       );
+      let superseded: string[] = [];
+      if (decision === 'approve' && proposal.action !== 'create') {
+        const rows = await client.query<{ id: string }>(
+          `UPDATE agent_memory_proposals
+           SET status = 'superseded', reviewer_identity_type = $4,
+               reviewer_identity_id = $5, reviewed_at = clock_timestamp()
+           WHERE room_instance_id = $1 AND target_memory_id = $2 AND id <> $3
+             AND status = 'pending' AND action IN ('update', 'delete')
+             AND ($6::boolean OR target_version < $7)
+           RETURNING id`,
+          [roomInstanceId, proposal.target_memory_id, proposal.id, reviewer.type, reviewer.id,
+            proposal.action === 'delete', appliedVersion],
+        );
+        superseded = rows.rows.map(row => row.id);
+      }
       return {
         status: targetStatus,
         id: proposal.id,
         ...(appliedVersion === undefined ? {} : { version: appliedVersion }),
+        ...(decision === 'approve' ? { superseded } : {}),
       };
     });
   }

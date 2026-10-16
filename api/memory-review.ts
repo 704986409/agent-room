@@ -6,10 +6,11 @@ import {
   MemoryServiceError,
   PostgresMemoryRepository,
   ReviewerPolicy,
+  type MemoryReviewResult,
   type TrustedMemoryReviewer,
 } from '@agent-room/memory';
 import { createRemoteRoomClient, getRoom, RemoteRoomApiError } from './_mcpRoomClient.js';
-import { reviewerDirectory } from './_memoryTools.js';
+import { notifySupersededMemoryProposals, reviewerDirectory } from './_memoryTools.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -27,8 +28,9 @@ export interface MemoryReviewRoomContext {
 }
 
 export interface MemoryReviewRuntimeContext {
-  readonly service: Pick<MemoryReviewService, 'listPending' | 'review'>;
+  readonly service: Pick<MemoryReviewService, 'listPending' | 'review' | 'supersededProposalNotices'>;
   readonly caller: TrustedMemoryReviewer;
+  notifySuperseded?(result: MemoryReviewResult): Promise<boolean | undefined>;
   close(): Promise<void>;
 }
 
@@ -92,7 +94,8 @@ function productionRuntime(): MemoryReviewHttpRuntime {
       const role = process.env.MEMORY_REVIEWER_ROLE?.trim() || 'project-analyst';
       // The hostKey proves the owner; reviewer seats come from live seatKey-bound
       // participants, so the owner may decide only when every reviewer is offline.
-      const seats = room.code ? reviewerDirectory(createRemoteRoomClient(undefined), room.code) : null;
+      const client = createRemoteRoomClient(undefined);
+      const seats = room.code ? reviewerDirectory(client, room.code) : null;
       const policy = new ReviewerPolicy({
         findReviewerByRole: async (id, r) => seats ? seats.findReviewerByRole(id, r) : null,
         isAvailable: async (id, identity) => seats ? seats.isAvailable(id, identity) : false,
@@ -104,9 +107,16 @@ function productionRuntime(): MemoryReviewHttpRuntime {
         identity: { type: 'room_owner', id: room.roomInstanceId },
         verified: true,
       };
+      const service = new MemoryReviewService(repository, policy);
+      const fallbackRoom = room.code ? await getRoom(client, room.code).catch(() => null) : null;
       return {
-        service: new MemoryReviewService(repository, policy),
+        service,
         caller,
+        notifySuperseded: room.code && fallbackRoom
+          ? result => notifySupersededMemoryProposals(
+            client, room.code!, fallbackRoom, service, result.proposalId, result.superseded,
+          )
+          : undefined,
         close: () => repository.close(),
       };
     },
@@ -180,7 +190,13 @@ export function createMemoryReviewHandler(runtime: MemoryReviewHttpRuntime = pro
           action,
           body.requestId as string,
         );
-        res.status(200).json(result);
+        const supersededNotificationDelivered = action === 'approve'
+          ? await context.notifySuperseded?.(result)
+          : undefined;
+        res.status(200).json({
+          ...result,
+          ...(supersededNotificationDelivered === undefined ? {} : { supersededNotificationDelivered }),
+        });
         return;
       }
     } catch (error) {

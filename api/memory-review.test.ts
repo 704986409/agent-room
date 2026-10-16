@@ -124,6 +124,41 @@ describe('P5 memory review HTTP API', () => {
     }
   });
 
+  it('lets the verified host approve a proposal and attempts its supersede notice', async () => {
+    const roomInstanceId = randomUUID();
+    const proposalId = randomUUID();
+    const winning = { status: 'approved', proposalId, version: 2, superseded: [randomUUID()] };
+    const service = {
+      listPending: vi.fn(),
+      review: vi.fn(async () => winning),
+      supersededProposalNotices: vi.fn(async () => []),
+    };
+    const notifySuperseded = vi.fn(async () => true);
+    const runtime: MemoryReviewHttpRuntime = {
+      resolveRoom: async () => ({ roomInstanceId }),
+      createContext: async () => ({
+        service: service as never,
+        caller: { roomInstanceId, identity: { type: 'room_owner', id: roomInstanceId }, verified: true },
+        notifySuperseded,
+        close: async () => {},
+      }),
+    };
+    const handler = createMemoryReviewHandler(runtime);
+    const res = response();
+    await handler(request('POST', {
+      action: 'approve', code: 'AAA-BBB-CCC', hostKey: 'valid', proposalId, requestId: 'host-approval',
+    }), res.res);
+    expect(res.status()).toBe(200);
+    expect(service.review).toHaveBeenCalledWith(
+      expect.objectContaining({ identity: { type: 'room_owner', id: roomInstanceId } }),
+      proposalId,
+      'approve',
+      'host-approval',
+    );
+    expect(notifySuperseded).toHaveBeenCalledWith(winning);
+    expect(res.body()).toMatchObject({ status: 'approved', superseded: winning.superseded });
+  });
+
   it('rejects unsupported methods and actions with stable API errors', async () => {
     const runtime: MemoryReviewHttpRuntime = {
       resolveRoom: async () => ({ roomInstanceId: randomUUID() }),

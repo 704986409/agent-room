@@ -64,6 +64,7 @@ export interface MemoryRepository {
   ): Promise<MemoryMutationResult>;
 
   getRoomProposal(roomInstanceId: string, proposalId: string): Promise<MemoryProposal | null>;
+  getRoomProposals(roomInstanceId: string, proposalIds: readonly string[]): Promise<MemoryProposal[]>;
   listPendingRoomProposals(roomInstanceId: string, options?: ListMemoryOptions): Promise<MemoryProposal[]>;
 
   reviewRoomProposal(

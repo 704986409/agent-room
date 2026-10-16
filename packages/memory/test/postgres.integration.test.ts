@@ -508,7 +508,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     await expect(repository.reviewRoomProposal(roomInstanceId, older.id, reviewer, 'approve', 'snapshot-approve-older'))
       .rejects.toBeInstanceOf(MemoryConflictError);
     expect((await repository.readEntry(scope, entry!.id))?.content).toBe('Newer accepted fact');
-    expect((await repository.getRoomProposal(roomInstanceId, older.id))?.status).toBe('pending');
+    expect((await repository.getRoomProposal(roomInstanceId, older.id))?.status).toBe('superseded');
   });
 
   it('detects an updated_at-only change against the proposal snapshot', async () => {

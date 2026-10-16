@@ -41,7 +41,7 @@ export interface MemoryContentSegment {
 }
 
 export type MemoryProposalAction = 'create' | 'update' | 'delete';
-export type MemoryProposalStatus = 'pending' | 'approved' | 'rejected';
+export type MemoryProposalStatus = 'pending' | 'approved' | 'rejected' | 'superseded';
 export type MemoryReviewDecision = 'approve' | 'reject';
 
 export interface MemoryContent {
@@ -116,6 +116,8 @@ export interface MemoryMutationResult {
   version?: number;
   /** pending_review only: the existing identical pending proposal that was returned. */
   duplicateOf?: string;
+  /** Proposal IDs made obsolete by an approved update or delete. */
+  superseded?: string[];
 }
 
 export interface ListMemoryOptions {
