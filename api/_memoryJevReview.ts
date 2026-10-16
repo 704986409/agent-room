@@ -1,5 +1,7 @@
 import { redactSecretText, type Message } from '@agent-room/shared';
 import {
+  keywordSimilarity,
+  memoryKeywords,
   resolveJevReviewer,
   type MemoryReviewRejectionReason,
   type MemoryRepository,
@@ -12,7 +14,7 @@ type PendingResult = Extract<MemoryServiceMutationResult, { code: 'PENDING_REVIE
 
 export interface MemoryJevReviewOptions {
   readonly result: PendingResult;
-  readonly repository: Pick<MemoryRepository, 'getRoomProposal' | 'readEntry' | 'listEntries'>;
+  readonly repository: Pick<MemoryRepository, 'getRoomProposal' | 'readEntry' | 'findRoomCreateDuplicateCandidates'>;
   readonly reviews: Pick<MemoryReviewService, 'reviewAsSystem' | 'reviewerSetForProposal'>;
   readonly roomInstanceId: string;
   readonly proposerName: string;
@@ -61,14 +63,16 @@ export async function tryJevMemoryReview(options: MemoryJevReviewOptions): Promi
     const content = typeof payload.content === 'string' ? payload.content : current?.content;
     if (!title || !content) throw new Error('Memory proposal content is incomplete.');
 
-    const entries = await options.repository.listEntries(
+    // Rank the whole room by keyword overlap so Jev sees the most relevant memories, not just the newest.
+    const candidateKeywords = memoryKeywords(`${title} ${content}`);
+    const existingMemories = (await options.repository.findRoomCreateDuplicateCandidates(
       { roomInstanceId: options.roomInstanceId, scope: 'room' },
-      { limit: 21 },
-    );
-    const existingMemories = entries
-      .filter(entry => entry.id !== proposal.target_memory_id)
+    ))
+      .filter(entry => entry.id !== proposal.id && entry.id !== proposal.target_memory_id)
+      .map(entry => ({ entry, score: keywordSimilarity(candidateKeywords, memoryKeywords(`${entry.title} ${entry.content}`)) }))
+      .sort((a, b) => b.score - a.score)
       .slice(0, 20)
-      .map(entry => ({ title: entry.title, content: entry.content }));
+      .map(({ entry }) => ({ title: entry.title, content: entry.content }));
     const decision = await reviewer.review({
       action: proposal.action,
       title,

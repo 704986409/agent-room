@@ -30,6 +30,13 @@ function disabled(value: string | undefined): boolean {
   return ['0', 'false', 'off'].includes(value?.trim().toLowerCase() ?? '');
 }
 
+/** Jev's language check is weak on CJK vs Latin; reject clearly non-Chinese text in code, with no API call. */
+export function mostlyChinese(text: string): boolean {
+  const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+  const latin = text.replace(/[A-Za-z0-9_.\-/:]+/gu, m => (/^[a-z]+$/iu.test(m) ? 'w' : '')).match(/w/gu)?.length ?? 0;
+  return han > 0 && han >= latin;
+}
+
 const QUESTIONS: Record<string, JevQuestion> = {
   is_chinese: {
     type: 'noul',
@@ -64,6 +71,7 @@ export function resolveJevReviewer(env: NodeJS.ProcessEnv = process.env): JevRev
   return {
     async review(input) {
       if (input.action === 'delete') return undefined;
+      if (!mostlyChinese(`${input.title}${input.content}`)) return { decision: 'reject', reason: '格式不合规' };
       const answers = await client.ask({
         action: input.action,
         title: input.title,

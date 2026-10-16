@@ -699,14 +699,14 @@ export class PostgresMemoryRepository implements MemoryRepository {
         `SELECT id, title, content FROM (
            SELECT id, title, content, created_at FROM agent_memory_entries
            WHERE room_instance_id = $1 AND scope = 'room' AND persona_id IS NULL AND deleted_at IS NULL
-           ORDER BY created_at DESC, id DESC LIMIT 500
+           ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
       ),
       this.pool.query<{ id: string; payload: MemoryContent }>(
         `SELECT id, payload FROM (
            SELECT id, payload, created_at FROM agent_memory_proposals
            WHERE room_instance_id = $1 AND action = 'create' AND status = 'pending'
-           ORDER BY created_at DESC, id DESC LIMIT 500
+           ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
       ),
     ]);

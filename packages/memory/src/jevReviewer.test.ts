@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveJevReviewer, type JevReviewInput } from './jevReviewer.js';
+import { mostlyChinese, resolveJevReviewer, type JevReviewInput } from './jevReviewer.js';
 type FetchArgs = [input: RequestInfo | URL, init?: RequestInit];
 
 const input: JevReviewInput = {
@@ -65,5 +65,18 @@ describe('Jev reviewer', () => {
     vi.stubGlobal('fetch', fetchMock);
     expect(await resolveJevReviewer()!.review({ ...input, action: 'delete' })).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects mostly non-Chinese text locally without calling Jev', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-key');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const reviewer = resolveJevReviewer()!;
+    expect(await reviewer.review({ action: 'create', title: 'Lint', content: 'Always run the linter before pushing.', existingMemories: [] }))
+      .toEqual({ decision: 'reject', reason: '格式不合规' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+  it('keeps Chinese text with embedded identifiers', () => {
+    expect(mostlyChinese('本地 Redis 直连用 6379，8079 是代理。')).toBe(true);
   });
 });

@@ -172,8 +172,8 @@ const dependencies = {
         target_version: null,
         target_updated_at: null,
         payload: {
-          title: 'Shared decision', preview: 'The room keeps the shared index.',
-          content: 'The room decided to retain the shared index.', searchText: 'shared-index-decision',
+          title: '共享索引决定', preview: '房间保留共享索引。',
+          content: '房间决定保留共享索引。', searchText: 'shared-index-decision',
         },
         proposer_persona_id: 'persona-alpha',
         proposer_identity_type: 'persona',
@@ -188,7 +188,7 @@ const dependencies = {
       };
     },
     async readEntry() { return null; },
-    async listEntries() { return []; },
+    async findRoomCreateDuplicateCandidates() { return []; },
   }),
   redis: { sendCommand: async () => null },
 };
@@ -218,6 +218,7 @@ const propose = (overrides: Record<string, unknown> = {}) => invoke('memory_writ
   requestId: `write-${randomUUID()}`,
   ...overrides,
 });
+const ZH = { title: '共享索引决定', preview: '房间保留共享索引。', content: '房间决定保留共享索引。' };
 
 const noticeTexts = () => messages
   .filter(message => message.text.includes('Memory review needed'))
@@ -260,7 +261,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
       },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
 
-    const result = await propose();
+    const result = await propose(ZH);
     expect(result).toMatchObject({
       code: 'APPROVED',
       status: 'approved',
@@ -269,7 +270,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     });
     expect(systemReviewCalls).toHaveLength(1);
     expect(mention instanceof Error).toBe(false);
-    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议已通过：Shared decision（审核员：Jev）');
+    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议已通过：共享索引决定（审核员：Jev）');
     expect(noticeTexts()).toHaveLength(0);
   });
 
@@ -304,7 +305,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
       reason: '重复记忆',
     });
     expect(result).toMatchObject({ status: 'rejected', reason: '重复记忆', notificationDelivered: true });
-    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议被驳回（重复记忆）：Shared decision（审核员：Project Analyst）');
+    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议被驳回（重复记忆）：共享索引决定（审核员：Project Analyst）');
   });
 
   it.each([
@@ -320,9 +321,9 @@ describe('shared memory proposals reach the reviewer through the room', () => {
       model: 'jev-1.13.0',
       answers: Object.fromEntries(Object.entries(scores).map(([id, noul]) => [id, { type: 'noul', noul }])),
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
-    const result = await propose();
+    const result = await propose(ZH);
     expect(result).toMatchObject({ code: 'REJECTED', status: 'rejected', reviewer: 'jev', reason });
-    expect(messages.at(-1)?.text).toBe(`@Agent A 记忆提议被驳回（${reason}）：Shared decision（审核员：Jev）`);
+    expect(messages.at(-1)?.text).toBe(`@Agent A 记忆提议被驳回（${reason}）：共享索引决定（审核员：Jev）`);
   });
 
   it('falls back to reviewer notifications after a Jev API error', async () => {
@@ -332,7 +333,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response('', { status: 429 })));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
-      const result = await propose();
+      const result = await propose(ZH);
       expect(result).toMatchObject({ code: 'PENDING_REVIEW', reviewCode: 'REVIEWER_UNAVAILABLE', notificationDelivered: true });
       expect(systemReviewCalls).toHaveLength(0);
       expect(mention instanceof Error).toBe(false);
