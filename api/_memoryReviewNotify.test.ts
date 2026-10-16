@@ -114,6 +114,17 @@ describe('superseded proposal notice', () => {
     expect(await deliverMemorySupersededNotice(append, 'AAA-BBB-CCC', items)).toBe(true);
     expect(append).toHaveBeenCalledTimes(1);
   });
+
+  it('uses memory when a superseded notice has no usable title', () => {
+    const message = buildMemorySupersededNoticeMessage([{
+      proposalId: PROPOSAL_ID,
+      title: '   ',
+      proposerName: 'Agent A',
+      winningProposalId: '8d4494c0-2806-4aec-9d5f-f57fc6d8030b',
+    }], 1_700_000_000_001);
+    expect(message.text).toContain('"memory"');
+    expect(message.text).not.toContain('Untitled memory');
+  });
 });
 
 describe('deliverMemoryReviewNotice', () => {

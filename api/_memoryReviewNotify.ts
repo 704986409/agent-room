@@ -114,7 +114,7 @@ export function buildMemorySupersededNoticeMessage(
 ): Message {
   const lines = items.map(item => {
     const proposer = safeText(item.proposerName, NAME_MAX_CHARS) || 'the proposer';
-    const title = safeText(item.title, TITLE_MAX_CHARS) || 'Untitled memory';
+    const title = safeText(item.title, TITLE_MAX_CHARS) || 'memory';
     return `@${proposer} 🗂️ Memory proposal ${item.proposalId} superseded: "${title}" was updated by ${item.winningProposalId}. Re-propose against the latest version if still needed.`;
   });
   return {

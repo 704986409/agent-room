@@ -338,6 +338,10 @@ describe('P5 shared Memory review with PostgreSQL 17', () => {
       reviewerContext(roomId, analyst), winning.id, 'approve', `supersede-${randomUUID()}`,
     );
     expect(approved).toMatchObject({ status: 'approved', superseded: [losing.id] });
+    expect(await service.supersededProposalNotices(roomId, [losing.id])).toMatchObject([{
+      id: losing.id,
+      title: 'Shared fact',
+    }]);
     expect((await repository.getRoomProposal(roomId, losing.id))?.status).toBe('superseded');
     expect((await repository.getRoomProposal(roomId, unrelated.id))?.status).toBe('pending');
     expect((await service.listPending(reviewerContext(roomId, analyst))).map(item => item.id))

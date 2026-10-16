@@ -276,7 +276,7 @@ const MEMORY_TOOLS: ToolDef[] = [
   },
   {
     name: 'memory_write',
-    description: 'Judge whether this may matter for future tasks: propose durable conventions, technical decisions, pitfalls/lessons, or user/host preferences; don’t propose trivia or duplicates. Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
+    description: '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。 Write directly to your verified Persona scope, or create a pending Room proposal for review. Caller identity comes only from seatKey; name, role, and Persona IDs are not caller inputs.',
     inputSchema: { type: 'object', required: ['code', 'seatKey', 'scope', 'title', 'preview', 'content', 'searchText', 'requestId'], properties: {
       code: CODE_PROP, seatKey: { type: 'string' }, scope: { type: 'string', enum: ['persona', 'room'] },
       title: { type: 'string' }, preview: { type: 'string' }, content: { type: 'string' }, searchText: { type: 'string' },
@@ -395,7 +395,7 @@ export const SERVER_INSTRUCTIONS = [
   'CONTEXT: join/listen may include a digest of older turns. When digest is present it supersedes earlier listen dumps — do not treat the client chat history as the full room. Refresh with room_minutes snapshot=true.',
 ].join('\n');
 
-const MEMORY_INSTRUCTION = 'MEMORY: judge for yourself — will this matter for future tasks in this room? Project conventions, technical decisions, pitfalls/lessons, user/host preferences → propose once with memory_write (scope room); transient chat/status, one-off task details, or anything already in memory → don’t. memory_search before unfamiliar work.';
+const MEMORY_INSTRUCTION = '记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。例子：\n- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。\n- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。\n- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。\n不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。';
 
 /** Dynamic instructions keep memory guidance in step with the listed tools. */
 export function serverInstructions(): string {

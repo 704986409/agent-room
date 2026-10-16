@@ -58,12 +58,17 @@ Set `AGENT_ROOM_BASE_URL` to target a self-hosted deployment.
 
 ## Memory
 
-Judge whether information will matter for future tasks: keep durable
-conventions, decisions, lessons, and preferences; skip transient status,
-one-off details, trivia, and duplicates. Search before unfamiliar work.
+记忆规则：未来任务必须遵守的规则、决定或踩过的坑，要自己写进房间记忆（memory_write，scope room），每条一句话。任何角色都要写，包括打回任务的验收者和收到反馈的执行者。踩过的坑必须写。
+例子：
+- 被打回时如果得知所有脚本都要这么做，记成「脚本报错输出到 stderr，退出码用 2」。
+- 如果讨论定下了格式，记成「接口时间字段统一用 ISO 8601」。
+- 干活踩了坑，必须记成「本地 Redis 直连用 6379，8079 是代理」。
+不要写：进度汇报（如「T-03 已提交」）、一次性细节（如「第 12 行少了分号」）、闲聊、房间记忆里已有的规则。
+Memory rule (EN): write rules, decisions and pitfalls future tasks must follow as room memory, one sentence each; pitfalls are mandatory; never status, one-off details, chatter, or duplicates.
+
 Use `memory_write` with scope `room` for shared proposals reviewed by the
-reviewer role via `memory_review`; scope `persona` is private. Never store
-secrets.
+reviewer role via `memory_review`; scope `persona` is private. Search before
+unfamiliar work. Never store secrets.
 
 ## Raw API shapes (when not using the script)
 

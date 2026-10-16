@@ -329,14 +329,20 @@ export class MemoryReviewService {
       throw new TypeError('room_instance_id must be a UUID.');
     }
     const proposals = await this.repository.getRoomProposals(roomInstanceId, proposalIds);
-    return proposals.map(proposal => {
+    return Promise.all(proposals.map(async proposal => {
       const payload = proposal.payload as Record<string, unknown>;
+      const current = proposal.target_memory_id
+        ? await this.repository.readEntry(
+          { roomInstanceId, scope: 'room' },
+          proposal.target_memory_id,
+        ).catch(() => null)
+        : null;
       return {
         id: proposal.id,
-        title: typeof payload.title === 'string' ? payload.title : 'Untitled memory',
+        title: current?.title || (typeof payload.title === 'string' ? payload.title : '') || 'memory',
         proposer: proposerOf(proposal),
       };
-    });
+    }));
   }
 
   /** Notify every reviewer allowed to review the proposal (all online reviewers, else the owner fallback). */

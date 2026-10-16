@@ -37,10 +37,17 @@ describe('memory guidance stays static and gated', () => {
     try {
       delete process.env.MEMORY_ENABLED;
       delete process.env.MEMORY_DATABASE_URL;
-      expect(serverInstructions()).not.toContain('MEMORY:');
+      expect(serverInstructions()).not.toContain('记忆规则：');
+      expect(serverInstructions()).not.toContain('脚本报错输出到 stderr，退出码用 2');
+      expect(serverInstructions()).not.toContain('接口时间字段统一用 ISO 8601');
+      expect(serverInstructions()).not.toContain('本地 Redis 直连用 6379，8079 是代理');
       process.env.MEMORY_ENABLED = 'true';
       process.env.MEMORY_DATABASE_URL = 'configured';
-      expect(serverInstructions()).toContain('MEMORY: judge for yourself — will this matter for future tasks in this room?');
+      const instructions = serverInstructions();
+      expect(instructions).toContain('记忆规则：');
+      expect(instructions).toContain('脚本报错输出到 stderr，退出码用 2');
+      expect(instructions).toContain('接口时间字段统一用 ISO 8601');
+      expect(instructions).toContain('本地 Redis 直连用 6379，8079 是代理');
       expect(listTools('full').some(tool => tool.name === 'memory_write')).toBe(true);
     } finally {
       if (previousEnabled === undefined) delete process.env.MEMORY_ENABLED;
@@ -58,8 +65,11 @@ describe('memory guidance stays static and gated', () => {
       process.env.MEMORY_DATABASE_URL = 'configured';
       const tools = listTools('full');
       const description = (name: string) => tools.find(tool => tool.name === name)!.description;
-      expect(description('memory_write')).toContain('Judge whether this may matter for future tasks');
-      expect(description('memory_write')).toContain('don’t propose trivia or duplicates');
+      expect(description('memory_write')).toContain('踩过的坑必须写');
+      expect(description('memory_write')).toContain('不要写：');
+      expect(description('memory_write')).toContain('脚本报错输出到 stderr，退出码用 2');
+      expect(description('memory_write')).toContain('接口时间字段统一用 ISO 8601');
+      expect(description('memory_write')).toContain('本地 Redis 直连用 6379，8079 是代理');
       expect(description('memory_search')).toContain('Search before unfamiliar work or when a convention may already exist');
       expect(description('memory_review')).toContain('Reviewers: when a Memory review notice mentions you, decide promptly; reject trivia/duplicates');
     } finally {
