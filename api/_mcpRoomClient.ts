@@ -362,6 +362,13 @@ export async function sweepRoom(client: RemoteRoomClient, code: string): Promise
   });
 }
 
+/** What a spent agent invite contributes to the join response. */
+export interface JoinedAgentInvite {
+  role: string;
+  personaId?: string;
+  roleProfile?: string;
+}
+
 export async function joinRoom(
   client: RemoteRoomClient,
   code: string,
@@ -381,7 +388,7 @@ export async function joinRoom(
     requireAgentInvite?: boolean;
     priorIdentity?: { name: string; client: 'web' | 'cc' };
   } = {},
-): Promise<Room & { participant: Participant; seatKey?: string }> {
+): Promise<Room & { participant: Participant; seatKey?: string; agentInvite?: JoinedAgentInvite }> {
   return guarded(async () => {
     const current = await storeGetRoom(client.store, code);
     const isHostClaim = participant.name.trim().toLowerCase() === current.createdBy.trim().toLowerCase();
@@ -499,8 +506,17 @@ export async function joinRoom(
     if (personaId && identityType === 'persona') {
       finalRoom = await removeOrphanPersonaSeats(client, code, personaId, result.participant.name, participant.client);
     }
-    return { ...finalRoom, participant: result.participant, seatKey, ...(reclaimed ? { reclaimed: true } : {}) } as
-      Room & { participant: Participant; seatKey: string };
+    // The invite this join spent: room_join hands its role profile to the agent and saves it as Persona memory.
+    const agentInvite: JoinedAgentInvite | undefined = claimedInvite ? {
+      role: claimedInvite.record.role,
+      personaId: claimedInvite.record.personaId,
+      ...(claimedInvite.record.roleProfile ? { roleProfile: claimedInvite.record.roleProfile } : {}),
+    } : undefined;
+    return {
+      ...finalRoom, participant: result.participant, seatKey,
+      ...(reclaimed ? { reclaimed: true } : {}),
+      ...(agentInvite ? { agentInvite } : {}),
+    } as Room & { participant: Participant; seatKey: string; agentInvite?: JoinedAgentInvite };
   });
 }
 
@@ -508,7 +524,7 @@ export async function joinRoom(
 export async function createAgentInvite(
   client: RemoteRoomClient,
   code: string,
-  input: { hostKey?: string; role: unknown },
+  input: { hostKey?: string; role: unknown; roleProfile?: unknown },
 ): Promise<Awaited<ReturnType<typeof storeCreateAgentInvite>>> {
   return guarded(async () => {
     const room = await storeGetRoom(client.store, code);

@@ -25,12 +25,16 @@ export const AGENT_INVITE_TTL_MS = 5 * 60 * 1000;
 /** How long the record (and the used marker) stay readable, to report "expired" precisely. */
 export const AGENT_INVITE_RETENTION_SECONDS = 24 * 60 * 60;
 export const AGENT_INVITE_ROLE_MAX_CHARS = 128;
+/** 「职业设定与技能」: free-text role profile/skills handed to the agent at join. */
+export const AGENT_INVITE_PROFILE_MAX_CHARS = 4000;
 
 export interface AgentInviteRecord {
   code: string;
   roomInstanceId?: string;
   role: string;
   personaId: string;
+  /** Optional 「职业设定与技能」 text; returned to the agent at join and saved as its Persona memory. */
+  roleProfile?: string;
   createdAt: number;
   expiresAt: number;
   used: boolean;
@@ -84,12 +88,29 @@ export function normalizeInviteRole(role: unknown): string {
   return value;
 }
 
+/** Optional role profile: trimmed, at most 4000 chars; empty means none. Newlines/tabs allowed. */
+export function normalizeInviteRoleProfile(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new AgentInviteError('roleProfile must be text.', 400, 'invalid_role_profile');
+  }
+  const text = value.replace(/\r\n?/g, '\n').trim();
+  if (!text) return undefined;
+  if ([...text].length > AGENT_INVITE_PROFILE_MAX_CHARS || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(text)) {
+    throw new AgentInviteError('roleProfile must be at most 4000 characters with no control characters.', 400, 'invalid_role_profile');
+  }
+  return text;
+}
+
 /** Host-only: the room must carry a hostKeyHash and the presented hostKey must match it. */
 export async function createAgentInvite(
   store: UpstashClient,
   room: Room,
-  input: { hostKey?: string; role: unknown; now?: number },
-): Promise<{ inviteCode: string; role: string; personaId: string; createdAt: number; expiresAt: number; ttlSeconds: number }> {
+  input: { hostKey?: string; role: unknown; roleProfile?: unknown; now?: number },
+): Promise<{
+  inviteCode: string; role: string; personaId: string; roleProfile?: string;
+  createdAt: number; expiresAt: number; ttlSeconds: number;
+}> {
   if (typeof input.hostKey !== 'string' || !input.hostKey.trim() || input.hostKey.length > 256
     || !hostKeyMatches(room, input.hostKey)) {
     throw new AgentInviteError('Only the host (with the hostKey from room creation) can create agent invites.', 403, 'NotHostError');
@@ -98,6 +119,7 @@ export async function createAgentInvite(
     throw new AgentInviteError('This room has ended; reactivate it before inviting agents.', 409, 'room_ended');
   }
   const role = normalizeInviteRole(input.role);
+  const roleProfile = normalizeInviteRoleProfile(input.roleProfile);
   const now = input.now ?? Date.now();
   // 16 random chars from an unambiguous alphabet, grouped for reading aloud/copying.
   const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
@@ -109,6 +131,7 @@ export async function createAgentInvite(
     ...(room.roomInstanceId ? { roomInstanceId: room.roomInstanceId } : {}),
     role,
     personaId: role,
+    ...(roleProfile ? { roleProfile } : {}),
     createdAt: now,
     expiresAt: now + AGENT_INVITE_TTL_MS,
     used: false,
@@ -116,7 +139,7 @@ export async function createAgentInvite(
   await store.command(['SET', inviteKey(room.code, hashInviteCode(inviteCode)), JSON.stringify(record),
     'EX', AGENT_INVITE_RETENTION_SECONDS]);
   return {
-    inviteCode, role, personaId: role, createdAt: record.createdAt, expiresAt: record.expiresAt,
+    inviteCode, role, personaId: role, ...(roleProfile ? { roleProfile } : {}), createdAt: record.createdAt, expiresAt: record.expiresAt,
     ttlSeconds: Math.round(AGENT_INVITE_TTL_MS / 1000),
   };
 }

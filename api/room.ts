@@ -281,6 +281,7 @@ async function dispatchRoomHttpAction(
         invite: await createAgentInvite(client, str(p.code), {
           hostKey: typeof p.hostKey === 'string' ? p.hostKey : undefined,
           role: p.role,
+          roleProfile: p.roleProfile,
         }),
       };
     }
