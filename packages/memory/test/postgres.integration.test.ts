@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Pool } from 'pg';
 import { applyMemoryMigrations, PostgresMemoryRepository } from '../src/postgres.js';
+import { backfillEmbeddings } from '../src/backfill-embeddings.js';
 import {
   MemoryService,
   type MemoryServiceMutationResult,
@@ -92,9 +93,17 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
 
   it('creates the schema, applies migrations repeatedly, and has no Room table foreign key', async () => {
     const versions = await scopedPool.query<{ count: string }>(
-      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2, 3, 4, 5)',
+      'SELECT count(*)::text AS count FROM agent_memory_schema_migrations WHERE version IN (1, 2, 3, 4, 5, 6)',
     );
-    expect(versions.rows[0]?.count).toBe('5');
+    expect(versions.rows[0]?.count).toBe('6');
+
+    const columns = await scopedPool.query<{ table_name: string; column_name: string }>(
+      `SELECT table_name, column_name FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name IN ('agent_memory_entries', 'agent_memory_proposals')
+         AND column_name IN ('embedding', 'embedding_model')`,
+    );
+    expect(columns.rows).toHaveLength(4);
 
     const foreignKeys = await scopedPool.query<{ count: string }>(`
       SELECT count(*)::text AS count
@@ -171,7 +180,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
   });
 
   it('enforces cross-Persona and cross-Room read/list isolation through the service', async () => {
-    const service = new MemoryService(repository);
+    const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     const personaId = `persona-${randomUUID()}`;
     const otherPersonaId = `persona-${randomUUID()}`;
@@ -248,7 +257,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
   });
 
   it('returns exact duplicate candidates, requires explicit updates, and preserves distinct facts', async () => {
-    const service = new MemoryService(repository);
+    const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     const personaId = `persona-${randomUUID()}`;
     const caller = trustedCaller(roomInstanceId, personaId);
@@ -347,7 +356,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       max: 1,
     });
     const unavailableRepository = await PostgresMemoryRepository.fromPool(unavailablePool, false);
-    const service = new MemoryService(unavailableRepository);
+    const service = new MemoryService(unavailableRepository, { duplicateVerifier: null, embedder: null });
     try {
       await expect(service.createEntry(
         trustedCaller(randomUUID(), `persona-${randomUUID()}`),
@@ -365,7 +374,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
   });
 
   it('maps invalid input and Persona-scope authorization failures to stable safe codes', async () => {
-    const service = new MemoryService(repository);
+    const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     await expect(service.createEntry(
       trustedCaller(roomInstanceId, `persona-${randomUUID()}`, 'room_member'),
@@ -406,6 +415,92 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     expect(await repository.readEntry({ roomInstanceId: randomUUID(), scope: 'room' }, entries[0]!.id)).toBeNull();
   });
 
+  it('stores proposal vectors, copies them on approval, and returns candidate vectors', async () => {
+    const roomInstanceId = randomUUID();
+    const scope = { roomInstanceId, scope: 'room' as const };
+    const proposer = roomOwnerIdentity();
+    const reviewer = roomMemberIdentity();
+    const createEmbedding = { vector: [1, 2, 3], model: 'test-bge-v1' };
+    const proposal = await repository.createRoomProposal(
+      scope,
+      { action: 'create', content: content({ title: 'Embedded fact' }) },
+      proposer,
+      'embedding-create',
+      undefined,
+      createEmbedding,
+    );
+    expect((await repository.getRoomProposal(roomInstanceId, proposal.id))?.embedding).toEqual(createEmbedding.vector);
+    expect((await repository.findRoomCreateDuplicateCandidates(scope)).find(item => item.id === proposal.id))
+      .toMatchObject({ embedding: createEmbedding.vector, kind: 'proposal' });
+
+    await repository.reviewRoomProposal(roomInstanceId, proposal.id, reviewer, 'approve', 'embedding-approve-create');
+    let entry = await scopedPool.query<{ id: string; embedding: number[]; embedding_model: string }>(
+      `SELECT id, embedding, embedding_model FROM agent_memory_entries WHERE room_instance_id = $1`,
+      [roomInstanceId],
+    );
+    expect(entry.rows[0]).toMatchObject({ embedding: createEmbedding.vector, embedding_model: createEmbedding.model });
+    expect((await repository.findRoomCreateDuplicateCandidates(scope)).find(item => item.id === entry.rows[0]?.id))
+      .toMatchObject({ embedding: createEmbedding.vector, kind: 'memory' });
+
+    const updateEmbedding = { vector: [4, 5, 6], model: 'test-bge-v2' };
+    const update = await repository.createRoomProposal(
+      scope,
+      { action: 'update', targetMemoryId: entry.rows[0]!.id, update: { content: 'Updated embedded fact' } },
+      proposer,
+      'embedding-update',
+      undefined,
+      updateEmbedding,
+    );
+    expect((await repository.getRoomProposal(roomInstanceId, update.id))?.embedding).toEqual(updateEmbedding.vector);
+    await repository.reviewRoomProposal(roomInstanceId, update.id, reviewer, 'approve', 'embedding-approve-update');
+    entry = await scopedPool.query(
+      `SELECT id, embedding, embedding_model FROM agent_memory_entries WHERE room_instance_id = $1`,
+      [roomInstanceId],
+    );
+    expect(entry.rows[0]).toMatchObject({ embedding: updateEmbedding.vector, embedding_model: updateEmbedding.model });
+
+    const clear = await repository.createRoomProposal(
+      scope,
+      { action: 'update', targetMemoryId: entry.rows[0]!.id, update: { content: 'No fresh embedding' } },
+      proposer,
+      'embedding-update-clear',
+    );
+    await repository.reviewRoomProposal(roomInstanceId, clear.id, reviewer, 'approve', 'embedding-approve-clear');
+    entry = await scopedPool.query(
+      `SELECT id, embedding, embedding_model FROM agent_memory_entries WHERE room_instance_id = $1`,
+      [roomInstanceId],
+    );
+    expect(entry.rows[0]).toMatchObject({ embedding: null, embedding_model: null });
+  });
+
+  it('backfills entries and pending proposals idempotently with an injected embedder', async () => {
+    const roomInstanceId = randomUUID();
+    const scope = { roomInstanceId, scope: 'room' as const };
+    const proposer = roomOwnerIdentity();
+    const reviewer = roomMemberIdentity();
+    const createdEntry = await repository.createRoomProposal(
+      scope, { action: 'create', content: content({ title: 'Backfill approved' }) }, proposer, 'backfill-entry',
+    );
+    await repository.reviewRoomProposal(roomInstanceId, createdEntry.id, reviewer, 'approve', 'backfill-entry-approve');
+    const pending = await repository.createRoomProposal(
+      scope, { action: 'create', content: content({ title: 'Backfill pending' }) }, proposer, 'backfill-proposal',
+    );
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => [1, 2]));
+    const options = { pool: scopedPool, embedder: { embed }, model: 'backfill-test-model', roomId: roomInstanceId };
+
+    const first = await backfillEmbeddings(options);
+    expect(first).toMatchObject({ entriesUpdated: 1, proposalsUpdated: 1, skipped: 0 });
+    expect(embed).toHaveBeenCalledTimes(2);
+    expect((await repository.getRoomProposal(roomInstanceId, pending.id))?.embedding).toEqual([1, 2]);
+    expect((await repository.findRoomCreateDuplicateCandidates(scope)).find(item => item.kind === 'memory'))
+      .toMatchObject({ embedding: [1, 2] });
+
+    embed.mockClear();
+    const second = await backfillEmbeddings(options);
+    expect(second).toMatchObject({ entriesUpdated: 0, proposalsUpdated: 0, skipped: 0 });
+    expect(embed).not.toHaveBeenCalled();
+  });
+
   it('applies approval and proposal state atomically; retries never duplicate an entry', async () => {
     const roomInstanceId = randomUUID();
     const scope = { roomInstanceId, scope: 'room' as const };
@@ -426,7 +521,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
   });
 
   it('collapses identical pending Room proposals across requestIds, race-safely, keeping requestId replay', async () => {
-    const service = new MemoryService(repository);
+    const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     const callerA = trustedCaller(roomInstanceId, `member-a-${randomUUID()}`, 'room_member');
     const callerB = trustedCaller(roomInstanceId, `member-b-${randomUUID()}`, 'room_member');
@@ -479,8 +574,8 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     expect(resultId(del3)).not.toBe(resultId(del1));
   });
 
-  it('detects bounded room create near-duplicates against pending and approved records only', async () => {
-    const service = new MemoryService(repository);
+  it('uses exact Room create matches without approximate keyword deduplication when Jev is off', async () => {
+    const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     const roomScope = { roomInstanceId, scope: 'room' as const };
     const caller = trustedCaller(roomInstanceId, `member-${randomUUID()}`, 'room_member');
@@ -489,8 +584,11 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     const pending = await service.createEntry(caller, 'room', content({ title: 'Shell guideline A', content: shellA }), 'near-pending-a');
     const pendingId = resultId(pending);
     expect(await service.createEntry(caller, 'room', content({ title: 'Shell guideline B', content: shellB }), 'near-pending-b'))
-      .toEqual({ code: 'PENDING_REVIEW', proposalId: pendingId, duplicateOf: pendingId });
-    expect(await repository.listPendingRoomProposals(roomInstanceId, { limit: 100 })).toHaveLength(1);
+      .toMatchObject({ code: 'PENDING_REVIEW' });
+    expect(resultId(await service.createEntry(
+      caller, 'room', content({ title: 'Shell guideline C', content: shellB }), 'near-pending-c',
+    ))).not.toBe(pendingId);
+    expect(await repository.listPendingRoomProposals(roomInstanceId, { limit: 100 })).toHaveLength(3);
 
     const approvedProposal = await service.createEntry(caller, 'room', content({
       title: 'Date convention A', content: '日期统一写成 YYYY-MM-DD 格式。',
@@ -499,9 +597,11 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     await repository.reviewRoomProposal(roomInstanceId, approvedId, roomOwnerIdentity(), 'approve', 'near-approved-review');
     const approvedEntry = (await repository.listEntries(roomScope, { limit: 100 }))
       .find(entry => entry.title === 'Date convention A')!;
-    expect(await service.createEntry(caller, 'room', content({
+    const dateVariant = await service.createEntry(caller, 'room', content({
       title: 'Date convention B', content: '房间交付物和脚本里的日期都用 YYYY-MM-DD。',
-    }), 'near-approved-b')).toEqual({ code: 'DUPLICATE', duplicateOf: approvedEntry.id, duplicateKind: 'memory' });
+    }), 'near-approved-b');
+    expect(dateVariant).toMatchObject({ code: 'PENDING_REVIEW' });
+    expect(resultId(dateVariant)).not.toBe(approvedEntry.id);
 
     const distinct = await service.createEntry(caller, 'room', content({
       title: 'Output diagnostics', content: '脚本报错输出到 stderr，退出码用 2。',

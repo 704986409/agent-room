@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  BORDERLINE_THRESHOLD, DEFAULT_DUPLICATE_THRESHOLD, DUPLICATE_THRESHOLD, VERIFIER_BORDERLINE_FLOOR, classifyDuplicate,
-  isLikelyDuplicate, keywordSimilarity, memoryKeywords,
-} from './keywords.js';
+import { keywordSimilarity, memoryKeywords } from './keywords.js';
 
 const pairs = [
   ['这个仓库中的所有 shell 脚本都必须在第二行写 set -euo pipefail。', '每个仓库脚本的第二行都必须是 set -euo pipefail。', true],
@@ -32,30 +29,12 @@ describe('memoryKeywords', () => {
     }
   });
 
-  it('separates the required duplicate and non-duplicate pairs at the documented threshold', () => {
-    const measured = pairs.map(([a, b]) => ({ a, b, score: keywordSimilarity(memoryKeywords(a), memoryKeywords(b)) }));
-    const classifications = measured.map((item, i) => classifyDuplicate(
-      memoryKeywords(pairs[i]![0]), memoryKeywords(pairs[i]![1]),
-    ));
-    for (let i = 0; i < pairs.length; i += 1) {
-      const [a, b, expected] = pairs[i]!;
-      expect(measured[i]!.score >= DEFAULT_DUPLICATE_THRESHOLD, `${a} <> ${b}; score=${measured[i]!.score}`).toBe(expected);
-    }
-    expect(isLikelyDuplicate(memoryKeywords(pairs[0][0]), memoryKeywords(pairs[0][1]), DEFAULT_DUPLICATE_THRESHOLD)).toBe(true);
-    expect(DUPLICATE_THRESHOLD).toBe(0.5);
-    expect(BORDERLINE_THRESHOLD).toBe(0.3);
-    expect(VERIFIER_BORDERLINE_FLOOR).toBe(0.15);
-    expect(classifications).toEqual([
-      'duplicate', 'not_duplicate', 'duplicate', 'not_duplicate', 'not_duplicate', 'not_duplicate', 'borderline',
-    ]);
-  });
-
-  it('admits the low lexical GBK pair only when a verifier is configured', () => {
-    const [newMemory, existingMemory] = pairs[1]!;
-    const newKeywords = memoryKeywords(newMemory);
-    const existingKeywords = memoryKeywords(existingMemory);
-    expect(keywordSimilarity(newKeywords, existingKeywords)).toBeCloseTo(0.235, 2);
-    expect(classifyDuplicate(newKeywords, existingKeywords)).toBe('not_duplicate');
-    expect(classifyDuplicate(newKeywords, existingKeywords, { verifier: true })).toBe('borderline');
+  it('returns a symmetric keyword ranking score without a duplicate threshold', () => {
+    const left = memoryKeywords(pairs[1]![0]);
+    const right = memoryKeywords(pairs[1]![1]);
+    const score = keywordSimilarity(left, right);
+    expect(score).toBeCloseTo(0.235, 2);
+    expect(keywordSimilarity(right, left)).toBe(score);
+    expect(keywordSimilarity(left, left)).toBe(1);
   });
 });

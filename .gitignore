@@ -1,5 +1,6 @@
 node_modules
 dist
+.cache/agent-room/models/
 .env
 .env.local
 .wrangler

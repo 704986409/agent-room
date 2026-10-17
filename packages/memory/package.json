@@ -15,9 +15,12 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate:postgres": "node dist/migrate.js",
+    "model:download": "node scripts/download-embedding-model.mjs",
+    "backfill:embeddings": "node dist/backfill-embeddings.js",
     "benchmark:search": "npm run build && node scripts/benchmark-search.mjs"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "pg": "8.16.3"
   },
   "devDependencies": {

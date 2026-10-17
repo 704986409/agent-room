@@ -1,4 +1,5 @@
 import { createJevClient, type JevNoulAnswer, type JevQuestion } from './jevClient.js';
+import { DEFAULT_DEDUP_CANDIDATE_CAP } from './dedup/nearDuplicate.js';
 
 export interface DuplicateVerifier {
   verifyMany(input: {
@@ -7,7 +8,7 @@ export interface DuplicateVerifier {
   }): Promise<number | null>;
 }
 
-export const DEFAULT_DEDUP_JEV_MAX_CANDIDATES = 5;
+export const DEFAULT_DEDUP_JEV_MAX_CANDIDATES = DEFAULT_DEDUP_CANDIDATE_CAP;
 
 function disabled(value: string | undefined): boolean {
   return ['0', 'false', 'off'].includes(value?.trim().toLowerCase() ?? '');
@@ -21,8 +22,11 @@ function thresholdFrom(env: NodeJS.ProcessEnv): number {
 }
 
 export function maxJevCandidatesFrom(env: NodeJS.ProcessEnv = process.env): number {
-  const value = Number(env.MEMORY_DEDUP_JEV_MAX_CANDIDATES);
-  return Number.isSafeInteger(value) && value > 0 ? value : DEFAULT_DEDUP_JEV_MAX_CANDIDATES;
+  for (const configured of [env.MEMORY_DEDUP_CANDIDATE_CAP, env.MEMORY_DEDUP_JEV_MAX_CANDIDATES]) {
+    const value = Number(configured);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return DEFAULT_DEDUP_JEV_MAX_CANDIDATES;
 }
 
 export function resolveDuplicateVerifier(env: NodeJS.ProcessEnv = process.env): DuplicateVerifier | undefined {

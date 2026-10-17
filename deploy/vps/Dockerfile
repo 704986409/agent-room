@@ -22,6 +22,7 @@ RUN test -n "$VITE_PUBLIC_BASE_URL" \
   && test -n "$VITE_UPSTASH_REDIS_REST_URL" \
   && test -n "$VITE_UPSTASH_REDIS_REST_TOKEN" \
   && npm run build:ordered \
+  && npm run build -w @agent-room/memory \
   && npx tsc -p deploy/vps/tsconfig.json --noEmit \
   && ./node_modules/.bin/esbuild deploy/vps/server.ts \
     --bundle --platform=node --format=esm --packages=external --target=node20 \

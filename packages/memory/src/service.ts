@@ -1,12 +1,14 @@
 import type { MemoryRepository } from './repository.js';
 import { normalizeForDuplicate } from './normalize.js';
-import { classifyDuplicate, memoryKeywords, keywordSimilarity } from './keywords.js';
 import { maxJevCandidatesFrom, resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
+import { findNearDuplicate, embedRoomContent } from './dedup/nearDuplicate.js';
+import { embeddingModelFrom, resolveEmbedder, type Embedder } from './embedding/embedder.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
   type ListMemoryOptions,
   type MemoryContent,
+  type MemoryEmbedding,
   type MemoryEntry,
   type MemoryIdentity,
   type MemoryProposerIdentityType,
@@ -107,13 +109,16 @@ const ERROR_MESSAGES: Record<MemoryServiceErrorCode, string> = {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZE = 100;
 const MAX_DUPLICATE_CANDIDATES = 5;
-let warnedAboutDuplicateVerifierFailure = false;
 
 export interface MemoryServiceOptions {
   /** null explicitly disables verification; omitted resolves from the environment. */
   duplicateVerifier?: DuplicateVerifier | null;
-  /** Overrides MEMORY_DEDUP_JEV_MAX_CANDIDATES for deterministic adapter tests. */
+  /** Overrides the candidate cap for deterministic adapter tests and live evaluation. */
   duplicateVerifierMaxCandidates?: number;
+  /** null explicitly disables embeddings; omitted resolves from the environment. */
+  embedder?: Embedder | null;
+  /** Overrides MEMORY_EMBEDDING_MODEL for injected embedders. */
+  embeddingModel?: string;
 }
 
 export class MemoryServiceError extends Error {
@@ -281,11 +286,15 @@ function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationR
 export class MemoryService {
   private readonly duplicateVerifier: DuplicateVerifier | undefined;
   private readonly duplicateVerifierMaxCandidates: number;
+  private readonly embedder: Embedder | undefined;
+  private readonly embeddingModel: string;
 
   constructor(private readonly repository: MemoryRepository, options: MemoryServiceOptions = {}) {
     this.duplicateVerifier = options.duplicateVerifier === null
       ? undefined
       : options.duplicateVerifier ?? resolveDuplicateVerifier();
+    this.embedder = options.embedder === null ? undefined : options.embedder ?? resolveEmbedder();
+    this.embeddingModel = options.embeddingModel ?? embeddingModelFrom();
     this.duplicateVerifierMaxCandidates = Number.isSafeInteger(options.duplicateVerifierMaxCandidates)
       && options.duplicateVerifierMaxCandidates! > 0
       ? options.duplicateVerifierMaxCandidates!
@@ -366,57 +375,19 @@ export class MemoryService {
       }
 
       let nearDuplicateResult: MemoryMutationResult | undefined;
-      if (scope.scope === 'room' && /\p{Script=Han}/u.test(`${content.title} ${content.content}`)) {
-        const candidateKeywords = memoryKeywords(`${content.title} ${content.content}`);
-        const scored = (await this.repository.findRoomCreateDuplicateCandidates(scope))
-          .map(existing => ({
-            ...existing,
-            score: keywordSimilarity(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)),
-          }))
-          .filter(existing => classifyDuplicate(
-            candidateKeywords,
-            memoryKeywords(`${existing.title} ${existing.content}`),
-            { verifier: Boolean(this.duplicateVerifier) },
-          ) !== 'not_duplicate')
-          .sort((a, b) => b.score - a.score
-            || (a.kind === b.kind ? 0 : a.kind === 'proposal' ? -1 : 1)
-            || a.id.localeCompare(b.id));
-        const bestRuleMatch = scored.find(existing =>
-          classifyDuplicate(candidateKeywords, memoryKeywords(`${existing.title} ${existing.content}`)) === 'duplicate');
-        if (bestRuleMatch) {
-          nearDuplicateResult = bestRuleMatch.kind === 'proposal'
-            ? { status: 'pending_review', id: bestRuleMatch.id, duplicateOf: bestRuleMatch.id }
-            : { status: 'duplicate', id: bestRuleMatch.id, duplicateOf: bestRuleMatch.id, duplicateKind: 'memory' };
-        } else {
-          const borderline = scored.filter(existing =>
-            classifyDuplicate(
-              candidateKeywords,
-              memoryKeywords(`${existing.title} ${existing.content}`),
-              { verifier: Boolean(this.duplicateVerifier) },
-            ) === 'borderline')
-            .slice(0, this.duplicateVerifierMaxCandidates);
-          if (this.duplicateVerifier && borderline.length) {
-            try {
-              const duplicateIndex = await this.duplicateVerifier.verifyMany({
-                candidate: { title: content.title, content: content.content },
-                existings: borderline.map(({ id, kind, title, content: existingContent, score }) => ({
-                  id, kind, title, content: existingContent, score,
-                })),
-              });
-              const existing = duplicateIndex === null ? undefined : borderline[duplicateIndex];
-              if (existing) {
-                nearDuplicateResult = existing.kind === 'proposal'
-                  ? { status: 'pending_review', id: existing.id, duplicateOf: existing.id }
-                  : { status: 'duplicate', id: existing.id, duplicateOf: existing.id, duplicateKind: 'memory' };
-              }
-            } catch {
-              if (!warnedAboutDuplicateVerifierFailure) {
-                warnedAboutDuplicateVerifierFailure = true;
-                console.warn('Memory duplicate verifier failed; treating the candidate as not duplicate.');
-              }
-            }
-          }
-        }
+      let embedding: MemoryEmbedding | undefined;
+      if (scope.scope === 'room' && this.duplicateVerifier) {
+        const nearDuplicate = await findNearDuplicate({
+          repository: this.repository,
+          scope,
+          content,
+          verifier: this.duplicateVerifier,
+          embedder: this.embedder,
+          embeddingModel: this.embeddingModel,
+          cap: this.duplicateVerifierMaxCandidates,
+        });
+        nearDuplicateResult = nearDuplicate.duplicateResult;
+        embedding = nearDuplicate.embedding;
       }
 
       const result = scope.scope === 'persona'
@@ -427,6 +398,7 @@ export class MemoryService {
           identity,
           idempotencyKey,
           nearDuplicateResult,
+          embedding,
         );
       return toServiceMutation(result);
     });
@@ -459,6 +431,9 @@ export class MemoryService {
         return this.duplicateResult(candidates);
       }
 
+      const embedding = scope.scope === 'room' && this.duplicateVerifier
+        ? await embedRoomContent(candidateContent, this.embedder, this.embeddingModel)
+        : undefined;
       const result = scope.scope === 'persona'
         ? await this.repository.updatePersonaEntry(scope, entryId, update, identity, idempotencyKey)
         : await this.repository.createRoomProposal(
@@ -466,6 +441,8 @@ export class MemoryService {
           { action: 'update', targetMemoryId: entryId, update } satisfies MemoryProposalInput,
           identity,
           idempotencyKey,
+          undefined,
+          embedding,
         );
       return toServiceMutation(result);
     });

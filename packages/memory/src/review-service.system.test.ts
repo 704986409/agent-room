@@ -26,6 +26,8 @@ function proposal(overrides: Partial<MemoryProposal> = {}): MemoryProposal {
     request_id: 'write-request',
     created_at: new Date(0),
     reviewed_at: null,
+    embedding: null,
+    embedding_model: null,
     ...overrides,
   };
 }

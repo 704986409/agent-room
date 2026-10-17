@@ -46,27 +46,3 @@ export function keywordSimilarity(a: Set<string>, b: Set<string>): number {
   const containment = intersection / minSize;
   return Math.max(jaccard, containment);
 }
-
-export function isLikelyDuplicate(a: Set<string>, b: Set<string>, threshold: number): boolean {
-  return keywordSimilarity(a, b) >= threshold;
-}
-
-// Measured pairs top out at 0.333 for unrelated examples; 0.30 keeps close
-// misses available to a verifier while the 0.50 duplicate cutoff stays precise.
-export const BORDERLINE_THRESHOLD = 0.3;
-export const VERIFIER_BORDERLINE_FLOOR = 0.15;
-export const DUPLICATE_THRESHOLD = 0.5;
-export const DEFAULT_DUPLICATE_THRESHOLD = DUPLICATE_THRESHOLD;
-
-export type DuplicateClassification = 'duplicate' | 'borderline' | 'not_duplicate';
-
-export function classifyDuplicate(
-  a: Set<string>,
-  b: Set<string>,
-  options: { verifier?: boolean } = {},
-): DuplicateClassification {
-  const score = keywordSimilarity(a, b);
-  if (score >= DUPLICATE_THRESHOLD) return 'duplicate';
-  if (score >= (options.verifier ? VERIFIER_BORDERLINE_FLOOR : BORDERLINE_THRESHOLD)) return 'borderline';
-  return 'not_duplicate';
-}

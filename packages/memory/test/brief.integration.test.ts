@@ -51,7 +51,7 @@ describe('P4 Memory Brief with PostgreSQL 17 and Redis', () => {
     scopedPool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName},public` });
     await applyMemoryMigrations(scopedPool);
     repository = await PostgresMemoryRepository.fromPool(scopedPool);
-    service = new MemoryService(repository);
+    service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const redis = new RedisUrlCommandClient(redisUrl!);
     const sessions = new RedisMemoryBriefSessionStore(redis, {
       namespace: `memory-brief-test-${process.pid}-${Date.now().toString(36)}`,

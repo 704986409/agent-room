@@ -33,6 +33,9 @@ import { createMemoryTestDependencies } from './_memoryTools.js';
 const REDIS_BASE = 'https://smoke.upstash.invalid';
 const initialMemoryEnabled = process.env.MEMORY_ENABLED;
 const initialMemoryDatabaseUrl = process.env.MEMORY_DATABASE_URL;
+const initialJevApiKey = process.env.JEV_API_KEY;
+const initialDedupVerifier = process.env.MEMORY_DEDUP_VERIFIER;
+const initialJevReview = process.env.MEMORY_JEV_REVIEW;
 process.env.UPSTASH_REDIS_REST_URL = REDIS_BASE;
 process.env.UPSTASH_REDIS_REST_TOKEN = 'smoke-token';
 process.env.SRH_WEB_URL = REDIS_BASE;
@@ -133,6 +136,10 @@ const clients: Client[] = [];
 beforeAll(async () => {
   delete process.env.MEMORY_ENABLED;
   delete process.env.MEMORY_DATABASE_URL;
+  // Smoke coverage exercises storage and routing; all Jev behavior uses mocked fetch tests.
+  process.env.JEV_API_KEY = '';
+  process.env.MEMORY_DEDUP_VERIFIER = 'off';
+  process.env.MEMORY_JEV_REVIEW = 'off';
   smokeKv = installFakeRedis();
   const mcpHandler = (await import('./mcp.js')).default;
 
@@ -170,6 +177,12 @@ afterAll(async () => {
   else process.env.MEMORY_ENABLED = initialMemoryEnabled;
   if (initialMemoryDatabaseUrl === undefined) delete process.env.MEMORY_DATABASE_URL;
   else process.env.MEMORY_DATABASE_URL = initialMemoryDatabaseUrl;
+  if (initialJevApiKey === undefined) delete process.env.JEV_API_KEY;
+  else process.env.JEV_API_KEY = initialJevApiKey;
+  if (initialDedupVerifier === undefined) delete process.env.MEMORY_DEDUP_VERIFIER;
+  else process.env.MEMORY_DEDUP_VERIFIER = initialDedupVerifier;
+  if (initialJevReview === undefined) delete process.env.MEMORY_JEV_REVIEW;
+  else process.env.MEMORY_JEV_REVIEW = initialJevReview;
 });
 
 async function connect(asClient?: string): Promise<Client> {
@@ -1116,15 +1129,15 @@ describe('hosted MCP endpoint', () => {
       });
       expect(chineseProposal.code).toBe('PENDING_REVIEW');
       const noticeCountAfterChineseCreate = (await roomNotices()).length;
-      const chineseDuplicate = await invoke('memory_write', {
+      const chineseVariant = await invoke('memory_write', {
         code, seatKey: otherPersonaKey, scope: 'room', title: 'Shell 规则二', preview: '脚本规则',
         content: '每个仓库脚本的第二行都必须是 set -euo pipefail。',
         searchText: 'shell set-euo-pipefail', requestId: `near-shell-b-${randomUUID()}`,
       });
-      expect(chineseDuplicate).toEqual({
-        code: 'PENDING_REVIEW', proposalId: chineseProposal.proposalId, duplicateOf: chineseProposal.proposalId,
-      });
-      expect(await roomNotices()).toHaveLength(noticeCountAfterChineseCreate);
+      expect(chineseVariant).toMatchObject({ code: 'PENDING_REVIEW' });
+      expect(chineseVariant.proposalId).not.toBe(chineseProposal.proposalId);
+      expect(chineseVariant).not.toHaveProperty('duplicateOf');
+      expect(await roomNotices()).toHaveLength(noticeCountAfterChineseCreate + 1);
       expect(await invoke('memory_review', { code, seatKey: hostSeatKey, action: 'list' }))
         .toMatchObject({ code: 'FORBIDDEN' });
       expect(await invoke('memory_review', {

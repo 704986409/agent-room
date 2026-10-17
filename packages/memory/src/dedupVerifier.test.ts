@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveDuplicateVerifier } from './dedupVerifier.js';
+import { maxJevCandidatesFrom, resolveDuplicateVerifier } from './dedupVerifier.js';
 type FetchArgs = [input: RequestInfo | URL, init?: RequestInit];
 
 const candidate = { title: '新记忆', content: 'data.csv 第一列是城市名。' };
@@ -21,6 +21,14 @@ describe('resolveDuplicateVerifier', () => {
   it('is disabled when the API key is absent', () => {
     vi.stubEnv('JEV_API_KEY', '');
     expect(resolveDuplicateVerifier()).toBeUndefined();
+  });
+
+  it('shares the candidate cap and honors the legacy alias', () => {
+    expect(maxJevCandidatesFrom({})).toBe(20);
+    expect(maxJevCandidatesFrom({
+      MEMORY_DEDUP_CANDIDATE_CAP: '12', MEMORY_DEDUP_JEV_MAX_CANDIDATES: '3',
+    })).toBe(12);
+    expect(maxJevCandidatesFrom({ MEMORY_DEDUP_JEV_MAX_CANDIDATES: '3' })).toBe(3);
   });
 
   it.each(['0', 'false', 'off'])('is disabled when MEMORY_DEDUP_VERIFIER is %s', value => {

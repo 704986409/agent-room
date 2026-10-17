@@ -101,6 +101,14 @@ export interface MemoryProposal {
   request_id: string;
   created_at: Date;
   reviewed_at: Date | null;
+  /** Internal Room-only vector used for semantic duplicate retrieval. */
+  embedding: number[] | null;
+  embedding_model: string | null;
+}
+
+export interface MemoryEmbedding {
+  vector: number[];
+  model: string;
 }
 
 export type MutationStatus =

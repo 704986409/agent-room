@@ -21,26 +21,52 @@ Run:
 
 ```sh
 npm run build -w packages/memory
-npm run migrate:postgres -w packages/memory
+npm run migrate:postgres -w @agent-room/memory
 ```
 
-`DATABASE_URL` is required by the migration runner. The runner applies numbered migrations under a PostgreSQL advisory transaction lock. Schema version 2 adds the P7 trigram and Room/scope indexes to the original version 1 tables. Schema version 3 adds a nullable `dedup_key` column and a partial unique index so identical pending Room proposals (same action, target, and normalized content) collapse into one; rows created earlier keep `dedup_key` NULL. Re-running the migration command is safe. No Room table is migrated or recreated.
+`DATABASE_URL` is required by the migration runner. The runner applies numbered migrations under a PostgreSQL advisory transaction lock. Schema version 2 adds the P7 trigram and Room/scope indexes to the original version 1 tables. Schema version 3 adds a nullable `dedup_key` column and a partial unique index so identical pending Room proposals (same action, target, and normalized content) collapse into one; rows created earlier keep `dedup_key` NULL. Migration 004 updates pending proposal states, migration 005 adds trusted system reviewer identity and rejection-reason storage, and migration 006 adds nullable embeddings to Room entries and proposals. Re-running the migration command is safe. No Room table is migrated or recreated.
 
 Schema version 5 adds trusted system reviewer identity support and nullable `review_reason` storage constrained to the three rejection codes. Approvals store NULL. Migration `005_system_reviewer.sql` is applied automatically by the numbered migration runner.
 
 ### TypeSafe Jev
 
-When `JEV_API_KEY` is configured, TypeSafe Jev can verify borderline room-memory duplicates and review new or updated shared-memory proposals only when no agent holds the configured reviewer role. The reviewer skips delete proposals. Jev errors fall back to the existing owner review flow.
+When `JEV_API_KEY` is configured, TypeSafe Jev verifies semantically ranked room-memory duplicate candidates and reviews new or updated shared-memory proposals only when no agent holds the configured reviewer role. The reviewer skips delete proposals. Jev errors fall back to the existing owner review flow.
 
 - `JEV_API_KEY`: bearer credential for `https://api.typesafe.ai/v1/systemone`.
 - `JEV_MODEL`: model name; defaults to `jev-1.13.0`.
 - `JEV_API_URL`: full Jev request endpoint override.
 - `JEV_TIMEOUT_MS`: request timeout in milliseconds; defaults to `5000`.
 - `MEMORY_DEDUP_VERIFIER`: duplicate verification is on when a key exists; set to `0`, `false`, or `off` to disable it.
-- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate score cutoff from `0` to `1`; defaults to `0.7`.
-- `MEMORY_DEDUP_JEV_MAX_CANDIDATES`: maximum score-ranked candidates sent together in one request; defaults to `5`.
+- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability cutoff from `0` to `1`; defaults to `0.7`.
+- `MEMORY_DEDUP_CANDIDATE_CAP`: maximum candidates sent together in one request; defaults to `20`.
+- `MEMORY_DEDUP_JEV_MAX_CANDIDATES`: legacy alias for `MEMORY_DEDUP_CANDIDATE_CAP`.
 - `MEMORY_DEDUP_VERIFIER_URL`: legacy duplicate-verifier endpoint override, retained as a Jev base URL override.
 - `MEMORY_JEV_REVIEW`: proposal review is on when a key exists; set to `0`, `false`, or `off` to disable it.
+
+### 语义去重候选
+
+Normalized exact title/content matches use the existing exact-match and pending-proposal deduplication paths, before embedding or Jev. For other Room writes, when the Jev duplicate verifier is enabled, the service embeds `${title} ${content}` with `Xenova/bge-small-zh-v1.5` and sends the top candidates to one `verifyMany` call. The default cap is 20 and the default Jev duplicate threshold is 0.7. There is no keyword-only duplicate cutoff. If embeddings are unavailable, or fewer than half of the Room candidates have compatible vectors, candidates are ranked by keyword similarity instead. A Jev error, timeout, or rate limit allows the write to continue to normal owner review.
+
+Configure embeddings in the API server environment:
+
+- `MEMORY_EMBEDDING`: set to `0`, `false`, or `off` to disable. Embeddings are enabled only when the Jev duplicate verifier is enabled.
+- `MEMORY_EMBEDDING_MODEL`: model id or local model path; defaults to `Xenova/bge-small-zh-v1.5`.
+- `MEMORY_EMBEDDING_CACHE_DIR`: model cache location; defaults to `~/.cache/agent-room/models`.
+- `MEMORY_EMBEDDING_ALLOW_DOWNLOAD`: set to `false` to prohibit remote model downloads; defaults to allowing downloads.
+- `MEMORY_EMBEDDING_TIMEOUT_MS`: per-call wait limit; defaults to `3000`. A first call can time out while loading; model loading continues in the background.
+- `MEMORY_DEDUP_CANDIDATE_CAP`: candidate limit for both ranking and Jev; defaults to `20`.
+- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability threshold; defaults to `0.7`.
+
+The fp32 model download is about 90 MB and uses about 250 MB RSS after loading. Single-thread inference is roughly 3 ms per sentence on the deployment target. Model files stay outside Git. After configuring the persistent cache volume, deploy in this order:
+
+```sh
+npm run build -w @agent-room/memory
+npm run migrate:postgres -w @agent-room/memory
+npm run model:download -w @agent-room/memory
+npm run backfill:embeddings -w @agent-room/memory
+```
+
+The backfill can be limited with `--room <uuid>` and is safe to rerun. It reads `MEMORY_DATABASE_URL` when set, otherwise `DATABASE_URL`, matching the migration runner's database configuration. To fetch the model on first use instead, leave downloads enabled and ensure the cache path is on persistent storage. The worker resolves `./embedWorker.js` from `import.meta.url` inside `packages/memory/dist/embedding`; the VPS bundle externalizes the memory package, and the runtime image copies that package's `dist` files and production `node_modules`, including `onnxruntime-node`. The Debian bookworm-slim runtime uses glibc, as required by `onnxruntime-node`.
 
 For a clean database when the runtime role cannot install the extension, the administrator runs:
 
@@ -58,7 +84,7 @@ The normal rollback is application-only:
 2. Deploy the previous application version.
 3. Keep `agent_memory_*` tables, rows, migrations, and indexes in place.
 
-There is no destructive down migration. Do not drop memory tables as part of a code rollback. Migrations 002 and 003 add indexes (and 003 a nullable column); retaining them is safe for the previous application version. Index removal is a separate database change that requires review and a verified backup.
+There is no destructive down migration. Do not drop memory tables as part of a code rollback. Migrations 002, 003, and 006 add indexes or nullable columns; retaining them is safe for the previous application version. Index removal is a separate database change that requires review and a verified backup.
 
 ## Backup and restore
 

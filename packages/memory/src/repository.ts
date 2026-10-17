@@ -4,6 +4,7 @@ import type {
   MemoryContentSegment,
   MemoryEntry,
   MemoryIdentity,
+  MemoryEmbedding,
   MemoryMutationResult,
   MemoryProposal,
   MemoryProposalInput,
@@ -63,11 +64,18 @@ export interface MemoryRepository {
     proposer: MemoryIdentity,
     requestId: string,
     duplicateResult?: MemoryMutationResult,
+    embedding?: MemoryEmbedding,
   ): Promise<MemoryMutationResult>;
 
   findRoomCreateDuplicateCandidates(
     scope: Extract<MemoryScope, { scope: 'room' }>,
-  ): Promise<Array<{ id: string; kind: 'memory' | 'proposal'; title: string; content: string }>>;
+  ): Promise<Array<{
+    id: string;
+    kind: 'memory' | 'proposal';
+    title: string;
+    content: string;
+    embedding: number[] | null;
+  }>>;
 
   getRoomProposal(roomInstanceId: string, proposalId: string): Promise<MemoryProposal | null>;
   getRoomProposals(roomInstanceId: string, proposalIds: readonly string[]): Promise<MemoryProposal[]>;

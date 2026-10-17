@@ -1,17 +1,29 @@
 export { MEMORY_SEARCH_SQL, PostgresMemoryRepository, applyMemoryMigrations } from './postgres.js';
 export { MemoryService, MemoryServiceError } from './service.js';
 export {
-  BORDERLINE_THRESHOLD,
-  DEFAULT_DUPLICATE_THRESHOLD,
-  DUPLICATE_THRESHOLD,
-  VERIFIER_BORDERLINE_FLOOR,
-  classifyDuplicate,
-  isLikelyDuplicate,
   keywordSimilarity,
   memoryKeywords,
 } from './keywords.js';
 export { resolveDuplicateVerifier } from './dedupVerifier.js';
 export type { DuplicateVerifier } from './dedupVerifier.js';
+export {
+  DEFAULT_DEDUP_CANDIDATE_CAP,
+  rankNearDuplicateCandidates,
+} from './dedup/nearDuplicate.js';
+export type {
+  CandidateRanking,
+  CandidateRankingResult,
+  NearDuplicateCandidate,
+  RankedNearDuplicateCandidate,
+} from './dedup/nearDuplicate.js';
+export {
+  closeEmbedder,
+  createEmbedder,
+  embeddingCacheDirFrom,
+  embeddingModelFrom,
+  resolveEmbedder,
+} from './embedding/embedder.js';
+export type { Embedder } from './embedding/embedder.js';
 export { MEMORY_REVIEW_REJECTION_REASONS, isMemoryReviewRejectionReason } from './review-reasons.js';
 export type { MemoryReviewRejectionReason } from './review-reasons.js';
 export { createJevClient, JevError } from './jevClient.js';
@@ -94,6 +106,7 @@ export type {
   MemoryEntry,
   MemoryIdentity,
   MemoryIdentityType,
+  MemoryEmbedding,
   MemoryProposerIdentityType,
   MemoryMutationResult,
   MemoryProposal,

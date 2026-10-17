@@ -22,7 +22,7 @@ import {
   type MemoryUpdate,
 } from './types.js';
 
-const REQUIRED_SCHEMA_VERSION = 5;
+const REQUIRED_SCHEMA_VERSION = 6;
 const MIGRATION_LOCK_ID = '7319581420361';
 const ENTRY_RETURNING = `id, room_instance_id, persona_id, scope, title, preview, content,
   search_text, version, updated_at, created_at, source_message_id, deleted_at`;
@@ -625,6 +625,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
     proposer: MemoryIdentity,
     requestId: string,
     duplicateResult?: MemoryMutationResult,
+    embedding?: { vector: number[]; model: string },
   ): Promise<MemoryMutationResult> {
     assertScope(scope);
     assertProposerIdentity(proposer);
@@ -669,13 +670,14 @@ export class PostgresMemoryRepository implements MemoryRepository {
         const inserted = await client.query(
           `INSERT INTO agent_memory_proposals
             (id, room_instance_id, action, target_memory_id, target_version, target_updated_at,
-             payload, proposer_persona_id, proposer_identity_type, proposer_identity_id, request_id, dedup_key)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+             payload, proposer_persona_id, proposer_identity_type, proposer_identity_id, request_id, dedup_key,
+             embedding, embedding_model)
+           VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12, $13::real[], $14)
            ON CONFLICT (room_instance_id, dedup_key) WHERE status = 'pending' AND dedup_key IS NOT NULL
            DO NOTHING`,
           [proposalId, scope.roomInstanceId, input.action, targetMemoryId, targetVersion,
             targetUpdatedAt, JSON.stringify(payload), proposer.personaId ?? null,
-            proposer.type, proposer.id, requestId, dedupKey],
+            proposer.type, proposer.id, requestId, dedupKey, embedding?.vector ?? null, embedding?.model ?? null],
         );
         if (inserted.rowCount) return { status: 'pending_review', id: proposalId };
         const existing = await client.query<{ id: string }>(
@@ -692,27 +694,38 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
   async findRoomCreateDuplicateCandidates(
     scope: Extract<MemoryScope, { scope: 'room' }>,
-  ): Promise<Array<{ id: string; kind: 'memory' | 'proposal'; title: string; content: string }>> {
+  ): Promise<Array<{
+    id: string;
+    kind: 'memory' | 'proposal';
+    title: string;
+    content: string;
+    embedding: number[] | null;
+  }>> {
     assertScope(scope);
     const [entries, proposals] = await Promise.all([
-      this.pool.query<{ id: string; title: string; content: string }>(
-        `SELECT id, title, content FROM (
-           SELECT id, title, content, created_at FROM agent_memory_entries
+      this.pool.query<{ id: string; title: string; content: string; embedding: number[] | null }>(
+        `SELECT id, title, content, embedding FROM (
+           SELECT id, title, content, embedding, created_at FROM agent_memory_entries
            WHERE room_instance_id = $1 AND scope = 'room' AND persona_id IS NULL AND deleted_at IS NULL
            ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
       ),
-      this.pool.query<{ id: string; payload: MemoryContent }>(
-        `SELECT id, payload FROM (
-           SELECT id, payload, created_at FROM agent_memory_proposals
+      this.pool.query<{ id: string; payload: MemoryContent; embedding: number[] | null }>(
+        `SELECT id, payload, embedding FROM (
+           SELECT id, payload, embedding, created_at FROM agent_memory_proposals
            WHERE room_instance_id = $1 AND action = 'create' AND status = 'pending'
            ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
       ),
     ]);
     return [
-      ...entries.rows.map(row => ({ id: row.id, kind: 'memory' as const, title: row.title, content: row.content })),
-      ...proposals.rows.map(row => ({ id: row.id, kind: 'proposal' as const, title: row.payload.title, content: row.payload.content })),
+      ...entries.rows.map(row => ({
+        id: row.id, kind: 'memory' as const, title: row.title, content: row.content, embedding: row.embedding,
+      })),
+      ...proposals.rows.map(row => ({
+        id: row.id, kind: 'proposal' as const, title: row.payload.title,
+        content: row.payload.content, embedding: row.embedding,
+      })),
     ];
   }
 
@@ -721,7 +734,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         review_reason, request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at, embedding, embedding_model
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND id = $2`,
       [roomInstanceId, proposalId],
@@ -735,7 +748,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         review_reason, request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at, embedding, embedding_model
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND id = ANY($2::uuid[]) AND status = 'superseded'
        ORDER BY created_at ASC, id ASC`,
@@ -751,7 +764,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       `SELECT id, room_instance_id, action, target_memory_id, target_version,
          target_updated_at, payload, proposer_persona_id, proposer_identity_type,
          proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-         review_reason, request_id, created_at, reviewed_at
+         review_reason, request_id, created_at, reviewed_at, embedding, embedding_model
        FROM agent_memory_proposals
        WHERE room_instance_id = $1 AND status = 'pending'
        ORDER BY created_at DESC, id ASC
@@ -780,7 +793,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         `SELECT id, room_instance_id, action, target_memory_id, target_version,
            target_updated_at, payload, proposer_persona_id, proposer_identity_type,
            proposer_identity_id, status, reviewer_identity_type, reviewer_identity_id,
-           review_reason, request_id, created_at, reviewed_at
+           review_reason, request_id, created_at, reviewed_at, embedding, embedding_model
          FROM agent_memory_proposals
          WHERE room_instance_id = $1 AND id = $2 FOR UPDATE`,
         [roomInstanceId, proposalId],
@@ -842,9 +855,11 @@ export class PostgresMemoryRepository implements MemoryRepository {
       const [title, preview, body, searchText, sourceMessageId] = contentFields(content);
       await client.query(
         `INSERT INTO agent_memory_entries
-          (id, room_instance_id, persona_id, scope, title, preview, content, search_text, source_message_id)
-         VALUES ($1, $2, NULL, 'room', $3, $4, $5, $6, $7)`,
-        [id, proposal.room_instance_id, title, preview, body, searchText, sourceMessageId],
+          (id, room_instance_id, persona_id, scope, title, preview, content, search_text, source_message_id,
+           embedding, embedding_model)
+         VALUES ($1, $2, NULL, 'room', $3, $4, $5, $6, $7, $8::real[], $9)`,
+        [id, proposal.room_instance_id, title, preview, body, searchText, sourceMessageId,
+          proposal.embedding, proposal.embedding_model],
       );
       return 1;
     }
@@ -883,12 +898,12 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const updated = await client.query<{ version: string | number }>(
       `UPDATE agent_memory_entries SET title = $3, preview = $4, content = $5,
          search_text = $6, source_message_id = $7, version = version + 1,
-         updated_at = clock_timestamp()
+         updated_at = clock_timestamp(), embedding = $9::real[], embedding_model = $10
        WHERE room_instance_id = $1 AND scope = 'room' AND persona_id IS NULL
          AND id = $2 AND version = $8 AND deleted_at IS NULL
        RETURNING version`,
       [proposal.room_instance_id, current.id, title, preview, body, searchText,
-        sourceMessageId, current.version],
+        sourceMessageId, current.version, proposal.embedding, proposal.embedding_model],
     );
     if (!updated.rows[0]) throw new MemoryConflictError('Proposal target changed while applying; submit a new proposal.');
     return Number(updated.rows[0].version);

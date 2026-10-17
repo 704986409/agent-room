@@ -39,6 +39,13 @@ describe('Agent Memory migration source', () => {
     expect(reviewer).toContain("'system'");
     expect(reviewer).toContain('ADD COLUMN IF NOT EXISTS review_reason text NULL');
     expect(reviewer).toContain("review_reason IN ('无关记忆', '重复记忆', '格式不合规')");
+
+    const embeddings = readFileSync(
+      fileURLToPath(new URL('../migrations/006_memory_embeddings.sql', import.meta.url)),
+      'utf8',
+    );
+    expect(embeddings).toMatch(/ALTER TABLE agent_memory_entries[^;]*embedding real\[\] NULL[^;]*embedding_model text NULL;/);
+    expect(embeddings).toMatch(/ALTER TABLE agent_memory_proposals[^;]*embedding real\[\] NULL[^;]*embedding_model text NULL;/);
   });
 
   it('uses scoped indexable predicates for long search terms and keeps short-term fallback', () => {
