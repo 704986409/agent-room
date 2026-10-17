@@ -40,7 +40,7 @@ describe('resolveDuplicateVerifier', () => {
   it('uses the JEV endpoint and default threshold when enabled by a key', async () => {
     vi.stubEnv('JEV_API_KEY', 'test-key');
     vi.stubEnv('JEV_API_URL', 'https://jev.test/v1/systemone');
-    const fetchMock = mockJev({ c0: 0.59 });
+    const fetchMock = mockJev({ c0: 0.54 });
     vi.stubGlobal('fetch', fetchMock);
     const verifier = resolveDuplicateVerifier();
     expect(verifier).toBeDefined();
@@ -83,9 +83,9 @@ describe('resolveDuplicateVerifier', () => {
     expect(body.questions.c1.instructions.existing_memory.title).toBe('现有记忆1');
   });
 
-  it('defaults the duplicate threshold to 0.6', async () => {
+  it('defaults the duplicate threshold to 0.55', async () => {
     vi.stubEnv('JEV_API_KEY', 'test-key');
-    vi.stubGlobal('fetch', mockJev({ c0: 0.61 }));
+    vi.stubGlobal('fetch', mockJev({ c0: 0.56 }));
     const verifier = resolveDuplicateVerifier();
     expect(await verifier!.verifyMany({ candidate, existings: [{ ...existing, score: 0.5 }] })).toBe(0);
   });

@@ -27,7 +27,7 @@ function disabled(value: string | undefined): boolean {
   return ['0', 'false', 'off'].includes(value?.trim().toLowerCase() ?? '');
 }
 
-export const DEFAULT_DEDUP_JEV_THRESHOLD = 0.6;
+export const DEFAULT_DEDUP_JEV_THRESHOLD = 0.55;
 export const DEFAULT_CONFLICT_JEV_THRESHOLD = 0.7;
 
 function probabilityFrom(configured: string | undefined, fallback: number): number {
