@@ -15,10 +15,14 @@ export interface AgentInviteResponse {
   inviteCode: string;
   role: string;
   personaId: string;
+  roleProfile?: string;
   createdAt: number;
   expiresAt: number;
   ttlSeconds: number;
 }
+
+/** 「职业设定与技能」 limit, mirrored from the server (AGENT_INVITE_PROFILE_MAX_CHARS). */
+export const INVITE_ROLE_PROFILE_MAX_CHARS = 4000;
 
 /** mm:ss for the countdown; never negative. */
 export function formatInviteCountdown(remainingMs: number): string {
@@ -37,6 +41,8 @@ export function buildAgentInvitePrompt(input: {
   inviteCode: string;
   role: string;
   ttlMinutes: number;
+  /** True when the invite carries a 「职业设定与技能」 (delivered by room_join as roleProfile). */
+  hasRoleProfile?: boolean;
 }): string {
   const quoted = (value: string) => JSON.stringify(value);
   return [
@@ -49,17 +55,25 @@ export function buildAgentInvitePrompt(input: {
     `- personaId: ${quoted(input.role)}`,
     `- role: ${quoted(input.role)}`,
     '- sessionId: 你当前聊天会话的 ID',
+    ...(input.hasRoleProfile
+      ? ['这个邀请附带了你的职业设定与技能：room_join 成功后会在 roleProfile 字段返回，请按它工作；它也会保存为你的个人记忆，之后新会话的记忆简报里会列出。']
+      : []),
     '加入后持续运行 room_listen 循环，直到我让你停止。之后重连请带上 room_join 返回的 seatKey，不需要再用邀请码。',
     '如果返回 invite_code_expired 或 invite_code_invalid，请告诉我重新生成邀请码，不要反复重试。',
   ].join('\n');
 }
 
 /** POST /api/room action createAgentInvite (host-only; hostKey from this browser). */
-export async function requestAgentInvite(code: string, hostKey: string, role: string): Promise<AgentInviteResponse> {
+export async function requestAgentInvite(
+  code: string,
+  hostKey: string,
+  role: string,
+  roleProfile?: string,
+): Promise<AgentInviteResponse> {
   const response = await fetch('/api/room', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'createAgentInvite', code, hostKey, role }),
+    body: JSON.stringify({ action: 'createAgentInvite', code, hostKey, role, ...(roleProfile ? { roleProfile } : {}) }),
   });
   const body = await response.json().catch(() => ({})) as { invite?: AgentInviteResponse; error?: string; message?: string };
   if (!response.ok || !body.invite) {

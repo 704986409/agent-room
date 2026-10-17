@@ -22,5 +22,14 @@ describe('agent invite dialog helpers', () => {
     expect(prompt).toContain('sessionId');
     expect(prompt).toContain('room_listen');
     expect(prompt).toContain('5 分钟内有效');
+    expect(prompt).not.toContain('roleProfile');
+  });
+
+  it('mentions the role profile only when the invite carries one', () => {
+    const prompt = buildAgentInvitePrompt({
+      joinUrl: 'https://www.agent-room.com/j/ABC-DEF-GHJ', inviteCode: 'AI-X', role: '开发工程师', ttlMinutes: 5, hasRoleProfile: true,
+    });
+    expect(prompt).toContain('roleProfile');
+    expect(prompt).toContain('职业设定与技能');
   });
 });

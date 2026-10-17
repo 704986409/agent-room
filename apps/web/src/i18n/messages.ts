@@ -526,6 +526,10 @@ const en = {
   'inviteAgent.error': 'Could not create the invite: {error}',
   'inviteAgent.hostKeyMissing': 'This browser does not hold the host key for this room, so it cannot create invites.',
   'inviteAgent.roleRequired': 'Enter a role first.',
+  'inviteAgent.profileLabel': 'Role profile & skills (职业设定与技能)',
+  'inviteAgent.profilePlaceholder': 'Optional. Describe what this role does, its responsibilities, skills and working rules.',
+  'inviteAgent.profileHelp': 'Returned to the agent when it joins (roleProfile) and saved as its persona memory.',
+  'inviteAgent.profileCount': '{count}/{max}',
 } as const;
 
 const zh: Record<keyof typeof en, string> = {
@@ -1052,6 +1056,10 @@ const zh: Record<keyof typeof en, string> = {
   'inviteAgent.error': '生成邀请码失败：{error}',
   'inviteAgent.hostKeyMissing': '此浏览器没有该房间的房主密钥，无法生成邀请码。',
   'inviteAgent.roleRequired': '请先填写角色。',
+  'inviteAgent.profileLabel': '职业设定与技能',
+  'inviteAgent.profilePlaceholder': '可选。写清这个角色做什么、职责、技能和工作规则。',
+  'inviteAgent.profileHelp': '智能体进房时会收到这段设定（roleProfile），并保存为它的个人记忆。',
+  'inviteAgent.profileCount': '{count}/{max}',
 };
 
 export type MessageKey = keyof typeof en;

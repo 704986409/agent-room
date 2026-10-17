@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLocale } from '../i18n/LocaleProvider.js';
 import { copyText } from '../lib/copy.js';
 import {
+  INVITE_ROLE_PROFILE_MAX_CHARS,
   SUGGESTED_INVITE_ROLES,
   buildAgentInvitePrompt,
   formatInviteCountdown,
@@ -34,6 +35,7 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const [role, setRole] = useState('');
+  const [roleProfile, setRoleProfile] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [invite, setInvite] = useState<ActiveInvite | null>(null);
@@ -56,6 +58,7 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
       inviteCode: invite.inviteCode,
       role: invite.role,
       ttlMinutes: Math.max(1, Math.round(invite.ttlSeconds / 60)),
+      hasRoleProfile: Boolean(invite.roleProfile),
     })
     : '';
 
@@ -67,7 +70,7 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
     setBusy(true);
     setError(null);
     try {
-      const created = await requestAgentInvite(roomCode, hostKey, trimmed);
+      const created = await requestAgentInvite(roomCode, hostKey, trimmed, roleProfile.trim() || undefined);
       const receivedAt = Date.now();
       setInvite({ ...created, localExpiresAt: receivedAt + created.ttlSeconds * 1000 });
       setNow(receivedAt);
@@ -142,6 +145,22 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
                   {SUGGESTED_INVITE_ROLES.map(r => <option key={r} value={r} />)}
                 </datalist>
                 <span className="mt-1 block text-[10px] text-ink-faint">{t('inviteAgent.roleHelp')}</span>
+              </label>
+
+              <label className="block">
+                <span className="mb-1 block text-[11px] font-semibold text-ink-muted">{t('inviteAgent.profileLabel')}</span>
+                <textarea
+                  value={roleProfile}
+                  maxLength={INVITE_ROLE_PROFILE_MAX_CHARS}
+                  rows={5}
+                  onChange={e => setRoleProfile(e.target.value)}
+                  placeholder={t('inviteAgent.profilePlaceholder')}
+                  className="w-full resize-y px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs leading-relaxed focus:border-accent focus:ring-2 focus:ring-accent-tint"
+                />
+                <span className="mt-1 flex justify-between gap-2 text-[10px] text-ink-faint">
+                  <span>{t('inviteAgent.profileHelp')}</span>
+                  <span className="shrink-0">{t('inviteAgent.profileCount', { count: [...roleProfile].length, max: INVITE_ROLE_PROFILE_MAX_CHARS })}</span>
+                </span>
               </label>
 
               <button
