@@ -86,6 +86,15 @@ describe('createAgentInvite', () => {
     expect([...store.kv.values()].join()).not.toContain(invite.inviteCode);
   });
 
+  it('stores an optional role profile (<=4000 chars) and rejects longer ones', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师', roleProfile: '  负责后端。\r\n只用 TypeScript。  ' });
+    expect(invite.roleProfile).toBe('负责后端。\n只用 TypeScript。');
+    const none = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师', roleProfile: '   ' });
+    expect(none.roleProfile).toBeUndefined();
+    await expect(createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师', roleProfile: 'x'.repeat(4001) }))
+      .rejects.toMatchObject({ code: 'invalid_role_profile' });
+  });
+
   it('rejects an empty role', async () => {
     await expect(createAgentInvite(store, room, { hostKey: HOST_KEY, role: '  ' }))
       .rejects.toMatchObject({ code: 'invalid_role' });
@@ -115,6 +124,7 @@ describe('joinRoom agent invite gate', () => {
       requireAgentInvite: true, inviteCode: invite.inviteCode, personaId: 'something-else',
     });
     expect(joined.participant).toMatchObject({ role: '记忆审核员', memoryPersonaId: '记忆审核员', memoryIdentityType: 'persona' });
+    expect(joined.agentInvite).toEqual({ role: '记忆审核员', personaId: '记忆审核员' });
     await expect(joinRoom(client(), room.code, agent('Claude'), { requireAgentInvite: true, inviteCode: invite.inviteCode }))
       .rejects.toMatchObject({ code: 'invite_code_invalid' });
   });
@@ -128,6 +138,14 @@ describe('joinRoom agent invite gate', () => {
     expect(error).toBeInstanceOf(RemoteRoomApiError);
     expect(error).toMatchObject({ code: 'invite_code_expired' });
     expect(String(error.message)).toContain('重新生成');
+  });
+
+  it('returns the role profile of the spent invite', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '测试工程师', roleProfile: '负责回归测试。' });
+    const joined = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    expect(joined.agentInvite).toEqual({ role: '测试工程师', personaId: '测试工程师', roleProfile: '负责回归测试。' });
+    const resumed = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, seatKey: joined.seatKey });
+    expect(resumed.agentInvite).toBeUndefined();
   });
 
   it('lets a seatKey resume through without a code', async () => {

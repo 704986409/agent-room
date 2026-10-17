@@ -47,13 +47,13 @@ process.env.SRH_WEB_TOKEN = 'smoke-token';
  * role/personaId mirror what the join sends, so seats keep their old identity.
  */
 let inviteCounter = 0;
-function mintInvite(code: string, role = '', personaId?: string): string {
+function mintInvite(code: string, role = '', personaId?: string, roleProfile?: string): string {
   inviteCounter += 1;
   const inviteCode = `AI-SMOKE-${String(inviteCounter).padStart(4, '0')}`;
   const hash = createHash('sha256').update(inviteCode, 'utf8').digest('hex');
   const now = Date.now();
   smokeKv.set(`room:${code}:agent-invite:${hash}`, JSON.stringify({
-    code, role, ...(personaId ? { personaId } : {}), createdAt: now, expiresAt: now + 300_000, used: false,
+    code, role, ...(personaId ? { personaId } : {}), ...(roleProfile ? { roleProfile } : {}), createdAt: now, expiresAt: now + 300_000, used: false,
   }));
   return inviteCode;
 }
@@ -1042,8 +1042,8 @@ describe('hosted MCP endpoint', () => {
       const replay = await invoke('memory_write', privateWriteArgs);
       expect(replay.id).toBe(privateId);
 
-      const ageSeat = (seatName: string) => {
-        const raw = JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: Record<string, unknown>[] };
+      const ageSeat = (seatName: string, roomCode: string = code) => {
+        const raw = JSON.parse(smokeKv.get(`room:${roomCode}`)!) as { participants: Record<string, unknown>[] };
         for (const p of raw.participants) {
           if (p.name === seatName) {
             p.lastSeenAt = Date.now() - 121_000;
@@ -1051,7 +1051,7 @@ describe('hosted MCP endpoint', () => {
             delete p.listenLeases;
           }
         }
-        smokeKv.set(`room:${code}`, JSON.stringify(raw));
+        smokeKv.set(`room:${roomCode}`, JSON.stringify(raw));
       };
       const seatNames = () => (JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: { name: string }[] })
         .participants.map(p => p.name);
@@ -1113,6 +1113,34 @@ describe('hosted MCP endpoint', () => {
       expect(await invoke('memory_read', {
         code: otherRoomCode, seatKey: String(samePersonaOtherRoom.seatKey), id: privateId,
       })).toMatchObject({ code: 'NOT_FOUND' });
+
+      // Invite role profile: returned at join, saved as Persona memory, upserted (unchanged / updated), listed in a new session's Brief.
+      const profileRoom = await invoke('room_create', { topic: 'Role profile', name: 'Profile Host' });
+      const profileCode = String(profileRoom.code);
+      const profiled = await invoke('room_join', {
+        code: profileCode, name: 'Profiled', sessionId: 'profile-session-1',
+        inviteCode: mintInvite(profileCode, '测试工程师', '测试工程师', '负责回归测试，只用 vitest。'),
+      });
+      expect(profiled.roleProfile).toBe('负责回归测试，只用 vitest。');
+      expect(profiled.roleProfileMemory).toMatchObject({ status: 'created' });
+      expect(String(profiled.memoryBrief)).toContain('职业设定与技能：测试工程师');
+      ageSeat('Profiled', profileCode);
+      const sameProfile = await invoke('room_join', {
+        code: profileCode, name: 'Profiled', sessionId: 'profile-session-2',
+        inviteCode: mintInvite(profileCode, '测试工程师', '测试工程师', '负责回归测试，只用 vitest。'),
+      });
+      expect(sameProfile.assignedName).toBe('Profiled');
+      expect(sameProfile.roleProfileMemory).toMatchObject({ status: 'unchanged' });
+      ageSeat('Profiled', profileCode);
+      const changedProfile = await invoke('room_join', {
+        code: profileCode, name: 'Profiled', sessionId: 'profile-session-3',
+        inviteCode: mintInvite(profileCode, '测试工程师', '测试工程师', '负责回归测试，只用 vitest 和 Playwright。'),
+      });
+      expect(changedProfile.roleProfile).toBe('负责回归测试，只用 vitest 和 Playwright。');
+      expect(changedProfile.roleProfileMemory).toMatchObject({ status: 'updated', id: (profiled.roleProfileMemory as { id: string }).id });
+      expect(String(sameProfile.memoryBrief)).toContain('职业设定与技能：测试工程师');
+      const profileList = await invoke('memory_list', { code: profileCode, seatKey: String(changedProfile.seatKey), scope: 'persona' });
+      expect((profileList.items as { title: string }[]).filter(i => i.title === '职业设定与技能：测试工程师')).toHaveLength(1);
 
       // A proposal has to reach the reviewer through the room, not only through
       // the proposer's tool result — an analyst sitting in room_listen is the
