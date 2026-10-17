@@ -150,7 +150,7 @@ describe('P5 memory review HTTP API', () => {
     expect(runtime.createContext).toHaveBeenCalledOnce();
   });
 
-  it('lets the verified host approve a proposal and attempts its supersede notice', async () => {
+  it('lets the verified host approve a proposal without posting a supersede notice', async () => {
     const roomInstanceId = randomUUID();
     const proposalId = randomUUID();
     const winning = { status: 'approved', proposalId, version: 2, superseded: [randomUUID()] };
@@ -159,13 +159,11 @@ describe('P5 memory review HTTP API', () => {
       review: vi.fn(async () => winning),
       supersededProposalNotices: vi.fn(async () => []),
     };
-    const notifySuperseded = vi.fn(async () => true);
     const runtime: MemoryReviewHttpRuntime = {
       resolveRoom: async () => ({ roomInstanceId }),
       createContext: async () => ({
         service: service as never,
         caller: { roomInstanceId, identity: { type: 'room_owner', id: roomInstanceId }, verified: true },
-        notifySuperseded,
         close: async () => {},
       }),
     };
@@ -182,8 +180,9 @@ describe('P5 memory review HTTP API', () => {
       'host-approval',
       undefined,
     );
-    expect(notifySuperseded).toHaveBeenCalledWith(winning);
+    expect(service.supersededProposalNotices).not.toHaveBeenCalled();
     expect(res.body()).toMatchObject({ status: 'approved', superseded: winning.superseded });
+    expect(res.body()).not.toHaveProperty('supersededNotificationDelivered');
   });
 
   it('passes a required Chinese reason to reject and includes it in the returned result', async () => {

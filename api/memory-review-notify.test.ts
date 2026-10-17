@@ -22,6 +22,7 @@ import type { MemoryIdentity } from '@agent-room/memory';
 type FetchArgs = [input: RequestInfo | URL, init?: RequestInit];
 
 const ROOM_INSTANCE_ID = randomUUID();
+const SUPERSEDED_PROPOSAL_ID = '00000000-0000-4000-8000-0000000000aa';
 const SEAT_KEYS = {
   host: 'host-seat-key-aaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   proposer: 'proposer-seat-key-bbbbbbbbbbbbbbbbbbbbbbbb',
@@ -128,6 +129,7 @@ vi.mock('@agent-room/memory', async (importOriginal) => {
         return {
           status: decision === 'approve' ? 'approved' : 'rejected',
           proposalId,
+          ...(decision === 'approve' ? { superseded: [SUPERSEDED_PROPOSAL_ID] } : {}),
           ...(decision === 'reject' ? { reason } : {}),
         };
       }
@@ -477,31 +479,18 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     }
   });
 
-  it('posts one supersede room event mentioning the affected proposer', async () => {
-    const { notifySupersededMemoryProposals } = await import('./_memoryTools.js');
-    const winningProposalId = randomUUID();
-    const supersededProposalId = randomUUID();
-    const result = await notifySupersededMemoryProposals(
-      {} as never,
-      room.code,
-      room,
-      {
-        supersededProposalNotices: async () => [{
-          id: supersededProposalId,
-          title: 'Shared decision',
-          proposer: { type: 'persona', id: 'persona-alpha', personaId: 'persona-alpha' },
-        }],
-      } as never,
-      winningProposalId,
-      [supersededProposalId],
-    );
-    const event = messages.at(-1)!;
-    expect(result).toBe(true);
-    expect(messages.filter(message => message.text.includes('superseded'))).toHaveLength(1);
-    expect(event.text).toContain('@Agent A');
-    expect(event.text).toContain(supersededProposalId);
-    expect(event.text).toContain(winningProposalId);
-    expect(event.text).toContain('Re-propose against the latest version');
+  it('posts no supersede room event when an approval replaces other pending proposals', async () => {
+    const before = messages.length;
+    const result = await invoke('memory_review', {
+      code: room.code,
+      seatKey: SEAT_KEYS.reviewer,
+      action: 'approve',
+      proposalId: randomUUID(),
+      requestId: `approve-superseding-${randomUUID()}`,
+    });
+    expect(result).toMatchObject({ status: 'approved', superseded: [SUPERSEDED_PROPOSAL_ID] });
+    expect(result).not.toHaveProperty('supersededNotificationDelivered');
+    expect(messages.slice(before)).toHaveLength(0);
   });
 
   it('announces update and delete proposals with their own kind', async () => {

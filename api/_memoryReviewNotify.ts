@@ -35,13 +35,6 @@ export interface MemoryReviewNotice {
   readonly ownerFallback?: boolean;
 }
 
-export interface MemorySupersededNoticeItem {
-  readonly proposalId: string;
-  readonly title: string;
-  readonly proposerName: string;
-  readonly winningProposalId: string;
-}
-
 export interface MemoryReviewOutcomeNotice {
   readonly status: 'approved' | 'rejected';
   readonly proposerName: string;
@@ -117,28 +110,6 @@ export function buildMemoryReviewNoticeMessage(
   };
 }
 
-export function buildMemorySupersededNoticeMessage(
-  items: readonly MemorySupersededNoticeItem[],
-  now: number = Date.now(),
-): Message {
-  const lines = items.map(item => {
-    const proposer = safeText(item.proposerName, NAME_MAX_CHARS) || 'the proposer';
-    const title = safeText(item.title, TITLE_MAX_CHARS) || 'memory';
-    return `@${proposer} 🗂️ Memory proposal ${item.proposalId} superseded: "${title}" was updated by ${item.winningProposalId}. Re-propose against the latest version if still needed.`;
-  });
-  return {
-    id: now,
-    type: 'sys',
-    name: 'system',
-    initials: 'AR',
-    color: '#5B6AFF',
-    role: 'System',
-    text: lines.join(' '),
-    client: 'cc',
-    time: now,
-  };
-}
-
 export function buildMemoryReviewOutcomeNoticeMessage(
   notice: MemoryReviewOutcomeNotice,
   now: number = Date.now(),
@@ -173,25 +144,6 @@ export async function deliverMemoryReviewOutcomeNotice(
     await append(code, buildMemoryReviewOutcomeNoticeMessage(notice));
     return true;
   } catch {
-    return false;
-  }
-}
-
-export async function deliverMemorySupersededNotice(
-  append: MemoryReviewNoticeAppender,
-  code: string,
-  items: readonly MemorySupersededNoticeItem[],
-): Promise<boolean> {
-  if (items.length === 0) return true;
-  try {
-    await append(code, buildMemorySupersededNoticeMessage(items));
-    return true;
-  } catch (error) {
-    const reason = error instanceof Error ? error.name : 'unknown';
-    const detail = typeof (error as { code?: unknown } | null)?.code === 'string'
-      ? `/${(error as { code: string }).code}`
-      : '';
-    console.warn(`[room ${code}] superseded memory notice undelivered (${reason}${detail})`);
     return false;
   }
 }

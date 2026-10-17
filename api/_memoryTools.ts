@@ -33,7 +33,6 @@ import {
 import {
   deliverMemoryReviewNotice,
   deliverMemoryReviewOutcomeNotice,
-  deliverMemorySupersededNotice,
   type MemoryProposalKind,
 } from './_memoryReviewNotify.js';
 import { tryJevMemoryReview } from './_memoryJevReview.js';
@@ -245,33 +244,6 @@ function reviewerNamesFor(room: Room, recipients: readonly MemoryIdentity[]): st
     if (name && !names.includes(name)) names.push(name);
   }
   return names;
-}
-
-export async function notifySupersededMemoryProposals(
-  client: RemoteRoomClient,
-  code: string,
-  fallbackRoom: Room,
-  reviews: MemoryReviewService,
-  winningProposalId: string,
-  superseded: readonly string[] | undefined,
-): Promise<boolean | undefined> {
-  if (!superseded?.length) return undefined;
-  try {
-    const notices = await reviews.supersededProposalNotices(fallbackRoom.roomInstanceId!, superseded);
-    const room = await getRoom(client, code).catch(() => fallbackRoom);
-    const items = notices.map(notice => ({
-      proposalId: notice.id,
-      title: notice.title,
-      proposerName: reviewerNamesFor(room, [notice.proposer])[0] ?? notice.proposer.id,
-      winningProposalId,
-    }));
-    return await deliverMemorySupersededNotice(
-      (roomCode, message) => appendRoomEvent(client, roomCode, message), code, items,
-    );
-  } catch {
-    // The approval is committed already; notice delivery is best effort.
-    return false;
-  }
 }
 
 export async function notifyRejectedMemoryProposal(
@@ -554,15 +526,9 @@ export async function dispatchMemoryTool(
             client, seat.room.code, seat.room, repository, result, seat.participant.name,
           )
           : undefined;
-        const supersededNotificationDelivered = action === 'approve'
-          ? await notifySupersededMemoryProposals(
-            client, seat.room.code, seat.room, reviews, result.proposalId, result.superseded,
-          )
-          : undefined;
         return {
           ...result,
           ...(rejectionNotificationDelivered === undefined ? {} : { notificationDelivered: rejectionNotificationDelivered }),
-          ...(supersededNotificationDelivered === undefined ? {} : { supersededNotificationDelivered }),
         };
       }
       case 'memory_brief':

@@ -11,7 +11,7 @@ import {
   type TrustedMemoryReviewer,
 } from '@agent-room/memory';
 import { createRemoteRoomClient, getRoom, RemoteRoomApiError } from './_mcpRoomClient.js';
-import { notifyRejectedMemoryProposal, notifySupersededMemoryProposals, reviewerDirectory } from './_memoryTools.js';
+import { notifyRejectedMemoryProposal, reviewerDirectory } from './_memoryTools.js';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -29,9 +29,8 @@ export interface MemoryReviewRoomContext {
 }
 
 export interface MemoryReviewRuntimeContext {
-  readonly service: Pick<MemoryReviewService, 'listPending' | 'review' | 'supersededProposalNotices'>;
+  readonly service: Pick<MemoryReviewService, 'listPending' | 'review'>;
   readonly caller: TrustedMemoryReviewer;
-  notifySuperseded?(result: MemoryReviewResult): Promise<boolean | undefined>;
   notifyRejected?(result: MemoryReviewResult): Promise<boolean | undefined>;
   close(): Promise<void>;
 }
@@ -114,11 +113,6 @@ function productionRuntime(): MemoryReviewHttpRuntime {
       return {
         service,
         caller,
-        notifySuperseded: room.code && fallbackRoom
-          ? result => notifySupersededMemoryProposals(
-            client, room.code!, fallbackRoom, service, result.proposalId, result.superseded,
-          )
-          : undefined,
         notifyRejected: room.code && fallbackRoom
           ? result => notifyRejectedMemoryProposal(
             client, room.code!, fallbackRoom!, repository, result, fallbackRoom!.createdBy,
@@ -202,15 +196,11 @@ export function createMemoryReviewHandler(runtime: MemoryReviewHttpRuntime = pro
           body.requestId as string,
           action === 'reject' ? body.reason : undefined,
         );
-        const supersededNotificationDelivered = action === 'approve'
-          ? await context.notifySuperseded?.(result)
-          : undefined;
         const rejectionNotificationDelivered = action === 'reject'
           ? await context.notifyRejected?.(result)
           : undefined;
         res.status(200).json({
           ...result,
-          ...(supersededNotificationDelivered === undefined ? {} : { supersededNotificationDelivered }),
           ...(rejectionNotificationDelivered === undefined ? {} : { rejectionNotificationDelivered }),
         });
         return;
