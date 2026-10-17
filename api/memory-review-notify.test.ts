@@ -248,7 +248,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     vi.unstubAllGlobals();
   });
 
-  it('uses Jev first, commits the decision, and posts a short system event', async () => {
+  it('uses Jev first, commits the decision, and posts no room message for an approval', async () => {
     vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
     reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [] };
     vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response(JSON.stringify({
@@ -271,7 +271,8 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     });
     expect(systemReviewCalls).toHaveLength(1);
     expect(mention instanceof Error).toBe(false);
-    expect(messages.at(-1)?.text).toBe('@Agent A 记忆提议已通过：共享索引决定（审核员：Jev）');
+    expect(messages.some(message => String(message.text).includes('记忆提议已通过'))).toBe(false);
+    expect(messages.some(message => String(message.text).includes('记忆提议'))).toBe(false);
     expect(noticeTexts()).toHaveLength(0);
   });
 
@@ -294,6 +295,20 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     const result = await propose();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(result).toMatchObject({ code: 'PENDING_REVIEW', notificationDelivered: true });
+  });
+
+  it('posts no room message when an agent reviewer approves', async () => {
+    const before = messages.length;
+    const result = await invoke('memory_review', {
+      code: room.code,
+      seatKey: SEAT_KEYS.reviewer,
+      action: 'approve',
+      proposalId: randomUUID(),
+      requestId: 'agent-approve-1',
+    });
+    expect(result).toMatchObject({ status: 'approved' });
+    expect(result).not.toHaveProperty('notificationDelivered');
+    expect(messages.slice(before).some(message => String(message.text).includes('记忆提议'))).toBe(false);
   });
 
   it('returns the selected agent rejection reason and posts it to the proposer', async () => {

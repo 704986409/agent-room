@@ -167,6 +167,8 @@ export async function deliverMemoryReviewOutcomeNotice(
   code: string,
   notice: MemoryReviewOutcomeNotice,
 ): Promise<boolean> {
+  // Approvals no longer post a room message; only rejections are announced.
+  if (notice.status !== 'rejected') return false;
   try {
     await append(code, buildMemoryReviewOutcomeNoticeMessage(notice));
     return true;

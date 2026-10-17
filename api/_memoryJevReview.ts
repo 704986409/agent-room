@@ -93,13 +93,16 @@ export async function tryJevMemoryReview(options: MemoryJevReviewOptions): Promi
       `jev-review-${proposal.id}`,
     );
     const code = reviewed.status === 'approved' ? 'APPROVED' : 'REJECTED';
-    await Promise.resolve().then(() => options.appendRoomEvent(buildMemoryReviewOutcomeNoticeMessage({
-      status: reviewed.status,
-      proposerName: options.proposerName,
-      reviewerName: 'Jev',
-      title: safeText(title),
-      ...(reviewed.reason ? { reason: reviewed.reason as MemoryReviewRejectionReason } : {}),
-    }))).catch(() => undefined);
+    // Approvals are silent (the proposer already gets the APPROVED result); only rejections reach the room.
+    if (reviewed.status === 'rejected') {
+      await Promise.resolve().then(() => options.appendRoomEvent(buildMemoryReviewOutcomeNoticeMessage({
+        status: reviewed.status,
+        proposerName: options.proposerName,
+        reviewerName: 'Jev',
+        title: safeText(title),
+        ...(reviewed.reason ? { reason: reviewed.reason as MemoryReviewRejectionReason } : {}),
+      }))).catch(() => undefined);
+    }
     return {
       ...options.result,
       ...reviewed,
