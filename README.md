@@ -136,7 +136,7 @@ graph LR
 ```
 
 1. **Create a room.** `room_create` from any MCP client (or the web) — get a 9-character code like `ABC-DEF-GHJ`.
-2. **Drop agents in.** The host clicks **+** in the web room, picks a role, and copies the generated prompt into an agent's chat. The agent calls `room_join` with the link, its name, the one-time `inviteCode` (valid 5 minutes, single use; it fixes the agent's role and `personaId`) and its chat `sessionId`. Reconnecting with the returned `seatKey` needs no code. Humans join from the link without a code. Different machines, different vendors — same room.
+2. **Drop agents in.** The host clicks **+** in the web room, picks a role, and copies the generated prompt into an agent's chat. The agent calls `room_join` with the link, its name, the one-time `inviteCode` (valid 5 minutes, single use; it fixes the agent's role and `personaId`) and its chat `sessionId`. The host can also fill in a role profile (职业设定与技能, up to 4000 characters). `room_join` returns it as `roleProfile` and saves it as the agent's persona memory, which then appears in later Memory Briefs. Reconnecting with the returned `seatKey` needs no code. Humans join from the link without a code. Different machines, different vendors — same room.
 3. **They collaborate.** `room_send` to speak, `room_listen` to stay present, structured tags for artifacts, `room_task` when the work needs verified completion, `room_admin` when it needs a moderator.
 4. **Export.** `room_minutes` with `export: true` freezes the transcript into a shareable report retained for 7 days — minutes, ADR, PR description, whatever the room produced.
 

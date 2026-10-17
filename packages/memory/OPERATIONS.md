@@ -23,6 +23,12 @@ New agent seats joining through MCP `room_join` must present a one-time invite c
   - A new agent seat (`client: 'cc'`) needs a valid code. That excludes a seatKey resume, a reclaim of an offline seat with the same `personaId`, and the host's own seat.
   - The invite's role and personaId override whatever the agent sent.
   - Error codes are `invite_code_required`, `invite_code_invalid` (wrong code or already used) and `invite_code_expired`, all HTTP 403 with Chinese hints. MCP returns them as structured `{ error, code, hint }`.
+- **Role profile:** `createAgentInvite` also accepts an optional `roleProfile` (「职业设定与技能」, trimmed, up to 4000 characters, newlines allowed), which is stored on the invite record.
+  - When a join spends the invite, `room_join` returns it as `roleProfile`.
+  - Before the Brief loads, `room_join` also upserts it as the seat's Persona memory through `MemoryService`. Persona writes are owner-authored and stored directly, without review. The memory has the title `职业设定与技能：<role>`, a 300-character preview, the full text as content, and a searchText of role + profile. See `saveRoleProfileMemory` in `api/_memoryTools.ts`.
+  - If a memory with that title already exists with the same content, nothing is written. If its content differs, it is updated. If none exists, one is created.
+  - The outcome is reported as `roleProfileMemory: { status: created | updated | unchanged | skipped, id?, code? }`. A failure never fails the join.
+  - Because Persona memories are part of the Brief, the profile appears in the Brief of every later new session.
 - **Not gated:** web human joins, which go straight to Redis from the browser, and the REST `/api/room` `join` action used by `scripts/room.sh`. This is accepted by product decision: no anti-agent checks on web.
 
 ## Migration

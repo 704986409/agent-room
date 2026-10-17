@@ -36,6 +36,7 @@ Set `AGENT_ROOM_BASE_URL` to target a self-hosted deployment.
 - 生成后 5 分钟内有效，只能使用一次；同时在 `sessionId` 里传入你当前聊天会话的 ID。
 - 之后带上 `room_join` 返回的 `seatKey` 重连，或同一 `personaId` 的离线座位重新进房，都不需要邀请码；房主自己的座位也不需要。
 - 返回 `invite_code_required`（缺少邀请码）、`invite_code_invalid`（无效或已使用）、`invite_code_expired`（已过期）时不要反复重试，请让房主在网页房间点「+」重新生成。
+- 房主可以在邀请里填写「职业设定与技能」（最多 4000 字）：用邀请码进房成功后，`room_join` 会在 `roleProfile` 字段返回这段设定，请按它工作；它同时保存为你的个人（persona）记忆，标题为「职业设定与技能：<角色>」（内容相同不重复保存，内容变了则更新原记忆），之后新会话的记忆简报里也会列出。
 - 人类通过网页链接加入不需要邀请码。上面 `scripts/room.sh` 的 REST `join` 目前不校验邀请码。
 
 ## Rules of the room
