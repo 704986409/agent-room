@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import {
   applyMemoryMigrations,
   MemoryBriefService,
+  MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET,
   MemoryService,
   PostgresMemoryRepository,
   RedisMemoryBriefSessionStore,
@@ -163,7 +164,10 @@ describe('P4 Memory Brief with PostgreSQL 17 and Redis', () => {
     const result = await briefs.loadOnce(caller(roomId, personaId), `seat-session-${randomUUID()}`);
     expect(result.loaded).toBe(true);
     if (!result.loaded) return;
-    expect(result.brief.length).toBeLessThanOrEqual(1_800);
+    expect(MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET).toBe(3_000);
+    expect(result.brief.length).toBeLessThanOrEqual(3_000);
+    expect(result.brief.length).toBeGreaterThan(1_800);
+    expect(result.brief.endsWith('…')).toBe(true);
     expect(result.estimatedTokens).toBe(result.brief.length);
     expect(result.memoryIds.length).toBeGreaterThan(0);
     expect(result.brief).toContain('Recent changes');
