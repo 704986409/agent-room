@@ -45,7 +45,7 @@ When `JEV_API_KEY` is configured, TypeSafe Jev verifies semantically ranked room
 
 ### 语义去重候选
 
-Normalized exact title/content matches use the existing exact-match and pending-proposal deduplication paths, before embedding or Jev. For other Room writes, when the Jev duplicate verifier is enabled, the service embeds `${title} ${content}` with `Xenova/bge-small-zh-v1.5` and sends the top candidates to one `verifyMany` call. The default cap is 20 and the default Jev duplicate threshold is 0.7. There is no keyword-only duplicate cutoff. If embeddings are unavailable, or fewer than half of the Room candidates have compatible vectors, candidates are ranked by keyword similarity instead. A Jev error, timeout, or rate limit allows the write to continue to normal owner review.
+Normalized exact content matches (same title alone is not enough) use the existing exact-match and pending-proposal deduplication paths, before embedding or Jev. For other Room writes, when the Jev duplicate verifier is enabled, the service embeds `${title} ${content}` with `Xenova/bge-small-zh-v1.5` and sends the top candidates to one `verifyMany` call. The default cap is 20 and the default Jev duplicate threshold is 0.7. There is no keyword-only duplicate cutoff. If embeddings are unavailable, or fewer than half of the Room candidates have compatible vectors, candidates are ranked by keyword similarity instead. A Jev error, timeout, or rate limit allows the write to continue to normal owner review.
 
 Configure embeddings in the API server environment:
 
