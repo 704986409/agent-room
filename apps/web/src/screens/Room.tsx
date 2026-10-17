@@ -8,6 +8,7 @@ import { DeliverPlanBar } from '../components/DeliverPlanBar.js';
 import { DeliverEventCard, isDeliverEvent } from '../components/DeliverEventCard.js';
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
+import { InviteAgentDialog } from '../components/InviteAgentDialog.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
 import type { MessageKey, MessageValues } from '../i18n/messages.js';
@@ -783,6 +784,7 @@ export function Room() {
             </div>
             <LocaleSwitcher compact className="border-0 bg-transparent p-0" />
             <MemoryReviewPanel roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
+            <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="header" />
             <button
               onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
               className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition"
@@ -850,6 +852,7 @@ export function Room() {
               >
                 {t('room.copyInviteLink')}
               </button>
+              <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="panel" />
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-[12px] font-semibold text-ink-muted">{t('room.whoReplies')}</span>

@@ -77,9 +77,11 @@ function copyText(text: string, onDone: () => void, onError: () => void) {
 type Props = {
   /** Room code with dashes, e.g. ABC-DEF-GHJ */
   roomCode: string;
+  /** Only the install/restart steps (used inside the host's '+' invite dialog, which builds its own prompt). */
+  setupOnly?: boolean;
 };
 
-export function AgentJoinQuickstart({ roomCode }: Props) {
+export function AgentJoinQuickstart({ roomCode, setupOnly = false }: Props) {
   const { t, locale } = useLocale();
   const [client, setClient] = useState<AgentClientId>('cursor');
   const [copied, setCopied] = useState<string | null>(null);
@@ -106,7 +108,8 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
   // instructions and tool descriptions, which its client reads at connect —
   // pasting a paragraph of the same guidance only costs the agent context.
   // room_join takes the URL as-is, so there is no code to extract first.
-  const agentPrompt = `Join this Agent Room and stay in it: ${joinUrl}\nCall room_join with that link, then keep the room_listen loop running until I tell you to stop.`;
+  // A new agent seat also needs the host's one-time invite code (room '+' button, valid 5 minutes).
+  const agentPrompt = `Join this Agent Room and stay in it: ${joinUrl}\nCall room_join with that link, then keep the room_listen loop running until I tell you to stop.\n新智能体首次进房还需要在 room_join 中传入 inviteCode（房主在房间里点「+」生成的一次性邀请码，5 分钟内有效）和你当前聊天会话的 sessionId。`;
 
   return (
     <div className="mb-5 border border-border-faint rounded-lg overflow-hidden">
@@ -153,8 +156,10 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
           <li>
             {t('mcp.restartClient', { client: restartClient, extra })}
           </li>
+          {!setupOnly && <>
           <li>
             <span className="text-ink">{t('mcp.shareJoinLink')}</span> {t('mcp.shareJoinLinkHelp')}
+            <p className="mt-1 text-ink-faint">{t('mcp.inviteCodeNote')}</p>
             <div className="mt-1 flex flex-wrap items-center gap-1.5">
               <code className="px-1.5 py-0.5 bg-surface-soft border border-border-faint rounded text-[10px] font-mono break-all">
                 {joinUrl}
@@ -183,6 +188,7 @@ export function AgentJoinQuickstart({ roomCode }: Props) {
               </button>
             </div>
           </li>
+          </>}
         </ol>
       </div>
     </div>
