@@ -1,7 +1,7 @@
 import type { MemoryRepository } from './repository.js';
 import { normalizeForDuplicate } from './normalize.js';
 import { maxJevCandidatesFrom, resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
-import { findNearDuplicate, embedRoomContent } from './dedup/nearDuplicate.js';
+import { findNearDuplicate, embedRoomContent, type MemoryConflict } from './dedup/nearDuplicate.js';
 import { embeddingModelFrom, resolveEmbedder, type Embedder } from './embedding/embedder.js';
 import {
   MemoryConflictError,
@@ -70,6 +70,23 @@ export interface DuplicateCandidatesResult {
   readonly guidance: 'update_existing_or_clarify';
 }
 
+/**
+ * A Room create that would contradict an existing approved memory or pending proposal
+ * (same object and rule, changed value). Nothing is written and no room message is sent;
+ * the agent should memory_update the returned entry instead.
+ */
+export interface ConflictsWithExistingResult {
+  readonly code: 'CONFLICTS_WITH_EXISTING';
+  readonly conflictWith: {
+    readonly id: string;
+    readonly kind: 'memory' | 'proposal';
+    readonly title: string;
+    readonly content: string;
+  };
+  readonly guidance: 'memory_update_existing' | 'wait_for_pending_review';
+  readonly message: string;
+}
+
 export interface MutationCompletedResult {
   readonly status: 'created' | 'updated' | 'deleted';
   readonly id: string;
@@ -93,7 +110,8 @@ export type MemoryServiceMutationResult =
   | DuplicateCandidatesResult
   | MutationCompletedResult
   | DuplicateMemoryResult
-  | PendingReviewResult;
+  | PendingReviewResult
+  | ConflictsWithExistingResult;
 
 const ERROR_MESSAGES: Record<MemoryServiceErrorCode, string> = {
   NOT_FOUND: 'Memory not found.',
@@ -265,6 +283,18 @@ function isExactDuplicate(entry: MemoryEntry, candidate: MemoryContent): boolean
     || normalizeForDuplicate(entry.content) === normalizeForDuplicate(candidate.content);
 }
 
+function conflictResult(conflict: MemoryConflict): ConflictsWithExistingResult {
+  const isMemory = conflict.kind === 'memory';
+  return {
+    code: 'CONFLICTS_WITH_EXISTING',
+    conflictWith: { id: conflict.id, kind: conflict.kind, title: conflict.title, content: conflict.content },
+    guidance: isMemory ? 'memory_update_existing' : 'wait_for_pending_review',
+    message: isMemory
+      ? `房间已有同一规则的记忆但值不同：「${conflict.content}」。没有新写记忆；请用 memory_update 更新这条（id ${conflict.id}），不要在房间里发消息。`
+      : `已有同一规则但值不同的待审提议：「${conflict.content}」。没有新写记忆；等它审核后再用 memory_update 更新，不要在房间里发消息。`,
+  };
+}
+
 function toServiceMutation(result: MemoryMutationResult): MemoryServiceMutationResult {
   if (result.status === 'not_found') throw new MemoryServiceError('NOT_FOUND');
   if (result.status === 'pending_review') {
@@ -388,6 +418,11 @@ export class MemoryService {
         });
         nearDuplicateResult = nearDuplicate.duplicateResult;
         embedding = nearDuplicate.embedding;
+        if (nearDuplicate.conflict) {
+          const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
+          if (concurrentReplay) return toServiceMutation(concurrentReplay);
+          return conflictResult(nearDuplicate.conflict);
+        }
       }
 
       const result = scope.scope === 'persona'

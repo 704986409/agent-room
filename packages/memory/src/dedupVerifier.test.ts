@@ -40,7 +40,7 @@ describe('resolveDuplicateVerifier', () => {
   it('uses the JEV endpoint and default threshold when enabled by a key', async () => {
     vi.stubEnv('JEV_API_KEY', 'test-key');
     vi.stubEnv('JEV_API_URL', 'https://jev.test/v1/systemone');
-    const fetchMock = mockJev({ c0: 0.69 });
+    const fetchMock = mockJev({ c0: 0.59 });
     vi.stubGlobal('fetch', fetchMock);
     const verifier = resolveDuplicateVerifier();
     expect(verifier).toBeDefined();
@@ -82,4 +82,38 @@ describe('resolveDuplicateVerifier', () => {
     expect(body.questions.c0.instructions.existing_memory.title).toBe('现有记忆0');
     expect(body.questions.c1.instructions.existing_memory.title).toBe('现有记忆1');
   });
+
+  it('defaults the duplicate threshold to 0.6', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-key');
+    vi.stubGlobal('fetch', mockJev({ c0: 0.61 }));
+    const verifier = resolveDuplicateVerifier();
+    expect(await verifier!.verifyMany({ candidate, existings: [{ ...existing, score: 0.5 }] })).toBe(0);
+  });
+
+  it('judgeMany asks duplicate and conflict questions per candidate in one request', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-key');
+    const fetchMock = mockJev({ c0: 0.1, x0: 0.2, c1: 0.3, x1: 0.91 });
+    vi.stubGlobal('fetch', fetchMock);
+    const existings = [0, 1].map(index => ({ ...existing, id: `memory-${index}`, score: 0.5 }));
+    expect(await resolveDuplicateVerifier()!.judgeMany!({ candidate, existings }))
+      .toEqual({ duplicate: null, conflict: 1 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(Object.keys(body.questions)).toEqual(['c0', 'x0', 'c1', 'x1']);
+    expect(body.questions.x0.instructions.question).toContain('改值');
+  });
+
+  it('judgeMany prefers a duplicate over a conflict and honors the conflict threshold', async () => {
+    vi.stubEnv('JEV_API_KEY', 'test-key');
+    const existings = [0, 1].map(index => ({ ...existing, id: `memory-${index}`, score: 0.5 }));
+    vi.stubGlobal('fetch', mockJev({ c0: 0.8, x0: 0.1, c1: 0.1, x1: 0.95 }));
+    expect(await resolveDuplicateVerifier()!.judgeMany!({ candidate, existings }))
+      .toEqual({ duplicate: 0, conflict: null });
+
+    vi.stubEnv('MEMORY_CONFLICT_JEV_THRESHOLD', '0.96');
+    vi.stubGlobal('fetch', mockJev({ c0: 0.1, x0: 0.1, c1: 0.1, x1: 0.95 }));
+    expect(await resolveDuplicateVerifier()!.judgeMany!({ candidate, existings }))
+      .toEqual({ duplicate: null, conflict: null });
+  });
 });
+

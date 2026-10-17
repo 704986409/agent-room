@@ -37,7 +37,8 @@ When `JEV_API_KEY` is configured, TypeSafe Jev verifies semantically ranked room
 - `JEV_API_URL`: full Jev request endpoint override.
 - `JEV_TIMEOUT_MS`: request timeout in milliseconds; defaults to `5000`.
 - `MEMORY_DEDUP_VERIFIER`: duplicate verification is on when a key exists; set to `0`, `false`, or `off` to disable it.
-- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability cutoff from `0` to `1`; defaults to `0.7`.
+- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability cutoff from `0` to `1`; defaults to `0.6`.
+- `MEMORY_CONFLICT_JEV_THRESHOLD`: changed-value conflict probability cutoff from `0` to `1`; defaults to `0.7`.
 - `MEMORY_DEDUP_CANDIDATE_CAP`: maximum candidates sent together in one request; defaults to `20`.
 - `MEMORY_DEDUP_JEV_MAX_CANDIDATES`: legacy alias for `MEMORY_DEDUP_CANDIDATE_CAP`.
 - `MEMORY_DEDUP_VERIFIER_URL`: legacy duplicate-verifier endpoint override, retained as a Jev base URL override.
@@ -45,7 +46,7 @@ When `JEV_API_KEY` is configured, TypeSafe Jev verifies semantically ranked room
 
 ### 语义去重候选
 
-Normalized exact content matches (same title alone is not enough) use the existing exact-match and pending-proposal deduplication paths, before embedding or Jev. For other Room writes, when the Jev duplicate verifier is enabled, the service embeds `${title} ${content}` with `Xenova/bge-small-zh-v1.5` and sends the top candidates to one `verifyMany` call. The default cap is 20 and the default Jev duplicate threshold is 0.7. There is no keyword-only duplicate cutoff. If embeddings are unavailable, or fewer than half of the Room candidates have compatible vectors, candidates are ranked by keyword similarity instead. A Jev error, timeout, or rate limit allows the write to continue to normal owner review.
+Normalized exact content matches (same title alone is not enough) use the existing exact-match and pending-proposal deduplication paths, before embedding or Jev. For other Room writes, when the Jev duplicate verifier is enabled, the service embeds `${title} ${content}` with `Xenova/bge-small-zh-v1.5` and sends the top candidates to one `verifyMany` call. The default cap is 20 and the default Jev duplicate threshold is 0.6. The same request also asks, per candidate, whether the new memory is the same object and rule with a changed value; above the conflict threshold (default 0.7, and only when no candidate is a duplicate) nothing is written, no room message is sent, and `memory_write` returns `code: CONFLICTS_WITH_EXISTING` with the conflicting entry (`conflictWith`) and guidance to `memory_update` it (or to wait when the conflict is a pending proposal). There is no keyword-only duplicate cutoff. If embeddings are unavailable, or fewer than half of the Room candidates have compatible vectors, candidates are ranked by keyword similarity instead. A Jev error, timeout, or rate limit allows the write to continue to normal owner review.
 
 Configure embeddings in the API server environment:
 
@@ -55,7 +56,8 @@ Configure embeddings in the API server environment:
 - `MEMORY_EMBEDDING_ALLOW_DOWNLOAD`: set to `false` to prohibit remote model downloads; defaults to allowing downloads.
 - `MEMORY_EMBEDDING_TIMEOUT_MS`: per-call wait limit; defaults to `3000`. A first call can time out while loading; model loading continues in the background.
 - `MEMORY_DEDUP_CANDIDATE_CAP`: candidate limit for both ranking and Jev; defaults to `20`.
-- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability threshold; defaults to `0.7`.
+- `MEMORY_DEDUP_JEV_THRESHOLD`: duplicate probability threshold; defaults to `0.6`.
+- `MEMORY_CONFLICT_JEV_THRESHOLD`: conflict probability threshold; defaults to `0.7`.
 
 The fp32 model download is about 90 MB and uses about 250 MB RSS after loading. Single-thread inference is roughly 3 ms per sentence on the deployment target. Model files stay outside Git. After configuring the persistent cache volume, deploy in this order:
 

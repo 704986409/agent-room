@@ -4,8 +4,8 @@ export {
   keywordSimilarity,
   memoryKeywords,
 } from './keywords.js';
-export { resolveDuplicateVerifier } from './dedupVerifier.js';
-export type { DuplicateVerifier } from './dedupVerifier.js';
+export { resolveDuplicateVerifier, DEFAULT_DEDUP_JEV_THRESHOLD, DEFAULT_CONFLICT_JEV_THRESHOLD } from './dedupVerifier.js';
+export type { DuplicateVerifier, DuplicateVerifierInput, DuplicateJudgement } from './dedupVerifier.js';
 export {
   DEFAULT_DEDUP_CANDIDATE_CAP,
   rankNearDuplicateCandidates,
@@ -80,6 +80,7 @@ export type {
 export type {
   DuplicateCandidatesResult,
   DuplicateMemoryResult,
+  ConflictsWithExistingResult,
   MemoryServiceOptions,
   MemoryCallerContextResolver,
   MemoryCorePrinciplesReader,

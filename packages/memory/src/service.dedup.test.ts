@@ -213,4 +213,82 @@ describe('MemoryService semantic duplicate decisions', () => {
     const createProposal = repository.createRoomProposal as unknown as ReturnType<typeof vi.fn>;
     expect(createProposal.mock.calls[0]?.[5]).toEqual({ vector: [0.5, 0.5], model: 'test-model' });
   });
+
+  describe('conflicting value (same object, changed value)', () => {
+    const sixty: MemoryContent = {
+      title: '订单服务超时时间',
+      preview: '订单服务超时 60 秒',
+      content: '订单服务的超时时间统一为 60 秒。',
+      searchText: '订单服务 超时时间 60 秒',
+    };
+    const thirty = {
+      id: 'entry-thirty', kind: 'memory' as const,
+      title: '订单服务超时', content: '订单服务的超时时间统一设为 30 秒。', embedding: null,
+    };
+
+    it('returns update guidance for the conflicting entry and writes nothing', async () => {
+      const verifyMany = vi.fn(async () => null);
+      const judgeMany = vi.fn(async (_input: Parameters<DuplicateVerifier['verifyMany']>[0]) =>
+        ({ duplicate: null, conflict: 0 }));
+      const { service, repository } = makeService({ verifier: { verifyMany, judgeMany }, candidates: [thirty] });
+
+      const result = await service.createEntry(caller, 'room', sixty, 'conflict-60');
+      expect(result).toMatchObject({
+        code: 'CONFLICTS_WITH_EXISTING',
+        conflictWith: { id: 'entry-thirty', kind: 'memory', content: '订单服务的超时时间统一设为 30 秒。' },
+        guidance: 'memory_update_existing',
+      });
+      expect((result as { message: string }).message).toContain('memory_update');
+      expect(repository.createRoomProposal).not.toHaveBeenCalled();
+      expect(judgeMany).toHaveBeenCalledOnce();
+      expect(verifyMany).not.toHaveBeenCalled();
+    });
+
+    it('asks to wait when the conflict is a pending proposal', async () => {
+      const judgeMany = vi.fn(async () => ({ duplicate: null, conflict: 0 }));
+      const { service } = makeService({
+        verifier: { verifyMany: vi.fn(async () => null), judgeMany },
+        candidates: [{ ...thirty, id: 'proposal-thirty', kind: 'proposal' }],
+      });
+      expect(await service.createEntry(caller, 'room', sixty, 'conflict-pending')).toMatchObject({
+        code: 'CONFLICTS_WITH_EXISTING',
+        conflictWith: { id: 'proposal-thirty', kind: 'proposal' },
+        guidance: 'wait_for_pending_review',
+      });
+    });
+
+    it('still skips a true duplicate silently', async () => {
+      const judgeMany = vi.fn(async () => ({ duplicate: 0, conflict: null }));
+      const { service } = makeService({
+        verifier: { verifyMany: vi.fn(async () => null), judgeMany },
+        candidates: [{ ...thirty, content: '订单服务超时时间为 60 秒。' }],
+      });
+      expect(await service.createEntry(caller, 'room', sixty, 'dup-60')).toEqual({
+        code: 'DUPLICATE', duplicateOf: 'entry-thirty', duplicateKind: 'memory',
+      });
+    });
+
+    it('lets an unrelated write proceed to review', async () => {
+      const judgeMany = vi.fn(async () => ({ duplicate: null, conflict: null }));
+      const { service, repository } = makeService({
+        verifier: { verifyMany: vi.fn(async () => null), judgeMany },
+        candidates: [thirty],
+      });
+      const unrelated = { ...sixty, title: '本地 Postgres 端口', content: '本地 Postgres 连接用 5432 端口。', searchText: 'Postgres 5432' };
+      expect(await service.createEntry(caller, 'room', unrelated, 'unrelated'))
+        .toEqual({ code: 'PENDING_REVIEW', proposalId: 'proposal-new' });
+      expect(repository.createRoomProposal).toHaveBeenCalledOnce();
+    });
+
+    it('fails open to a normal write when the judge errors', async () => {
+      const judgeMany = vi.fn(async () => { throw new Error('jev down'); });
+      const { service } = makeService({
+        verifier: { verifyMany: vi.fn(async () => null), judgeMany },
+        candidates: [thirty],
+      });
+      expect(await service.createEntry(caller, 'room', sixty, 'judge-down'))
+        .toEqual({ code: 'PENDING_REVIEW', proposalId: 'proposal-new' });
+    });
+  });
 });
+

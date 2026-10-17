@@ -103,6 +103,20 @@ export function rankNearDuplicateCandidates(
 
 let warnedAboutVerifierFailure = false;
 
+/** An existing approved memory or pending proposal that the new write would contradict. */
+export interface MemoryConflict {
+  id: string;
+  kind: 'memory' | 'proposal';
+  title: string;
+  content: string;
+}
+
+export interface NearDuplicateOutcome {
+  duplicateResult?: MemoryMutationResult;
+  conflict?: MemoryConflict;
+  embedding?: MemoryEmbedding;
+}
+
 async function embedContent(
   content: Pick<MemoryContent, 'title' | 'content'>,
   embedder: Embedder | undefined,
@@ -136,7 +150,7 @@ export async function findNearDuplicate(
     embeddingModel: string;
     cap: number;
   },
-): Promise<{ duplicateResult?: MemoryMutationResult; embedding?: MemoryEmbedding }> {
+): Promise<NearDuplicateOutcome> {
   const rawCandidates = await input.repository.findRoomCreateDuplicateCandidates(input.scope);
   // Same title alone is not a duplicate (e.g. two different facts about data.csv); the body must match.
   const exact = rawCandidates.find(candidate =>
@@ -155,19 +169,32 @@ export async function findNearDuplicate(
   if (ranked.candidates.length === 0) return { ...(embedding ? { embedding } : {}) };
 
   try {
-    const duplicateIndex = await input.verifier.verifyMany({
+    const verifierInput = {
       candidate: { title: input.content.title, content: input.content.content },
       existings: ranked.candidates.map(({ id, kind, title, content, score }) => ({
         id, kind, title, content, score,
       })),
-    });
-    const duplicate = duplicateIndex === null ? undefined : ranked.candidates[duplicateIndex];
+    };
+    const judgement = input.verifier.judgeMany
+      ? await input.verifier.judgeMany(verifierInput)
+      : { duplicate: await input.verifier.verifyMany(verifierInput), conflict: null };
+    const duplicate = judgement.duplicate === null ? undefined : ranked.candidates[judgement.duplicate];
     const duplicateResult = duplicate?.kind === 'proposal'
       ? { status: 'pending_review' as const, id: duplicate.id, duplicateOf: duplicate.id }
       : duplicate?.kind === 'memory'
         ? { status: 'duplicate' as const, id: duplicate.id, duplicateOf: duplicate.id, duplicateKind: 'memory' as const }
         : undefined;
-    return { ...(duplicateResult ? { duplicateResult } : {}), ...(embedding ? { embedding } : {}) };
+    const conflicting = duplicateResult || judgement.conflict === null
+      ? undefined
+      : ranked.candidates[judgement.conflict];
+    const conflict = conflicting
+      ? { id: conflicting.id, kind: conflicting.kind, title: conflicting.title, content: conflicting.content }
+      : undefined;
+    return {
+      ...(duplicateResult ? { duplicateResult } : {}),
+      ...(conflict ? { conflict } : {}),
+      ...(embedding ? { embedding } : {}),
+    };
   } catch {
     if (!warnedAboutVerifierFailure) {
       warnedAboutVerifierFailure = true;
