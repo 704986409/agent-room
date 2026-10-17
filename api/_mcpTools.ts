@@ -86,6 +86,8 @@ export type { WakeOn } from './_mcpListen.js';
 
 export function memoryJoinNote(enabled: boolean, brief?: Record<string, unknown>): string | undefined {
   if (!enabled || (brief?.loaded === true && typeof brief.brief === 'string' && brief.brief.trim())) return undefined;
+  // Same chat session already received the Brief: memoryBriefSkipped says so; no generic note.
+  if (brief?.skipped === 'already_read_this_session') return undefined;
   return 'This room uses shared memory: search it before unfamiliar work; propose durable conventions/decisions/lessons with memory_write scope room (reviewed).';
 }
 
@@ -257,6 +259,7 @@ async function dispatch(
         hostKey: typeof a.hostKey === 'string' && a.hostKey ? a.hostKey : undefined,
         seatKey: typeof a.seatKey === 'string' && a.seatKey ? a.seatKey : undefined,
         personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
+        sessionId: typeof a.sessionId === 'string' ? a.sessionId : undefined,
       });
       const finalName = updated.participant.name;
       const reconnecting = finalName === a.name
@@ -300,7 +303,9 @@ async function dispatch(
           memoryBriefEstimated: memoryBrief.estimated,
           memoryBriefEstimatedTokens: memoryBrief.estimatedTokens,
           memoryIds: memoryBrief.memoryIds,
-        } : memoryBrief?.code ? { memoryBriefError: memoryBrief.code } : {}),
+        } : memoryBrief?.skipped === 'already_read_this_session'
+          ? { memoryBriefSkipped: 'already_read_this_session' }
+          : memoryBrief?.code ? { memoryBriefError: memoryBrief.code } : {}),
         ...(memoryNote ? { memoryNote } : {}),
         canSpeak: !muted,
         replyMode: updated.replyMode ?? 'open',

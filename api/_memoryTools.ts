@@ -531,8 +531,15 @@ export async function dispatchMemoryTool(
           ...(rejectionNotificationDelivered === undefined ? {} : { notificationDelivered: rejectionNotificationDelivered }),
         };
       }
-      case 'memory_brief':
-        return await brief.loadOnce(seat.caller, String(args.seatKey)) as unknown as Record<string, unknown>;
+      case 'memory_brief': {
+        // With a chat sessionId on the seat, the Brief is once per (room instance, identity, sessionId):
+        // the same session rejoining gets no second Brief. Without one, the per-join seatKey is the key.
+        const sessionId = seat.participant.memorySessionId?.trim();
+        const result = await brief.loadOnce(seat.caller, sessionId ? `session:${sessionId}` : String(args.seatKey));
+        return (sessionId && !result.loaded
+          ? { ...result, skipped: 'already_read_this_session' }
+          : result) as unknown as Record<string, unknown>;
+      }
       default:
         return { code: 'INVALID_INPUT' };
     }

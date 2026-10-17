@@ -1265,6 +1265,34 @@ describe('hosted MCP endpoint', () => {
       expect(await invoke('memory_brief', { code, seatKey: rotatedKey })).toMatchObject({ loaded: false });
       expect((await invoke('room_listen', { code, name: 'Agent A', since: 0, timeoutMs: 0 })).memoryBrief).toBeUndefined();
 
+      // Chat sessionId: the first join from a session gets the Brief; the same session rejoining does not.
+      const chatSession = `chat-${randomUUID()}`;
+      const sessionJoin = await invoke('room_join', {
+        code, name: 'Agent A', seatKey: rotatedKey, personaId: 'persona-alpha', role: 'builder', sessionId: chatSession,
+      });
+      expect(sessionJoin.memoryBrief).toContain(privateId);
+      expect(sessionJoin.memoryBriefSkipped).toBeUndefined();
+      const sameSession = await invoke('room_join', {
+        code, name: 'Agent A', seatKey: String(sessionJoin.seatKey), personaId: 'persona-alpha', role: 'builder', sessionId: chatSession,
+      });
+      expect(sameSession.memoryBrief).toBeUndefined();
+      expect(sameSession.memoryBriefSkipped).toBe('already_read_this_session');
+      expect(sameSession.memoryNote).toBeUndefined();
+      expect(await invoke('memory_brief', { code, seatKey: String(sameSession.seatKey) }))
+        .toMatchObject({ loaded: false, skipped: 'already_read_this_session' });
+      const newSession = await invoke('room_join', {
+        code, name: 'Agent A', seatKey: String(sameSession.seatKey), personaId: 'persona-alpha', role: 'builder', sessionId: `chat-${randomUUID()}`,
+      });
+      expect(newSession.memoryBrief).toContain(privateId);
+      expect(newSession.memoryBriefSkipped).toBeUndefined();
+      const noSession = await invoke('room_join', {
+        code, name: 'Agent A', seatKey: String(newSession.seatKey), personaId: 'persona-alpha', role: 'builder',
+      });
+      expect(noSession.memoryBrief).toContain(privateId);
+      expect(await invoke('room_join', {
+        code, name: 'Agent A', seatKey: String(noSession.seatKey), personaId: 'persona-alpha', sessionId: 'x'.repeat(257),
+      })).toMatchObject({ error: 'invalid_session_id' });
+
       const firstMiss = await invoke('memory_search', {
         code, seatKey: otherPersonaKey, keywords: ['no-such-memory-term'], requestId: `miss-one-${randomUUID()}`,
       });
@@ -1285,7 +1313,7 @@ describe('hosted MCP endpoint', () => {
         dependencies.redis,
       );
       const storageFailure = parsed(await callTool(
-        roomClient, 'full', 'memory_read', { code, seatKey: rotatedKey, id: privateId }, undefined, failedDependencies,
+        roomClient, 'full', 'memory_read', { code, seatKey: String(noSession.seatKey), id: privateId }, undefined, failedDependencies,
       ));
       expect(storageFailure).toMatchObject({ code: 'STORAGE_ERROR' });
       expect(JSON.stringify(storageFailure)).not.toContain('private database connection detail');

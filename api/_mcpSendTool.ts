@@ -148,6 +148,9 @@ export function remoteApiErrorResult(e: RemoteRoomApiError, name: string): McpTo
   if (e.code === 'SEAT_IN_USE') {
     return handled({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
   }
+  if (e.code === 'invalid_session_id') {
+    return handled({ error: 'invalid_session_id', hint: 'sessionId 必须是 1–256 个字符的非空文本，且不含控制字符。请传入你当前聊天会话的 ID，或不传 sessionId。' });
+  }
   if (e.code === 'NotParticipantError') {
     // A send from an agent that never joined fails the same shape as any
     // other refused send (`sent: false`), and is told to join rather than

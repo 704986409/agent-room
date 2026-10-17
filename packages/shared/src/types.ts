@@ -34,6 +34,11 @@ export interface Participant {
   memoryPersonaId?: string;
   /** Server-assigned principal ID for non-Persona memory identities. */
   memoryPrincipalId?: string;
+  /**
+   * The agent's own current chat/conversation session ID, as supplied on room_join (free text, <=256 chars).
+   * When present, the Memory Brief is given once per (room instance, identity, sessionId).
+   */
+  memorySessionId?: string;
   /** Server-derived memory identity category, stored with the Room seat. */
   memoryIdentityType?: 'persona' | 'room_member' | 'room_owner';
   /** True only for a seat that passed the Room hostKey check. */

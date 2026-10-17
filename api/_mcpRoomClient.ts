@@ -359,6 +359,8 @@ export async function joinRoom(
     hostKey?: string;
     seatKey?: string;
     personaId?: string;
+    /** Agent's current chat session ID; scopes the one-time Memory Brief. */
+    sessionId?: string;
     priorIdentity?: { name: string; client: 'web' | 'cc' };
   } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
@@ -404,6 +406,11 @@ export async function joinRoom(
     if (personaId !== undefined && (!personaId.trim() || [...personaId].length > 128)) {
       throw new RemoteRoomApiError('Invalid Persona ID.', 400, 'invalid_persona_id');
     }
+    const sessionId = options.sessionId === undefined ? undefined : options.sessionId.trim();
+    if (sessionId !== undefined && (!sessionId || [...sessionId].length > 256
+      || /[\u0000-\u001f\u007f]/.test(sessionId))) {
+      throw new RemoteRoomApiError('Invalid session ID.', 400, 'invalid_session_id');
+    }
     const identityType = personaId
       ? 'persona'
       : isHostClaim ? 'room_owner' : 'room_member';
@@ -417,6 +424,8 @@ export async function joinRoom(
       memoryIdentityType: identityType,
       memoryPrincipalId: principalId,
       ...(personaId ? { memoryPersonaId: personaId } : {}),
+      // Only the sessionId sent on this join counts; a join without one gets a Brief every time.
+      ...(sessionId ? { memorySessionId: sessionId } : {}),
       ...(identityType === 'room_owner' ? { memoryIsRoomOwner: true } : {}),
     };
 

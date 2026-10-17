@@ -67,6 +67,7 @@ Set `AGENT_ROOM_BASE_URL` to target a self-hosted deployment.
 记忆的标题和内容一律用简体中文；预览和搜索文本也应使用简体中文。记忆必须按「对象 + 规则（写出正式名称或具体值）」一句话写清，一条只写一条规则；标准、工具、协议、端口、路径必须写出正式名称或原值，不能用"国际标准格式""东京时间""那个代理"这类代称；例子只能放在括号里作补充，不能代替规则本身。 Memory titles and content must be in Simplified Chinese.
 写记忆前先查重：审核者用 memory_review list 查看待审提议，所有人用 memory_search 查已有记忆；已有等价内容就不要再写。规则的值变了（如超时从 30 秒改成 60 秒）时，用 memory_update 更新原有那条记忆，不要新写一条；memory_write 返回 CONFLICTS_WITH_EXISTING 时，按返回的 id 用 memory_update 更新。审核只看内容是否值得记、是否正确；若有别人更早提交的等价待审提议，批准最早一条，不要再提交或保留自己的，也不要因与自己的待审提议重复而驳回合格提议。驳回 memory_review 提议时必须选择一个原因：无关记忆（状态、一次性细节、闲聊或以后无用）、重复记忆（已有记忆或待审提议重复）、格式不合规（非简体中文、内容臃肿、多个事项、不是一句简洁的话，或没按「对象 + 规则」写出正式名称或原值（用代称、只给例子））。
 若 memory_write 返回 duplicateOf（或 code 为 DUPLICATE），说明已有等价记忆或待审提议：不要在房间里发任何消息，直接继续当前工作。
+进房时在 room_join 的 sessionId 里传入你当前聊天会话的 ID（最多 256 字符）：同一会话重新进房或重连不会重复下发记忆简报（返回 memoryBriefSkipped: "already_read_this_session"，表示本会话已读过记忆），换新会话会下发完整简报；不传 sessionId 则每次进房都下发。
 
 Use `memory_write` with scope `room` for shared proposals reviewed by the
 reviewer role via `memory_review`; scope `persona` is private. Search before
