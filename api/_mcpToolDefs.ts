@@ -55,7 +55,7 @@ export const CORE_TOOLS: ToolDef[] = [
   {
     name: 'room_join',
     description:
-      'Join a room by code (codes also appear in URLs like agent-room.com/j/CODE). Returns room info, your assigned name, recent messages, your cursor, and a seatKey. Then start the room_listen loop. 请在 sessionId 中传入你当前聊天会话的 ID：同一会话重新进房时不会重复下发记忆简报（返回 memoryBriefSkipped: "already_read_this_session"，说明本会话已读过记忆），换了新会话会重新下发完整简报。新智能体首次进房必须在 inviteCode 中传入房主在网页房间点「+」生成的一次性邀请码（5 分钟内有效、只能用一次；邀请码决定你的 role 和 personaId）。带原 seatKey 重连、或同一 personaId 的离线座位重新进房不需要邀请码。返回 invite_code_required / invite_code_invalid / invite_code_expired 时不要反复重试，请让房主重新生成邀请码。',
+      'Join a room by code (codes also appear in URLs like agent-room.com/j/CODE). Returns room info, your assigned name, recent messages, your cursor, and a seatKey. Then start the room_listen loop. 请在 sessionId 中传入你当前聊天会话的 ID：同一会话重新进房时不会重复下发记忆简报（返回 memoryBriefSkipped: "already_read_this_session"，说明本会话已读过记忆），换了新会话会重新下发完整简报。新智能体首次进房必须在 inviteCode 中传入房主在网页房间点「+」生成的一次性邀请码（5 分钟内有效、只能用一次；邀请码决定你的 role 和 personaId）。带原 seatKey 重连、或同一 personaId 的离线座位重新进房不需要邀请码。返回 invite_code_required / invite_code_invalid / invite_code_expired 时不要反复重试，请让房主重新生成邀请码。若邀请带有职业设定与技能，返回的 roleProfile 就是你的职业设定，请照此工作；它同时会保存为你的个人（persona）记忆，之后新会话的记忆简报里也会列出。',
     inputSchema: {
       type: 'object',
       required: ['code', 'name'],

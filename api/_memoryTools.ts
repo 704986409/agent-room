@@ -1,4 +1,4 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Participant, Room } from '@agent-room/shared';
 import {
   MemoryBriefService,
@@ -546,6 +546,72 @@ export async function dispatchMemoryTool(
   } catch (error) {
     if (error instanceof MemoryServiceError) return { code: error.code };
     return { code: 'STORAGE_ERROR' };
+  } finally {
+    await repository?.close().catch(() => {});
+  }
+}
+
+/** Title prefix of the Persona memory that carries an invite's 「职业设定与技能」. */
+export const ROLE_PROFILE_MEMORY_TITLE_PREFIX = '职业设定与技能：';
+
+export function roleProfileMemoryContent(role: string, roleProfile: string): {
+  title: string; preview: string; content: string; searchText: string;
+} {
+  const flat = roleProfile.replace(/\s+/g, ' ').trim();
+  const preview = [...flat].length > 300 ? `${[...flat].slice(0, 299).join('')}…` : flat;
+  return {
+    title: `${ROLE_PROFILE_MEMORY_TITLE_PREFIX}${[...role].slice(0, 180).join('')}`,
+    preview,
+    content: roleProfile,
+    searchText: `${role} 职业设定 技能 ${flat}`,
+  };
+}
+
+/**
+ * room_join with an invite that carries a role profile: save it as the seat's own
+ * Persona memory (Persona writes are owner-authored and stored directly, no review).
+ * Same title + same content → unchanged; same title + different content → update;
+ * none → create. Never throws: a failure is reported, the join still succeeds.
+ */
+export async function saveRoleProfileMemory(
+  client: RemoteRoomClient,
+  code: string,
+  seatKey: string,
+  role: string,
+  roleProfile: string,
+  dependencies?: MemoryToolDependencies,
+): Promise<{ status: 'created' | 'updated' | 'unchanged' | 'skipped'; id?: string; code?: string }> {
+  const resolved = await resolveSeat(client, code, seatKey);
+  if (resolved.error) return { status: 'skipped', code: resolved.error };
+  const seat = resolved.seat!;
+  if (!seat.caller.personaId) return { status: 'skipped', code: 'NOT_PERSONA_SEAT' };
+  let repository: (MemoryRepository & { close(): Promise<void> }) | undefined;
+  try {
+    const deps = dependencies ?? productionDependencies();
+    repository = await deps.openRepository();
+    const service = new MemoryService(repository);
+    const value = roleProfileMemoryContent(role, roleProfile);
+    let existingId: string | undefined;
+    for (let offset = 0; !existingId; offset += 100) {
+      const page = await service.listEntries(seat.caller, 'persona', { limit: 100, offset });
+      existingId = page.find(entry => entry.title === value.title)?.id;
+      if (page.length < 100) break;
+    }
+    if (existingId) {
+      const current = await service.readEntry(seat.caller, 'persona', existingId);
+      if (current.content === value.content) return { status: 'unchanged', id: existingId };
+      const updated = await service.updateEntry(seat.caller, 'persona', existingId, value, `role-profile-${randomUUID()}`);
+      if ('code' in updated && updated.code === 'DUPLICATE') return { status: 'unchanged', id: String(updated.duplicateOf) };
+      if ('code' in updated) return { status: 'skipped', code: String(updated.code) };
+      return { status: 'updated', id: existingId };
+    }
+    const created = await service.createEntry(seat.caller, 'persona', value, `role-profile-${randomUUID()}`);
+    if ('code' in created && created.code === 'DUPLICATE') return { status: 'unchanged', id: String(created.duplicateOf) };
+    if ('code' in created) return { status: 'skipped', code: String(created.code) };
+    return { status: 'created', ...('id' in created ? { id: String(created.id) } : {}) };
+  } catch (error) {
+    if (error instanceof MemoryServiceError) return { status: 'skipped', code: error.code };
+    return { status: 'skipped', code: 'STORAGE_ERROR' };
   } finally {
     await repository?.close().catch(() => {});
   }

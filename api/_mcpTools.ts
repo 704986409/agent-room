@@ -54,7 +54,7 @@ import {
   clampListenMs,
   type HttpHarness,
 } from './_mcpHarness.js';
-import { dispatchMemoryTool, isMemoryEnabled, isMemoryToolName, loadJoinBrief } from './_memoryTools.js';
+import { dispatchMemoryTool, isMemoryEnabled, isMemoryToolName, loadJoinBrief, saveRoleProfileMemory } from './_memoryTools.js';
 import type { MemoryToolDependencies } from './_memoryTools.js';
 import { requireFields } from './_mcpArgs.js';
 import { buildMessage, colorForName, initialsFor } from './_mcpIdentity.js';
@@ -288,6 +288,15 @@ async function dispatch(
         undefined,
         finalName,
       );
+      // An invite's 「职业设定与技能」 goes back to the agent and into its Persona memory
+      // (saved before the Brief loads, so this join's Brief already lists it).
+      const roleProfile = updated.agentInvite?.roleProfile;
+      let roleProfileMemory: Record<string, unknown> | undefined;
+      if (roleProfile && isMemoryEnabled()) {
+        roleProfileMemory = await saveRoleProfileMemory(
+          client, a.code, updated.seatKey!, updated.agentInvite!.role, roleProfile, memoryDependencies,
+        );
+      }
       let memoryBrief: Record<string, unknown> | undefined;
       if (isMemoryEnabled()) {
         memoryBrief = await loadJoinBrief(client, a.code, updated.seatKey!, memoryDependencies);
@@ -310,6 +319,8 @@ async function dispatch(
           ? { memoryBriefSkipped: 'already_read_this_session' }
           : memoryBrief?.code ? { memoryBriefError: memoryBrief.code } : {}),
         ...(memoryNote ? { memoryNote } : {}),
+        ...(roleProfile ? { roleProfile } : {}),
+        ...(roleProfileMemory ? { roleProfileMemory } : {}),
         canSpeak: !muted,
         replyMode: updated.replyMode ?? 'open',
         participants: updated.participants.map(p => ({
