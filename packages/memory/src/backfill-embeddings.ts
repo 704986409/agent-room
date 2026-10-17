@@ -1,7 +1,7 @@
 import { Pool, type QueryResult } from 'pg';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createEmbedder, embeddingModelFrom, type Embedder } from './embedding/embedder.js';
+import { createEmbedder, storedEmbeddingModelFrom, type Embedder } from './embedding/embedder.js';
 
 const DEFAULT_BATCH_SIZE = 16;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -69,7 +69,8 @@ async function backfillTable(
 
     let vectors: number[][] | null = null;
     try {
-      vectors = await input.embedder.embed(rows.rows.map(row => `${row.title} ${row.content}`));
+      // Content only: dedup ignores titles.
+      vectors = await input.embedder.embed(rows.rows.map(row => row.content));
     } catch {
       vectors = null;
     }
@@ -111,7 +112,7 @@ export async function backfillEmbeddings(options: BackfillEmbeddingOptions): Pro
   const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   if (!Number.isSafeInteger(batchSize) || batchSize < 1) throw new TypeError('batchSize must be positive.');
   const started = (options.now ?? Date.now)();
-  const model = options.model ?? embeddingModelFrom();
+  const model = options.model ?? storedEmbeddingModelFrom();
   const shared = { ...options, model, batchSize };
   const entries = await backfillTable({ ...shared, table: 'entries' });
   const proposals = await backfillTable({ ...shared, table: 'proposals' });

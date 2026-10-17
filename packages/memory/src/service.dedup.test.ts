@@ -49,15 +49,15 @@ function makeService(input: {
 }
 
 describe('MemoryService semantic duplicate decisions', () => {
-  it('keeps exact normalized matches on the early path without verifier or embedder calls', async () => {
-    const exact: MemoryEntry = {
-      id: 'entry-exact',
+  it('ignores titles: a same-title approved memory with different content goes to the normal path and is written', async () => {
+    const sameTitle: MemoryEntry = {
+      id: 'entry-same-title-approved',
       room_instance_id: roomId,
       persona_id: null,
       scope: 'room',
       title: candidate.title,
       preview: candidate.preview,
-      content: 'A different body.',
+      content: '订单服务的日志级别线上用 warn。',
       search_text: candidate.searchText,
       version: 1,
       updated_at: new Date(),
@@ -65,28 +65,28 @@ describe('MemoryService semantic duplicate decisions', () => {
       source_message_id: null,
       deleted_at: null,
     };
-    const verifyMany = vi.fn(async (_input: Parameters<DuplicateVerifier['verifyMany']>[0]) => 0);
+    const verifyMany = vi.fn(async () => null);
+    const judgeMany = vi.fn(async (_input: Parameters<DuplicateVerifier['verifyMany']>[0]) =>
+      ({ duplicate: null, conflict: null }));
     const embed = vi.fn(async () => [[1, 0]]);
     const { service, repository } = makeService({
-      verifier: { verifyMany },
+      verifier: { verifyMany, judgeMany },
       embedder: { embed },
-      entries: [exact],
+      entries: [sameTitle],
+      candidates: [{ id: sameTitle.id, kind: 'memory', title: sameTitle.title, content: sameTitle.content, embedding: [1, 0] }],
     });
 
-    expect(await service.createEntry(caller, 'room', candidate, 'exact-match')).toEqual({
-      status: 'duplicate_candidates',
-      candidates: [{ id: exact.id, title: exact.title, preview: exact.preview }],
-      guidance: 'update_existing_or_clarify',
-    });
-    expect(verifyMany).not.toHaveBeenCalled();
-    expect(embed).not.toHaveBeenCalled();
-    expect(repository.findRoomCreateDuplicateCandidates).not.toHaveBeenCalled();
+    expect(await service.createEntry(caller, 'room', candidate, 'same-title-approved'))
+      .toEqual({ code: 'PENDING_REVIEW', proposalId: 'proposal-new' });
+    expect(judgeMany).toHaveBeenCalledOnce();
+    expect(embed).toHaveBeenCalledWith([candidate.content]);
+    expect(repository.createRoomProposal).toHaveBeenCalledOnce();
   });
 
   it('sends a high-keyword non-exact pair to Jev instead of auto-skipping it', async () => {
     expect(keywordSimilarity(
-      memoryKeywords(`${candidate.title} ${candidate.content}`),
-      memoryKeywords(`${similarCandidate.title} ${similarCandidate.content}`),
+      memoryKeywords(candidate.content),
+      memoryKeywords(similarCandidate.content),
     )).toBeGreaterThanOrEqual(0.5);
     const verifyMany = vi.fn(async (_input: Parameters<DuplicateVerifier['verifyMany']>[0]) => null);
     const embed = vi.fn(async () => null);
@@ -97,7 +97,7 @@ describe('MemoryService semantic duplicate decisions', () => {
     });
     expect(verifyMany).toHaveBeenCalledOnce();
     expect(verifyMany.mock.calls[0]?.[0].existings[0]?.id).toBe(similarCandidate.id);
-    expect(embed).toHaveBeenCalledWith([`${candidate.title} ${candidate.content}`]);
+    expect(embed).toHaveBeenCalledWith([candidate.content]);
   });
 
   it('uses the pending proposal exact-text path without Jev or embedding', async () => {
@@ -245,7 +245,7 @@ describe('MemoryService semantic duplicate decisions', () => {
 
     expect(await service.updateEntry(caller, 'room', current.id, { content: 'Updated content' }, 'update-vector'))
       .toEqual({ code: 'PENDING_REVIEW', proposalId: 'proposal-new' });
-    expect(embed).toHaveBeenCalledWith(['Existing update title Updated content']);
+    expect(embed).toHaveBeenCalledWith(['Updated content']);
     const createProposal = repository.createRoomProposal as unknown as ReturnType<typeof vi.fn>;
     expect(createProposal.mock.calls[0]?.[5]).toEqual({ vector: [0.5, 0.5], model: 'test-model' });
   });
@@ -326,6 +326,18 @@ describe('MemoryService semantic duplicate decisions', () => {
       expect(await service.createEntry(caller, 'room', sixty, 'judge-down'))
         .toEqual({ code: 'PENDING_REVIEW', proposalId: 'proposal-new' });
     });
+  });
+
+  it('ignores stored vectors embedded under a different tag (e.g. old title+content vectors)', async () => {
+    const stale = { id: 'entry-stale', kind: 'memory' as const, title: 'x', content: '猫咪每天喜欢在窗边晒太阳。', embedding: [1, 0], embeddingModel: 'old-model' };
+    const fresh = { id: 'entry-fresh', kind: 'memory' as const, title: 'y', content: '订单服务的超时时间统一设为 60 秒。', embedding: [0, 1], embeddingModel: 'test-model' };
+    const verifyMany = vi.fn(async (_input: Parameters<DuplicateVerifier['verifyMany']>[0]) => null);
+    const { service } = makeService({
+      verifier: { verifyMany }, embedder: { embed: vi.fn(async () => [[1, 0]]) }, candidates: [stale, fresh],
+    });
+    await service.createEntry(caller, 'room', candidate, 'stale-tag');
+    // Only one of two candidates has a usable vector (>= half), so cosine ranking keeps just the fresh one.
+    expect(verifyMany.mock.calls[0]?.[0].existings.map(item => item.id)).toEqual(['entry-fresh']);
   });
 });
 

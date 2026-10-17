@@ -59,10 +59,11 @@ const CONFLICT_CRITERIA = {
 
 type Existing = DuplicateVerifierInput['existings'][number];
 
+/** Dedup ignores titles: Jev compares the memory content only. */
 function pairInstructions(candidate: DuplicateVerifierInput['candidate'], existing: Existing, question: string) {
   return {
-    new_memory: { title: candidate.title, content: candidate.content },
-    existing_memory: { title: existing.title, content: existing.content },
+    new_memory: { content: candidate.content },
+    existing_memory: { content: existing.content },
     question,
   };
 }

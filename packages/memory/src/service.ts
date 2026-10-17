@@ -2,7 +2,7 @@ import type { MemoryRepository } from './repository.js';
 import { normalizeForDuplicate } from './normalize.js';
 import { maxJevCandidatesFrom, resolveDuplicateVerifier, type DuplicateVerifier } from './dedupVerifier.js';
 import { findNearDuplicate, embedRoomContent, type MemoryConflict } from './dedup/nearDuplicate.js';
-import { embeddingModelFrom, resolveEmbedder, type Embedder } from './embedding/embedder.js';
+import { storedEmbeddingModelFrom, resolveEmbedder, type Embedder } from './embedding/embedder.js';
 import {
   MemoryConflictError,
   MemoryForbiddenError,
@@ -64,12 +64,6 @@ export interface MemoryBriefSourceEntry {
   readonly updatedAt: Date;
 }
 
-export interface DuplicateCandidatesResult {
-  readonly status: 'duplicate_candidates';
-  readonly candidates: readonly MemoryEntrySummary[];
-  readonly guidance: 'update_existing_or_clarify';
-}
-
 /**
  * A Room create that would contradict an existing approved memory or pending proposal
  * (same object and rule, changed value). Nothing is written and no room message is sent;
@@ -109,7 +103,6 @@ export interface DuplicateMemoryResult {
 }
 
 export type MemoryServiceMutationResult =
-  | DuplicateCandidatesResult
   | MutationCompletedResult
   | DuplicateMemoryResult
   | PendingReviewResult
@@ -280,9 +273,9 @@ function mergeUpdate(entry: MemoryEntry, update: MemoryUpdate): MemoryContent {
 
 
 
+/** Dedup ignores titles: only the normalized content decides an exact duplicate. */
 function isExactDuplicate(entry: MemoryEntry, candidate: MemoryContent): boolean {
-  return normalizeForDuplicate(entry.title) === normalizeForDuplicate(candidate.title)
-    || normalizeForDuplicate(entry.content) === normalizeForDuplicate(candidate.content);
+  return normalizeForDuplicate(entry.content) === normalizeForDuplicate(candidate.content);
 }
 
 function duplicateMemoryResult(entry: { id: string; title: string; content: string }): DuplicateMemoryResult {
@@ -335,7 +328,7 @@ export class MemoryService {
       ? undefined
       : options.duplicateVerifier ?? resolveDuplicateVerifier();
     this.embedder = options.embedder === null ? undefined : options.embedder ?? resolveEmbedder();
-    this.embeddingModel = options.embeddingModel ?? embeddingModelFrom();
+    this.embeddingModel = options.embeddingModel ?? storedEmbeddingModelFrom();
     this.duplicateVerifierMaxCandidates = Number.isSafeInteger(options.duplicateVerifierMaxCandidates)
       && options.duplicateVerifierMaxCandidates! > 0
       ? options.duplicateVerifierMaxCandidates!
@@ -408,11 +401,11 @@ export class MemoryService {
       const replay = await this.requestReplay(trusted, identity, idempotencyKey);
       if (replay) return toServiceMutation(replay);
 
-      const candidates = await this.findDuplicateCandidates(scope, content);
+      const candidates = await this.findExactContentDuplicates(scope, content);
       if (candidates.length) {
         const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
         if (concurrentReplay) return toServiceMutation(concurrentReplay);
-        return this.exactOrCandidatesResult(candidates, content);
+        return this.exactDuplicateResult(candidates);
       }
 
       let nearDuplicateResult: MemoryMutationResult | undefined;
@@ -476,11 +469,11 @@ export class MemoryService {
       const current = await this.repository.readEntry(scope, entryId);
       if (!current) throw new MemoryServiceError('NOT_FOUND');
       const candidateContent = mergeUpdate(current, update);
-      const candidates = await this.findDuplicateCandidates(scope, candidateContent, entryId);
+      const candidates = await this.findExactContentDuplicates(scope, candidateContent, entryId);
       if (candidates.length) {
         const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
         if (concurrentReplay) return toServiceMutation(concurrentReplay);
-        return this.exactOrCandidatesResult(candidates, candidateContent);
+        return this.exactDuplicateResult(candidates);
       }
 
       const embedding = scope.scope === 'room' && this.duplicateVerifier
@@ -535,7 +528,7 @@ export class MemoryService {
     return this.repository.getRequestResult(caller.roomInstanceId, identity, requestId);
   }
 
-  private async findDuplicateCandidates(
+  private async findExactContentDuplicates(
     scope: MemoryScope,
     content: MemoryContent,
     excludedId?: string,
@@ -556,23 +549,9 @@ export class MemoryService {
     return matches.slice(0, MAX_DUPLICATE_CANDIDATES);
   }
 
-  /**
-   * Same normalized content -> the silent DUPLICATE shape used by the Jev path (no Jev call).
-   * Same title with different content is not a duplicate; it keeps the legacy
-   * duplicate_candidates guidance so the agent can update or clarify.
-   */
-  private exactOrCandidatesResult(
-    matches: MemoryEntry[],
-    content: MemoryContent,
-  ): DuplicateMemoryResult | DuplicateCandidatesResult {
-    const exact = matches.find(entry =>
-      normalizeForDuplicate(entry.content) === normalizeForDuplicate(content.content));
-    if (exact) return duplicateMemoryResult(exact);
-    return {
-      status: 'duplicate_candidates',
-      candidates: matches.map(({ id, title, preview }) => ({ id, title, preview })),
-      guidance: 'update_existing_or_clarify',
-    };
+  /** Same normalized content -> the silent DUPLICATE shape used by the Jev path (no Jev call). */
+  private exactDuplicateResult(matches: MemoryEntry[]): DuplicateMemoryResult {
+    return duplicateMemoryResult(matches[0]!);
   }
 
   private async execute<T>(operation: () => Promise<T>): Promise<T> {

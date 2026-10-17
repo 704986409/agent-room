@@ -256,7 +256,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
     expect(await service.listEntries(owner, 'room')).toEqual([]);
   });
 
-  it('returns exact duplicate candidates, requires explicit updates, and preserves distinct facts', async () => {
+  it('returns DUPLICATE only for exact content, ignores titles, requires explicit updates, and preserves distinct facts', async () => {
     const service = new MemoryService(repository, { duplicateVerifier: null, embedder: null });
     const roomInstanceId = randomUUID();
     const personaId = `persona-${randomUUID()}`;
@@ -294,11 +294,9 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       content({ title: 'Fallback rollout schedule', content: 'The fallback rollout happens Monday after the risk review.' }),
       'dedup-same-title',
     );
-    expect(sameTitleDifferentFact).toMatchObject({
-      status: 'duplicate_candidates',
-      candidates: [{ id: createdId }],
-      guidance: 'update_existing_or_clarify',
-    });
+    // Dedup ignores titles: a same-title memory with a different fact is written normally.
+    expect(sameTitleDifferentFact).toMatchObject({ status: 'created' });
+    expect(resultId(sameTitleDifferentFact)).not.toBe(createdId);
     expect((await service.readEntry(caller, 'persona', createdId)).content)
       .toBe('The fallback rollout happens Friday after the risk review.');
 
@@ -350,7 +348,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       'dedup-distinct-fact',
     );
     expect(differentFact).toMatchObject({ status: 'created' });
-    expect(await service.listEntries(caller, 'persona')).toHaveLength(3);
+    expect(await service.listEntries(caller, 'persona')).toHaveLength(4);
     expect((await service.readEntry(caller, 'persona', createdId)).content)
       .toBe('The fallback rollout happens Wednesday after the risk review.');
   });

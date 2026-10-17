@@ -700,19 +700,20 @@ export class PostgresMemoryRepository implements MemoryRepository {
     title: string;
     content: string;
     embedding: number[] | null;
+    embeddingModel: string | null;
   }>> {
     assertScope(scope);
     const [entries, proposals] = await Promise.all([
-      this.pool.query<{ id: string; title: string; content: string; embedding: number[] | null }>(
-        `SELECT id, title, content, embedding FROM (
-           SELECT id, title, content, embedding, created_at FROM agent_memory_entries
+      this.pool.query<{ id: string; title: string; content: string; embedding: number[] | null; embedding_model: string | null }>(
+        `SELECT id, title, content, embedding, embedding_model FROM (
+           SELECT id, title, content, embedding, embedding_model, created_at FROM agent_memory_entries
            WHERE room_instance_id = $1 AND scope = 'room' AND persona_id IS NULL AND deleted_at IS NULL
            ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
       ),
-      this.pool.query<{ id: string; payload: MemoryContent; embedding: number[] | null }>(
-        `SELECT id, payload, embedding FROM (
-           SELECT id, payload, embedding, created_at FROM agent_memory_proposals
+      this.pool.query<{ id: string; payload: MemoryContent; embedding: number[] | null; embedding_model: string | null }>(
+        `SELECT id, payload, embedding, embedding_model FROM (
+           SELECT id, payload, embedding, embedding_model, created_at FROM agent_memory_proposals
            WHERE room_instance_id = $1 AND action = 'create' AND status = 'pending'
            ORDER BY created_at DESC, id DESC LIMIT 2000
          ) recent`, [scope.roomInstanceId],
@@ -720,11 +721,12 @@ export class PostgresMemoryRepository implements MemoryRepository {
     ]);
     return [
       ...entries.rows.map(row => ({
-        id: row.id, kind: 'memory' as const, title: row.title, content: row.content, embedding: row.embedding,
+        id: row.id, kind: 'memory' as const, title: row.title, content: row.content,
+        embedding: row.embedding, embeddingModel: row.embedding_model,
       })),
       ...proposals.rows.map(row => ({
         id: row.id, kind: 'proposal' as const, title: row.payload.title,
-        content: row.payload.content, embedding: row.embedding,
+        content: row.payload.content, embedding: row.embedding, embeddingModel: row.embedding_model,
       })),
     ];
   }

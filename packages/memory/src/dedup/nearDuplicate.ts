@@ -13,6 +13,8 @@ export interface NearDuplicateCandidate {
   title: string;
   content: string;
   embedding?: number[] | null;
+  /** Stored embedding tag; a vector under a different tag is ignored. */
+  embeddingModel?: string | null;
 }
 
 export type CandidateRanking = 'cosine' | 'keyword';
@@ -67,7 +69,7 @@ export function rankNearDuplicateCandidates(
     ...candidate,
     keywordScore: keywordSimilarity(
       queryKeywords,
-      memoryKeywords(`${candidate.title} ${candidate.content}`),
+      memoryKeywords(candidate.content),
     ),
   }));
   const queryUsable = validVector(queryVector);
@@ -120,12 +122,13 @@ export interface NearDuplicateOutcome {
 }
 
 async function embedContent(
-  content: Pick<MemoryContent, 'title' | 'content'>,
+  content: Pick<MemoryContent, 'content'>,
   embedder: Embedder | undefined,
 ): Promise<number[] | undefined> {
   if (!embedder) return undefined;
   try {
-    const vectors = await embedder.embed([`${content.title} ${content.content}`]);
+    // Dedup ignores titles: only the memory content is embedded.
+    const vectors = await embedder.embed([content.content]);
     const vector = vectors?.[0];
     return validVector(vector) ? vector : undefined;
   } catch {
@@ -134,7 +137,7 @@ async function embedContent(
 }
 
 export async function embedRoomContent(
-  content: Pick<MemoryContent, 'title' | 'content'>,
+  content: Pick<MemoryContent, 'content'>,
   embedder: Embedder | undefined,
   model: string,
 ): Promise<MemoryEmbedding | undefined> {
@@ -153,7 +156,10 @@ export async function findNearDuplicate(
     cap: number;
   },
 ): Promise<NearDuplicateOutcome> {
-  const rawCandidates = await input.repository.findRoomCreateDuplicateCandidates(input.scope);
+  const rawCandidates = (await input.repository.findRoomCreateDuplicateCandidates(input.scope))
+    .map(candidate => candidate.embeddingModel === undefined || candidate.embeddingModel === input.embeddingModel
+      ? candidate
+      : { ...candidate, embedding: null });
   // Same title alone is not a duplicate (e.g. two different facts about data.csv); the body must match.
   const exact = rawCandidates.find(candidate =>
     normalizeForDuplicate(candidate.content) === normalizeForDuplicate(input.content.content));
@@ -167,7 +173,8 @@ export async function findNearDuplicate(
   }
 
   const embedding = await embedRoomContent(input.content, input.embedder, input.embeddingModel);
-  const queryText = `${input.content.title} ${input.content.content}`;
+  // Titles are never used for matching; rank on content only.
+  const queryText = input.content.content;
   const ranked = rankNearDuplicateCandidates(rawCandidates, queryText, embedding?.vector, input.cap);
   if (ranked.candidates.length === 0) return { ...(embedding ? { embedding } : {}) };
 

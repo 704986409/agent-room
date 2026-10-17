@@ -37,6 +37,17 @@ export function embeddingModelFrom(env: NodeJS.ProcessEnv = process.env): string
   return env.MEMORY_EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL;
 }
 
+/**
+ * Value stored in `embedding_model`: the model id plus the embedded text version. Vectors embed the
+ * memory content only (titles are ignored by dedup), so vectors stored under another tag are not
+ * compared and are re-embedded by the backfill.
+ */
+export const EMBEDDING_TEXT_VERSION = 'content-v1';
+
+export function storedEmbeddingModelFrom(env: NodeJS.ProcessEnv = process.env): string {
+  return `${embeddingModelFrom(env)}#${EMBEDDING_TEXT_VERSION}`;
+}
+
 export function embeddingCacheDirFrom(env: NodeJS.ProcessEnv = process.env): string {
   return env.MEMORY_EMBEDDING_CACHE_DIR?.trim() || DEFAULT_EMBEDDING_CACHE_DIR;
 }

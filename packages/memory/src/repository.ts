@@ -75,6 +75,7 @@ export interface MemoryRepository {
     title: string;
     content: string;
     embedding: number[] | null;
+    embeddingModel?: string | null;
   }>>;
 
   getRoomProposal(roomInstanceId: string, proposalId: string): Promise<MemoryProposal | null>;

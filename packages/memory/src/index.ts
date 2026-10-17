@@ -21,6 +21,8 @@ export {
   createEmbedder,
   embeddingCacheDirFrom,
   embeddingModelFrom,
+  storedEmbeddingModelFrom,
+  EMBEDDING_TEXT_VERSION,
   resolveEmbedder,
 } from './embedding/embedder.js';
 export type { Embedder } from './embedding/embedder.js';
@@ -78,7 +80,6 @@ export type {
   RedisMemoryBriefSessionStoreOptions,
 } from './brief-session-store.js';
 export type {
-  DuplicateCandidatesResult,
   DuplicateMemoryResult,
   ConflictsWithExistingResult,
   MemoryServiceOptions,

@@ -54,8 +54,8 @@ describe('resolveDuplicateVerifier', () => {
         c0: {
           type: 'noul',
           instructions: {
-            new_memory: candidate,
-            existing_memory: { title: existing.title, content: existing.content },
+            new_memory: { content: candidate.content },
+            existing_memory: { content: existing.content },
             question: '`new_memory` 与 `existing_memory` 表达的是否是同一条规则或事实（即重复，记下 `new_memory` 不会带来新信息）？',
           },
           criteria: { true: '同一条规则/事实，只是措辞不同', false: '不同的规则或事实，或包含实质性的新信息' },
@@ -79,8 +79,9 @@ describe('resolveDuplicateVerifier', () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://legacy-jev.test');
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(Object.keys(body.questions)).toEqual(['c0', 'c1']);
-    expect(body.questions.c0.instructions.existing_memory.title).toBe('现有记忆0');
-    expect(body.questions.c1.instructions.existing_memory.title).toBe('现有记忆1');
+    expect(body.questions.c0.instructions.existing_memory).toEqual({ content: existing.content });
+    expect(body.questions.c1.instructions.new_memory).toEqual({ content: candidate.content });
+    expect(JSON.stringify(body.questions)).not.toContain('现有记忆');
   });
 
   it('defaults the duplicate threshold to 0.55', async () => {
