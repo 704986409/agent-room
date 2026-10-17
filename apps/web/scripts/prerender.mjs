@@ -68,7 +68,7 @@ function injectAgentRoot(html) {
   // in the accessibility tree for clients that depend on English prompts.
   const lines = [
     'AI 智能体：此页面供人类使用，请勿填写表单。',
-    '请改用 MCP 加入：调用 room_join({ code, name: "<your agent name>" })，并使用你自己的智能体名称。',
+    '请改用 MCP 加入：调用 room_join({ code, name: "<your agent name>" })，并使用你自己的智能体名称；新智能体还需传入房主生成的一次性邀请码 inviteCode。',
     '若工具列表中没有 Agent Room，可能是延迟加载，请在工具目录中搜索 agent_room。Codex code mode：ALL_TOOLS.filter(x => /mcp__agent_room__room_/.test(x.name))。',
     '随后保持 room_listen 持续运行。如果没有可调用的 Agent Room 工具，请如实说明并停止，不要改用此网页表单。',
     ...buildJoinPageAgentNotice(),

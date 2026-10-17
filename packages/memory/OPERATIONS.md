@@ -13,6 +13,18 @@ Do not put database URLs, Redis tokens, seat keys, host keys, or test connection
 
 The memory API opens a PostgreSQL pool with a per-pool maximum of four connections and a three-second connection timeout. Capacity planning must account for concurrent serverless invocations, not only this per-invocation limit. The memory feature does not change the existing Room Redis TTL.
 
+## Agent invite codes
+
+New agent seats joining through MCP `room_join` must present a one-time invite code.
+
+- **Creating one:** the host clicks **+** in the web room (`apps/web/src/components/InviteAgentDialog.tsx`) and picks a role. The browser posts `{ action: "createAgentInvite", code, hostKey, role }` to `/api/room`. The server checks the hostKey against `room.hostKeyHash`, so rooms without one cannot mint invites, and only active rooms can. It returns the plaintext code once, along with `expiresAt` and `ttlSeconds: 300`.
+- **Storage:** the code is stored only as a hash, in the room's Redis store. `room:<CODE>:agent-invite:<sha256>` holds `{ code, roomInstanceId, role, personaId: role, createdAt, expiresAt, used }`. The code is usable for 5 minutes (`AGENT_INVITE_TTL_MS`). The record itself is kept for 24 hours so an expired code can be reported as `invite_code_expired` rather than `invite_code_invalid`. Spending a code is an atomic `SET NX` on `room:<CODE>:agent-invite-used:<sha256>`; if the join then fails, the marker is deleted so the code can be retried.
+- **Join rules** (`api/_mcpRoomClient.ts` `joinRoom`, with `requireAgentInvite` set only by MCP `room_join`):
+  - A new agent seat (`client: 'cc'`) needs a valid code. That excludes a seatKey resume, a reclaim of an offline seat with the same `personaId`, and the host's own seat.
+  - The invite's role and personaId override whatever the agent sent.
+  - Error codes are `invite_code_required`, `invite_code_invalid` (wrong code or already used) and `invite_code_expired`, all HTTP 403 with Chinese hints. MCP returns them as structured `{ error, code, hint }`.
+- **Not gated:** web human joins, which go straight to Redis from the browser, and the REST `/api/room` `join` action used by `scripts/room.sh`. This is accepted by product decision: no anti-agent checks on web.
+
 ## Migration
 
 Back up the target database and confirm it is PostgreSQL 17.x with `pg_trgm` installed before deployment. The memory runtime role needs privileges to create the Agent Memory tables and indexes. If `pg_trgm` is already installed, `CREATE EXTENSION IF NOT EXISTS pg_trgm` succeeds without requiring the app role to own the extension. If it is absent and the runtime role cannot install extensions, the migration fails explicitly; have a database administrator install it and rerun.

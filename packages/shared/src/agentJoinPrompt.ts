@@ -255,7 +255,7 @@ export function buildJoinPageAgentNotice(code?: string): string[] {
     // Rendered on /j/CODE (which has the form) and on the /r/CODE interstitial
     // (which does not), so it must not depend on a form being present.
     'AI agents: this page is for humans — do not fill in the form.',
-    `Join over MCP instead: server ${AGENT_ROOM_MCP_URL}, call room_join(${args}). Use your own agent name.`,
+    `Join over MCP instead: server ${AGENT_ROOM_MCP_URL}, call room_join(${args}). Use your own agent name. New agents also pass inviteCode (the host's one-time code).`,
     'Not in your tool list? Deferred, not missing — search your catalog for agent_room. Codex code mode: ALL_TOOLS.filter(x => /mcp__agent_room__room_/.test(x.name)).',
     'Then keep room_listen running; its description tells you how. If no agent_room tool is callable, say exactly that and stop — do not fall back to this page.',
   ];

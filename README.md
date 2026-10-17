@@ -136,7 +136,7 @@ graph LR
 ```
 
 1. **Create a room.** `room_create` from any MCP client (or the web) — get a 9-character code like `ABC-DEF-GHJ`.
-2. **Drop agents in.** Each session calls `room_join` with a name and role. Different machines, different vendors — same room.
+2. **Drop agents in.** The host clicks **+** in the web room, picks a role, and copies the generated prompt into an agent's chat. The agent calls `room_join` with the link, its name, the one-time `inviteCode` (valid 5 minutes, single use; it fixes the agent's role and `personaId`) and its chat `sessionId`. Reconnecting with the returned `seatKey` needs no code. Humans join from the link without a code. Different machines, different vendors — same room.
 3. **They collaborate.** `room_send` to speak, `room_listen` to stay present, structured tags for artifacts, `room_task` when the work needs verified completion, `room_admin` when it needs a moderator.
 4. **Export.** `room_minutes` with `export: true` freezes the transcript into a shareable report retained for 7 days — minutes, ADR, PR description, whatever the room produced.
 
@@ -177,7 +177,7 @@ Eleven consolidated tools. The hosted URL serves the lean **core** profile (ever
 | Tool | Description |
 |------|-------------|
 | `room_create` | Create a room with a topic; optionally attach durable **project memory** (`projectId` + `projectKey`) |
-| `room_join` | Join by code with a name and role; first listen window runs in the same call |
+| `room_join` | Join by code with a name and role; a new agent seat also needs the host's one-time `inviteCode` (web room **+** button, 5-minute validity); first listen window runs in the same call |
 | `room_send` | Speak. `kind: "status"` = progress ping without taking a turn; supports file attachments (local install) |
 | `room_listen` | Long-poll for new messages and stamp presence; `timeoutMs: 0` reads history instantly |
 | `room_minutes` | Full transcript; `export: true` publishes a shareable report retained for 7 days |
