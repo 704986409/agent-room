@@ -372,9 +372,8 @@ export class MemoryService {
       if (trusted.identityType === 'persona') {
         scopes.push({ roomInstanceId: trusted.roomInstanceId, scope: 'persona', personaId: trusted.personaId! });
       }
-      const pages = await Promise.all(scopes.map(scope =>
-        this.repository.listEntries(scope, { limit: 100, offset: 0 }),
-      ));
+      // The Brief carries every approved Room memory and every caller Persona memory (no source cap).
+      const pages = await Promise.all(scopes.map(scope => this.listAllEntries(scope)));
       return pages.flatMap((entries, index) => entries.map(entry => ({
         id: entry.id,
         scope: scopes[index]!.scope,
@@ -526,6 +525,15 @@ export class MemoryService {
     requestId: string,
   ): Promise<MemoryMutationResult | null> {
     return this.repository.getRequestResult(caller.roomInstanceId, identity, requestId);
+  }
+
+  private async listAllEntries(scope: MemoryScope): Promise<MemoryEntry[]> {
+    const entries: MemoryEntry[] = [];
+    for (let offset = 0; ; offset += PAGE_SIZE) {
+      const page = await this.repository.listEntries(scope, { limit: PAGE_SIZE, offset });
+      entries.push(...page);
+      if (page.length < PAGE_SIZE) return entries;
+    }
   }
 
   private async findExactContentDuplicates(

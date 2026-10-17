@@ -4,7 +4,6 @@ import { Pool } from 'pg';
 import {
   applyMemoryMigrations,
   MemoryBriefService,
-  MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET,
   MemoryService,
   PostgresMemoryRepository,
   RedisMemoryBriefSessionStore,
@@ -152,7 +151,7 @@ describe('P4 Memory Brief with PostgreSQL 17 and Redis', () => {
     }
   });
 
-  it('trims a large structured Brief to its conservative character estimate', async () => {
+  it('includes every memory in a large Brief without truncation', async () => {
     const roomId = randomUUID();
     const personaId = `persona-${randomUUID()}`;
     for (let index = 0; index < 18; index += 1) {
@@ -164,12 +163,11 @@ describe('P4 Memory Brief with PostgreSQL 17 and Redis', () => {
     const result = await briefs.loadOnce(caller(roomId, personaId), `seat-session-${randomUUID()}`);
     expect(result.loaded).toBe(true);
     if (!result.loaded) return;
-    expect(MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET).toBe(3_000);
-    expect(result.brief.length).toBeLessThanOrEqual(3_000);
-    expect(result.brief.length).toBeGreaterThan(1_800);
-    expect(result.brief.endsWith('…')).toBe(true);
+    expect(result.brief.length).toBeGreaterThan(3_000);
+    expect(result.brief.endsWith('…')).toBe(false);
     expect(result.estimatedTokens).toBe(result.brief.length);
-    expect(result.memoryIds.length).toBeGreaterThan(0);
+    expect(result.memoryIds).toHaveLength(18);
+    for (let index = 0; index < 18; index += 1) expect(result.brief).toContain(`Preview ${index} `);
     expect(result.brief).toContain('Recent changes');
   });
 

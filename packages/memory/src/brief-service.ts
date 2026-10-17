@@ -28,7 +28,6 @@ export type MemoryBriefResult =
     readonly memoryIds: readonly [];
   };
 
-export const MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET = 3_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function validateCaller(caller: TrustedMemoryCaller): TrustedMemoryCaller {
@@ -86,21 +85,6 @@ function recentFirst(left: MemoryBriefSourceEntry, right: MemoryBriefSourceEntry
   return right.updatedAt.getTime() - left.updatedAt.getTime() || left.id.localeCompare(right.id);
 }
 
-function fitLines(lines: readonly string[], maxChars: number): string {
-  let output = '';
-  for (const line of lines) {
-    const next = output ? `\n${line}` : line;
-    const remaining = maxChars - output.length;
-    if (next.length <= remaining) {
-      output += next;
-      continue;
-    }
-    if (remaining > 1) output += `${next.slice(0, remaining - 1)}…`;
-    break;
-  }
-  return output;
-}
-
 /** Deterministic rendering uses only stored fields; it never invents a summary. */
 export function renderMemoryBrief(
   entries: readonly MemoryBriefSourceEntry[],
@@ -138,7 +122,8 @@ export function renderMemoryBrief(
   }
   if (!ordered.length && !topic) lines.push('No saved memories.');
 
-  const brief = fitLines(lines, MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET);
+  // No character budget: every approved Room memory and every caller Persona memory is listed.
+  const brief = lines.join('\n');
   return {
     brief,
     // One estimated token per UTF-16 character is intentionally conservative

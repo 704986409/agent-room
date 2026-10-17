@@ -39,7 +39,7 @@ export {
   memoryReviewNotificationAdapter,
 } from './review-service.js';
 export { RedisSearchSessionStore, SearchSessionRateLimitError } from './search-session-store.js';
-export { MemoryBriefService, MEMORY_BRIEF_ESTIMATED_CHAR_BUDGET, renderMemoryBrief } from './brief-service.js';
+export { MemoryBriefService, renderMemoryBrief } from './brief-service.js';
 export { RedisMemoryBriefSessionStore } from './brief-session-store.js';
 export { RedisUrlCommandClient } from './redis-command-client.js';
 export type { MemoryRepository } from './repository.js';
