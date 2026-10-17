@@ -41,6 +41,23 @@ process.env.UPSTASH_REDIS_REST_TOKEN = 'smoke-token';
 process.env.SRH_WEB_URL = REDIS_BASE;
 process.env.SRH_WEB_TOKEN = 'smoke-token';
 
+/**
+ * A one-time agent invite for a NEW MCP agent seat, written straight into the
+ * fake Redis (host-key checks for createAgentInvite are covered in agentInvite.test.ts).
+ * role/personaId mirror what the join sends, so seats keep their old identity.
+ */
+let inviteCounter = 0;
+function mintInvite(code: string, role = '', personaId?: string): string {
+  inviteCounter += 1;
+  const inviteCode = `AI-SMOKE-${String(inviteCounter).padStart(4, '0')}`;
+  const hash = createHash('sha256').update(inviteCode, 'utf8').digest('hex');
+  const now = Date.now();
+  smokeKv.set(`room:${code}:agent-invite:${hash}`, JSON.stringify({
+    code, role, ...(personaId ? { personaId } : {}), createdAt: now, expiresAt: now + 300_000, used: false,
+  }));
+  return inviteCode;
+}
+
 /** Minimal Redis, covering exactly the commands this path issues. */
 function installFakeRedis(): Map<string, string> {
   const kv = new Map<string, string>();
@@ -324,7 +341,7 @@ describe('hosted MCP endpoint', () => {
     const code = created.code as string;
 
     const joined = parsed(await mcp.callTool({
-      name: 'room_join', arguments: { code, name: 'Guest' },
+      name: 'room_join', arguments: { code, name: 'Guest', inviteCode: mintInvite(code) },
     }));
     expect(joined.assignedName).toBe('Guest');
     expect(joined.participants.map((p: { name: string }) => p.name)).toContain('Host');
@@ -375,11 +392,11 @@ describe('hosted MCP endpoint', () => {
     }));
     const code = created.code as string;
 
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Follow-up Agent' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Other Agent' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Verifier' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer 2' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Follow-up Agent', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Other Agent', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Verifier', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer 2', inviteCode: mintInvite(code) } });
 
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
@@ -518,9 +535,9 @@ describe('hosted MCP endpoint', () => {
       parsed(await callTool(roomClient, 'full', name, args));
     const host = await invoke('room_create', { topic: 'task lifecycle wakeups', name: 'Wake Host' });
     const code = String(host.code);
-    await invoke('room_join', { code, name: 'Worker' });
-    await invoke('room_join', { code, name: 'Reviewer' });
-    await invoke('room_join', { code, name: 'Other' });
+    await invoke('room_join', { code, name: 'Worker', inviteCode: mintInvite(code) });
+    await invoke('room_join', { code, name: 'Reviewer', inviteCode: mintInvite(code) });
+    await invoke('room_join', { code, name: 'Other', inviteCode: mintInvite(code) });
 
     const ownerCursor = Number((await invoke('room_listen', { code, name: 'Worker', since: 0, timeoutMs: 0 })).cursor);
     const createStarted = Date.now();
@@ -611,12 +628,12 @@ describe('hosted MCP endpoint', () => {
     }));
     const code = created.code as string;
     const joined = parsed(await mcp.callTool({
-      name: 'room_join', arguments: { code, name: 'Alex (2)' },
+      name: 'room_join', arguments: { code, name: 'Alex (2)', inviteCode: mintInvite(code) },
     }));
     expect(joined.assignedName).toBe('Alex (2)');
 
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer', inviteCode: mintInvite(code) } });
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
       arguments: {
@@ -663,8 +680,8 @@ describe('hosted MCP endpoint', () => {
       name: 'room_create', arguments: { topic: 'rejection reason validation', name: 'Host' },
     }));
     const code = created.code as string;
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer' } });
-    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer' } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Producer', inviteCode: mintInvite(code) } });
+    await mcp.callTool({ name: 'room_join', arguments: { code, name: 'Reviewer', inviteCode: mintInvite(code) } });
     const taskResult = parsed(await mcp.callTool({
       name: 'room_task',
       arguments: {
@@ -884,7 +901,7 @@ describe('hosted MCP endpoint', () => {
     const code = hostRoom.code as string;
 
     const joined = parsed(await second.callTool({
-      name: 'room_join', arguments: { code, name: 'SSE Guest' },
+      name: 'room_join', arguments: { code, name: 'SSE Guest', inviteCode: mintInvite(code) },
     }));
     expect(joined.assignedName).toBe('SSE Guest');
     const sent = parsed(await second.callTool({
@@ -951,9 +968,17 @@ describe('hosted MCP endpoint', () => {
         topic: 'Memory disabled join', name: 'Host',
       }));
       const disabledJoin = parsed(await callTool(roomClient, 'full', 'room_join', {
-        code: String(disabledRoom.code), name: 'Guest',
+        code: String(disabledRoom.code), name: 'Guest', inviteCode: mintInvite(String(disabledRoom.code)),
       }));
       expect(disabledJoin.memoryNote).toBeUndefined();
+      // A brand-new agent seat without (or with a wrong) invite code is refused with a Chinese hint.
+      const noCode = parsed(await callTool(roomClient, 'full', 'room_join', { code: String(disabledRoom.code), name: 'No Code' }));
+      expect(noCode).toMatchObject({ error: 'invite_code_required', code: 'invite_code_required' });
+      expect(String(noCode.hint)).toContain('邀请码');
+      const wrongCode = parsed(await callTool(roomClient, 'full', 'room_join', {
+        code: String(disabledRoom.code), name: 'No Code', inviteCode: 'AI-WRONG-CODE',
+      }));
+      expect(wrongCode).toMatchObject({ error: 'invite_code_invalid' });
       process.env.MEMORY_ENABLED = 'true';
       process.env.MEMORY_DATABASE_URL = databaseUrl;
       const listedMemoryTools = listTools('full').filter(tool => tool.name.startsWith('memory_'));
@@ -986,6 +1011,7 @@ describe('hosted MCP endpoint', () => {
       expect(hostSeatKey).toMatch(/^[A-Za-z0-9_-]{43}$/);
       const agentA = await invoke('room_join', {
         code, name: 'Agent A', personaId: 'persona-alpha', role: 'builder',
+        inviteCode: mintInvite(code, 'builder', 'persona-alpha'),
       });
       if (typeof agentA.memoryBrief === 'string' && agentA.memoryBrief.trim()) {
         expect(agentA.memoryNote).toBeUndefined();
@@ -1059,11 +1085,13 @@ describe('hosted MCP endpoint', () => {
         .toContain('private fact belongs to persona alpha');
       const otherPersonaSeat = await invoke('room_join', {
         code, name: 'Agent B', personaId: 'persona-beta', role: 'reviewer',
+        inviteCode: mintInvite(code, 'reviewer', 'persona-beta'),
       });
       const otherPersonaKey = String(otherPersonaSeat.seatKey);
       expect(otherPersonaSeat.memoryBrief).not.toContain(privateId);
       const analyst = await invoke('room_join', {
         code, name: 'Project Analyst', personaId: 'persona-reviewer', role: 'project-analyst',
+        inviteCode: mintInvite(code, 'project-analyst', 'persona-reviewer'),
       });
       const analystKey = String(analyst.seatKey);
       expect(await invoke('memory_read', {
@@ -1078,6 +1106,7 @@ describe('hosted MCP endpoint', () => {
       const otherRoomCode = String(otherRoomHost.code);
       const samePersonaOtherRoom = await invoke('room_join', {
         code: otherRoomCode, name: 'Agent A', personaId: 'persona-alpha',
+        inviteCode: mintInvite(otherRoomCode, '', 'persona-alpha'),
       });
       const storedOtherRoom = JSON.parse(smokeKv.get(`room:${otherRoomCode}`)!) as { roomInstanceId?: string };
       expect(storedOtherRoom.roomInstanceId).not.toBe(storedRoom.roomInstanceId);
@@ -1199,6 +1228,7 @@ describe('hosted MCP endpoint', () => {
       // Multiple reviewers: every online project-analyst seat may review and is notified; first review wins.
       const analystTwo = await invoke('room_join', {
         code, name: 'Analyst Two', personaId: 'persona-reviewer-2', role: 'project-analyst',
+        inviteCode: mintInvite(code, 'project-analyst', 'persona-reviewer-2'),
       });
       const analystTwoKey = String(analystTwo.seatKey);
       const proposeShared = async (title: string) => invoke('memory_write', {
