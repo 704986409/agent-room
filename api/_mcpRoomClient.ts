@@ -372,6 +372,13 @@ export async function joinRoom(
     personaId?: string;
     /** Agent's current chat session ID; scopes the one-time Memory Brief. */
     sessionId?: string;
+    /** One-time agent invite code from the host's '+' dialog (MCP room_join). */
+    inviteCode?: string;
+    /**
+     * MCP room_join sets this: a NEW agent ('cc') seat needs a valid invite code.
+     * A seatKey resume, an offline same-Persona reclaim and the host's own seat do not.
+     */
+    requireAgentInvite?: boolean;
     priorIdentity?: { name: string; client: 'web' | 'cc' };
   } = {},
 ): Promise<Room & { participant: Participant; seatKey?: string }> {
@@ -391,6 +398,21 @@ export async function joinRoom(
         && seatKeyMatches(p.seatKeyHash, options.seatKey!));
       if (keyed) { previous = keyed; validResume = true; }
     }
+    // Agent invite: on a non-resume, non-host agent join, a valid code fixes role + Persona
+    // (invite values win over what the agent sent) before the same-Persona reclaim check.
+    let invite: { hash: string; record: AgentInviteRecord } | undefined;
+    let inviteFailure: 'invite_code_invalid' | 'invite_code_expired' | undefined;
+    if (!validResume && !isHostClaim && participant.client === 'cc'
+      && typeof options.inviteCode === 'string' && options.inviteCode.trim()) {
+      const lookup = await lookupAgentInvite(client.store, current, options.inviteCode);
+      if (lookup.ok) {
+        invite = { hash: lookup.hash, record: lookup.record };
+        options = { ...options, personaId: lookup.record.personaId };
+        participant = { ...participant, role: lookup.record.role };
+      } else {
+        inviteFailure = lookup.reason;
+      }
+    }
     let reclaimed = false;
     if (!validResume && !isHostClaim && options.personaId !== undefined && options.personaId.trim()) {
       // Same Persona rejoining without a valid seatKey: never open a "(2)" seat.
@@ -409,6 +431,20 @@ export async function joinRoom(
     if (validResume && options.personaId !== undefined
       && options.personaId !== previous?.memoryPersonaId) {
       throw new RemoteRoomApiError('The seat identity cannot be changed during resume.', 403, 'seat_identity_mismatch');
+    }
+    // A brand-new agent seat (no resume, no reclaim, not the host) must spend a valid invite.
+    const needsInvite = Boolean(options.requireAgentInvite) && participant.client === 'cc'
+      && !validResume && !reclaimed && !isHostClaim;
+    let claimedInvite: { hash: string; record: AgentInviteRecord } | undefined;
+    if (needsInvite) {
+      if (!invite) {
+        const reason = inviteFailure ?? 'invite_code_required';
+        throw new RemoteRoomApiError(AGENT_INVITE_MESSAGES[reason], 403, reason);
+      }
+      if (!(await claimAgentInvite(client.store, code, invite.hash))) {
+        throw new RemoteRoomApiError(AGENT_INVITE_MESSAGES.invite_code_invalid, 403, 'invite_code_invalid');
+      }
+      claimedInvite = invite;
     }
 
     const roomInstanceId = current.roomInstanceId ?? randomUUID();
@@ -440,14 +476,25 @@ export async function joinRoom(
       ...(identityType === 'room_owner' ? { memoryIsRoomOwner: true } : {}),
     };
 
-    const result = await storeJoinRoom(client.store, code, boundParticipant, {
-      ...(options.hostKey ? { hostKey: options.hostKey } : {}),
-      priorIdentity: validResume || reclaimed
-        ? { name: previous!.name, client: previous!.client }
-        : previous && !previous.seatKeyHash
-          ? { name: previous.name, client: previous.client }
-          : options.priorIdentity,
-    });
+    let result: Awaited<ReturnType<typeof storeJoinRoom>>;
+    try {
+      result = await storeJoinRoom(client.store, code, boundParticipant, {
+        ...(options.hostKey ? { hostKey: options.hostKey } : {}),
+        priorIdentity: validResume || reclaimed
+          ? { name: previous!.name, client: previous!.client }
+          : previous && !previous.seatKeyHash
+            ? { name: previous.name, client: previous.client }
+            : options.priorIdentity,
+      });
+    } catch (error) {
+      // The join did not happen: give the invite back so the agent can retry with it.
+      if (claimedInvite) await releaseAgentInvite(client.store, code, claimedInvite.hash).catch(() => {});
+      throw error;
+    }
+    if (claimedInvite) {
+      await markAgentInviteUsed(client.store, code, claimedInvite.hash, claimedInvite.record, result.participant.name)
+        .catch(() => {});
+    }
     let finalRoom: Room = result;
     if (personaId && identityType === 'persona') {
       finalRoom = await removeOrphanPersonaSeats(client, code, personaId, result.participant.name, participant.client);

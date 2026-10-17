@@ -52,7 +52,12 @@ function installFakeRedis(): Map<string, string> {
     switch (op) {
       case 'GET': return kv.has(key) ? kv.get(key) : null;
       case 'PING': return 'PONG';
-      case 'SET': kv.set(key, String(cmd[2])); return 'OK';
+      case 'SET': {
+        // NX is how an agent invite code is spent exactly once.
+        if (cmd.slice(3).map(c => String(c).toUpperCase()).includes('NX') && kv.has(key)) return null;
+        kv.set(key, String(cmd[2]));
+        return 'OK';
+      }
       case 'DEL': return kv.delete(key) ? 1 : 0;
       case 'INCR': {
         const next = Number(kv.get(key) ?? 0) + 1;

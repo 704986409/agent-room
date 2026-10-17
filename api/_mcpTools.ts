@@ -260,6 +260,9 @@ async function dispatch(
         seatKey: typeof a.seatKey === 'string' && a.seatKey ? a.seatKey : undefined,
         personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
         sessionId: typeof a.sessionId === 'string' ? a.sessionId : undefined,
+        inviteCode: typeof a.inviteCode === 'string' && a.inviteCode.trim() ? a.inviteCode : undefined,
+        // New agent seats need the host's one-time invite; resume/reclaim/host seat do not.
+        requireAgentInvite: true,
       });
       const finalName = updated.participant.name;
       const reconnecting = finalName === a.name
@@ -320,7 +323,7 @@ async function dispatch(
         recentMessages,
         ...contextFields(msgs),
         ...(joinInbox.hint ? { yourTasks: joinInbox } : {}),
-        roleBrief: roleBriefFor(a.role ?? ''),
+        roleBrief: roleBriefFor(updated.participant.role ?? a.role ?? ''),
         roomPolicy: policyFor(updated, finalName),
         policyVersion: ROOM_POLICY_VERSION,
         hint: [
