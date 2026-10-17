@@ -452,6 +452,10 @@ export async function joinRoom(
         throw new RemoteRoomApiError(AGENT_INVITE_MESSAGES.invite_code_invalid, 403, 'invite_code_invalid');
       }
       claimedInvite = invite;
+    } else if (options.requireAgentInvite && invite && reclaimed) {
+      // Reclaiming an offline same-Persona seat needs no code, but a valid one that was sent is
+      // still spent so its role profile reaches the agent (and refreshes its Persona memory).
+      if (await claimAgentInvite(client.store, code, invite.hash)) claimedInvite = invite;
     }
 
     const roomInstanceId = current.roomInstanceId ?? randomUUID();
