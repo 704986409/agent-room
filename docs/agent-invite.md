@@ -135,7 +135,7 @@ POST /api/room
 
 1. **5-minute expiry, not 24 h.** The dialog countdown and `invite_code_expired` use 5 minutes. The 24-hour Redis TTL is only so expired codes can be diagnosed.
 2. **One use.** Spending is `SET NX` on the used marker. A second join with the same code returns `invite_code_invalid`.
-3. **REST `/api/room` join stays open.** `scripts/room.sh` and any other direct Redis/`join` caller do **not** need a code. User decision 2026-10-17 (logged in `agent-memory-v1-issues.log`). Only MCP `room_join` sets `requireAgentInvite: true`.
+3. **REST `/api/room` join stays open.** `scripts/room.sh` and any other direct Redis/`join` caller do **not** need a code. User decision 2026-10-17 (logged in `docs/agent-memory-v1-issues.log`). Only MCP `room_join` sets `requireAgentInvite: true`.
 4. **Web human join unchanged.** No anti-agent checks on the browser path; an agent disguised as a web human can still join without a code.
 5. **Profession = Persona.** The invite's role is written to both `role` and `memoryPersonaId`. Private Persona memories (including the role profile) follow that string.
 6. **Invite wins.** On a spent invite, invite `role` / `personaId` override the agent's own arguments.
@@ -145,7 +145,7 @@ POST /api/room
 10. **Brief lists everything.** After the "all memories" change, the Brief includes every approved room memory and every caller Persona memory (no character budget / newest-100 cap). Large rooms produce large Briefs.
 11. **Approvals / superseded are quiet.** Jev and agent/host approvals no longer post room messages; rejections still do. Superseded-proposal notices are also silent.
 12. **Dedup.** Exact normalized content → silent `DUPLICATE` (same shape as Jev path). Titles are ignored for exact / bge / Jev. Jev dedup threshold default 0.55; conflict threshold 0.7 → `CONFLICTS_WITH_EXISTING` (agent should `memory_update`).
-13. **Test status.** Feature pieces were pushed without running tests first (user request). Suite fixes and the unified real-agent retest are tracked separately in `agent-memory-v1-issues.log`. Smoke tests that create new MCP agent seats must mint an invite via the helper in `api/mcp.smoke.test.ts`.
+13. **Test status.** Feature pieces were pushed without running tests first (user request). Suite fixes and the unified real-agent retest are tracked separately in `docs/agent-memory-v1-issues.log`. Smoke tests that create new MCP agent seats must mint an invite via the helper in `api/mcp.smoke.test.ts`.
 
 ## Commit map (dev, chronologically)
 
@@ -159,4 +159,4 @@ Invite + sessionId + related memory work since the 0.55 threshold:
 
 - `packages/memory/OPERATIONS.md` — "Agent invite codes" section (ops-oriented)
 - `integrations/agent-room-skill/SKILL.md` — agent-facing 邀请码 section
-- `/home/box/MERYANG/agent-memory-v1-issues.log` — progress / decisions log for this worktree
+- `docs/agent-memory-v1-issues.log` — in-repo snapshot of the progress / decisions log (live appends still go to `/home/box/MERYANG/agent-memory-v1-issues.log` outside the repo)

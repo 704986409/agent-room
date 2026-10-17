@@ -102,3 +102,4 @@
 2026-10-17 21:50 JST [unified test restart] step 1 done: fix 2f6f059 (reclaim spends valid invite → roleProfile delivered), tests 6c5c46b. Suites: api 276/276, web 79/79, shared 187/187, memory 107/107 (unchanged since earlier run). api restarted. NEXT: reset local env + real Codex e2e.
 2026-10-17 21:53 JST [docs] agent-invite.md pushed 9f6d559. Continuing unified real-agent retest on room Z3T-M2Y-376 (Codex already joined with invite A + roleProfile).
 2026-10-17 21:54 JST [steering] Unified retest SKIPPED per user. Role-profile + doc/agent-invite.md already on dev. Snapshot of this issues log copied into repo doc/agent-memory-v1-issues.log.
+2026-10-17 21:55 JST [docs] Moved doc/agent-invite.md and doc/agent-memory-v1-issues.log → docs/ (empty doc/ removed). Live progress log remains at /home/box/MERYANG/agent-memory-v1-issues.log.
