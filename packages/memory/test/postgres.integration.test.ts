@@ -220,7 +220,7 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       'room',
       content({ title: 'Shared service fact' }),
       'service-room-duplicate',
-    )).toMatchObject({ status: 'duplicate_candidates', candidates: [{ id: roomEntry.id }] });
+    )).toMatchObject({ code: 'DUPLICATE', duplicateOf: roomEntry.id, duplicateKind: 'memory', existing: { id: roomEntry.id } });
     await expect(service.readEntry(trustedCaller(randomUUID(), personaId), 'room', roomEntry.id))
       .rejects.toMatchObject({ code: 'NOT_FOUND' });
 
@@ -308,7 +308,16 @@ describe('Agent Memory PostgreSQL 17 integration', () => {
       content({ title: 'A differently cased title', content: '  THE FALLBACK ROLLOUT HAPPENS FRIDAY AFTER THE RISK REVIEW.  ' }),
       'dedup-normalized-content',
     );
-    expect(sameNormalizedContent).toMatchObject({ status: 'duplicate_candidates', candidates: [{ id: createdId }] });
+    expect(sameNormalizedContent).toEqual({
+      code: 'DUPLICATE',
+      duplicateOf: createdId,
+      duplicateKind: 'memory',
+      existing: {
+        id: createdId,
+        title: 'Fallback rollout schedule',
+        content: 'The fallback rollout happens Friday after the risk review.',
+      },
+    });
 
     const updated = await service.updateEntry(
       caller,

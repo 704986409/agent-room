@@ -104,6 +104,8 @@ export interface DuplicateMemoryResult {
   readonly code: 'DUPLICATE';
   readonly duplicateOf: string;
   readonly duplicateKind: 'memory';
+  /** The existing equivalent memory. Present on fresh results; omitted on idempotent replays. */
+  readonly existing?: { readonly id: string; readonly title: string; readonly content: string };
 }
 
 export type MemoryServiceMutationResult =
@@ -283,6 +285,15 @@ function isExactDuplicate(entry: MemoryEntry, candidate: MemoryContent): boolean
     || normalizeForDuplicate(entry.content) === normalizeForDuplicate(candidate.content);
 }
 
+function duplicateMemoryResult(entry: { id: string; title: string; content: string }): DuplicateMemoryResult {
+  return {
+    code: 'DUPLICATE',
+    duplicateOf: entry.id,
+    duplicateKind: 'memory',
+    existing: { id: entry.id, title: entry.title, content: entry.content },
+  };
+}
+
 function conflictResult(conflict: MemoryConflict): ConflictsWithExistingResult {
   const isMemory = conflict.kind === 'memory';
   return {
@@ -401,10 +412,11 @@ export class MemoryService {
       if (candidates.length) {
         const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
         if (concurrentReplay) return toServiceMutation(concurrentReplay);
-        return this.duplicateResult(candidates);
+        return this.exactOrCandidatesResult(candidates, content);
       }
 
       let nearDuplicateResult: MemoryMutationResult | undefined;
+      let nearDuplicateEntry: { id: string; title: string; content: string } | undefined;
       let embedding: MemoryEmbedding | undefined;
       if (scope.scope === 'room' && this.duplicateVerifier) {
         const nearDuplicate = await findNearDuplicate({
@@ -417,6 +429,7 @@ export class MemoryService {
           cap: this.duplicateVerifierMaxCandidates,
         });
         nearDuplicateResult = nearDuplicate.duplicateResult;
+        nearDuplicateEntry = nearDuplicate.duplicateEntry;
         embedding = nearDuplicate.embedding;
         if (nearDuplicate.conflict) {
           const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
@@ -435,7 +448,11 @@ export class MemoryService {
           nearDuplicateResult,
           embedding,
         );
-      return toServiceMutation(result);
+      const mutation = toServiceMutation(result);
+      if ('code' in mutation && mutation.code === 'DUPLICATE' && nearDuplicateEntry?.id === mutation.duplicateOf) {
+        return duplicateMemoryResult(nearDuplicateEntry);
+      }
+      return mutation;
     });
   }
 
@@ -463,7 +480,7 @@ export class MemoryService {
       if (candidates.length) {
         const concurrentReplay = await this.requestReplay(trusted, identity, idempotencyKey);
         if (concurrentReplay) return toServiceMutation(concurrentReplay);
-        return this.duplicateResult(candidates);
+        return this.exactOrCandidatesResult(candidates, candidateContent);
       }
 
       const embedding = scope.scope === 'room' && this.duplicateVerifier
@@ -522,7 +539,7 @@ export class MemoryService {
     scope: MemoryScope,
     content: MemoryContent,
     excludedId?: string,
-  ): Promise<MemoryEntrySummary[]> {
+  ): Promise<MemoryEntry[]> {
     const matches: MemoryEntry[] = [];
     let offset = 0;
     while (true) {
@@ -536,12 +553,26 @@ export class MemoryService {
       if (matches.length === MAX_DUPLICATE_CANDIDATES || page.length < PAGE_SIZE) break;
       offset += page.length;
     }
-    return matches.slice(0, MAX_DUPLICATE_CANDIDATES)
-      .map(({ id, title, preview }) => ({ id, title, preview }));
+    return matches.slice(0, MAX_DUPLICATE_CANDIDATES);
   }
 
-  private duplicateResult(candidates: MemoryEntrySummary[]): DuplicateCandidatesResult {
-    return { status: 'duplicate_candidates', candidates, guidance: 'update_existing_or_clarify' };
+  /**
+   * Same normalized content -> the silent DUPLICATE shape used by the Jev path (no Jev call).
+   * Same title with different content is not a duplicate; it keeps the legacy
+   * duplicate_candidates guidance so the agent can update or clarify.
+   */
+  private exactOrCandidatesResult(
+    matches: MemoryEntry[],
+    content: MemoryContent,
+  ): DuplicateMemoryResult | DuplicateCandidatesResult {
+    const exact = matches.find(entry =>
+      normalizeForDuplicate(entry.content) === normalizeForDuplicate(content.content));
+    if (exact) return duplicateMemoryResult(exact);
+    return {
+      status: 'duplicate_candidates',
+      candidates: matches.map(({ id, title, preview }) => ({ id, title, preview })),
+      guidance: 'update_existing_or_clarify',
+    };
   }
 
   private async execute<T>(operation: () => Promise<T>): Promise<T> {

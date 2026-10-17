@@ -1162,8 +1162,10 @@ describe('hosted MCP endpoint', () => {
         content: 'The Room decided to retain the shared index.', searchText: 'shared-index-decision',
         requestId: `approved-shared-write-dup-${randomUUID()}`,
       });
-      expect(approvedDuplicate).toMatchObject({ status: 'duplicate_candidates' });
-      expect(approvedDuplicate.candidates).toEqual(expect.arrayContaining([expect.objectContaining({ id: storedSharedId })]));
+      expect(approvedDuplicate).toMatchObject({
+        code: 'DUPLICATE', duplicateOf: storedSharedId, duplicateKind: 'memory',
+        existing: { id: storedSharedId, content: 'The Room decided to retain the shared index.' },
+      });
       expect(approvedDuplicate.notificationDelivered).toBeUndefined();
       expect(await roomNotices()).toHaveLength(noticeCountBeforeApprovedDuplicate);
 

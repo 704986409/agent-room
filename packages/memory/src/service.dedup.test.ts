@@ -132,6 +132,41 @@ describe('MemoryService semantic duplicate decisions', () => {
     expect(verifyMany).toHaveBeenCalledOnce();
   });
 
+  it('returns the same silent DUPLICATE shape for an exact normalized content match, without Jev or embedding', async () => {
+    const existingEntry: MemoryEntry = {
+      id: 'entry-exact-content',
+      room_instance_id: roomId,
+      persona_id: null,
+      scope: 'room',
+      title: '另一个标题',
+      preview: candidate.preview,
+      content: '  订单服务的超时时间统一设为 30 秒。 ',
+      search_text: candidate.searchText,
+      version: 1,
+      updated_at: new Date(),
+      created_at: new Date(),
+      source_message_id: null,
+      deleted_at: null,
+    };
+    const verifyMany = vi.fn(async () => 0);
+    const judgeMany = vi.fn(async () => ({ duplicate: 0, conflict: null }));
+    const embed = vi.fn(async () => [[1, 0]]);
+    const { service, repository } = makeService({
+      verifier: { verifyMany, judgeMany }, embedder: { embed }, entries: [existingEntry],
+    });
+
+    expect(await service.createEntry(caller, 'room', candidate, 'exact-content')).toEqual({
+      code: 'DUPLICATE',
+      duplicateOf: existingEntry.id,
+      duplicateKind: 'memory',
+      existing: { id: existingEntry.id, title: existingEntry.title, content: existingEntry.content },
+    });
+    expect(verifyMany).not.toHaveBeenCalled();
+    expect(judgeMany).not.toHaveBeenCalled();
+    expect(embed).not.toHaveBeenCalled();
+    expect(repository.createRoomProposal).not.toHaveBeenCalled();
+  });
+
   it('treats Jev null and Jev errors as not duplicate', async () => {
     const nullVerifier = vi.fn(async () => null);
     const nullResult = makeService({ verifier: { verifyMany: nullVerifier } });
@@ -170,6 +205,7 @@ describe('MemoryService semantic duplicate decisions', () => {
 
     expect(await service.createEntry(caller, 'room', query, 'semantic-only')).toEqual({
       code: 'DUPLICATE', duplicateOf: semanticCandidate.id, duplicateKind: 'memory',
+      existing: { id: semanticCandidate.id, title: semanticCandidate.title, content: semanticCandidate.content },
     });
     expect(verifyMany.mock.calls[0]?.[0].existings.map(item => item.id)).toEqual([semanticCandidate.id]);
   });
@@ -265,6 +301,7 @@ describe('MemoryService semantic duplicate decisions', () => {
       });
       expect(await service.createEntry(caller, 'room', sixty, 'dup-60')).toEqual({
         code: 'DUPLICATE', duplicateOf: 'entry-thirty', duplicateKind: 'memory',
+        existing: { id: 'entry-thirty', title: '订单服务超时', content: '订单服务超时时间为 60 秒。' },
       });
     });
 

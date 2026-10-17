@@ -113,6 +113,8 @@ export interface MemoryConflict {
 
 export interface NearDuplicateOutcome {
   duplicateResult?: MemoryMutationResult;
+  /** The approved memory behind a `duplicate` result. */
+  duplicateEntry?: { id: string; title: string; content: string };
   conflict?: MemoryConflict;
   embedding?: MemoryEmbedding;
 }
@@ -156,11 +158,12 @@ export async function findNearDuplicate(
   const exact = rawCandidates.find(candidate =>
     normalizeForDuplicate(candidate.content) === normalizeForDuplicate(input.content.content));
   if (exact) {
-    return {
-      duplicateResult: exact.kind === 'proposal'
-        ? { status: 'pending_review', id: exact.id, duplicateOf: exact.id }
-        : { status: 'duplicate', id: exact.id, duplicateOf: exact.id, duplicateKind: 'memory' },
-    };
+    return exact.kind === 'proposal'
+      ? { duplicateResult: { status: 'pending_review', id: exact.id, duplicateOf: exact.id } }
+      : {
+        duplicateResult: { status: 'duplicate', id: exact.id, duplicateOf: exact.id, duplicateKind: 'memory' },
+        duplicateEntry: { id: exact.id, title: exact.title, content: exact.content },
+      };
   }
 
   const embedding = await embedRoomContent(input.content, input.embedder, input.embeddingModel);
@@ -190,8 +193,12 @@ export async function findNearDuplicate(
     const conflict = conflicting
       ? { id: conflicting.id, kind: conflicting.kind, title: conflicting.title, content: conflicting.content }
       : undefined;
+    const duplicateEntry = duplicate?.kind === 'memory'
+      ? { id: duplicate.id, title: duplicate.title, content: duplicate.content }
+      : undefined;
     return {
       ...(duplicateResult ? { duplicateResult } : {}),
+      ...(duplicateEntry ? { duplicateEntry } : {}),
       ...(conflict ? { conflict } : {}),
       ...(embedding ? { embedding } : {}),
     };
