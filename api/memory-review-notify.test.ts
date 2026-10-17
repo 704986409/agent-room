@@ -257,6 +257,7 @@ describe('shared memory proposals reach the reviewer through the room', () => {
         is_chinese: { type: 'noul', noul: 0.9 },
         durable: { type: 'noul', noul: 0.9 },
         concise: { type: 'noul', noul: 0.9 },
+        named_rule: { type: 'noul', noul: 0.9 },
         already_known: { type: 'noul', noul: 0.1 },
       },
     }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
@@ -312,11 +313,12 @@ describe('shared memory proposals reach the reviewer through the room', () => {
     ['is_chinese', 0.49, '格式不合规'],
     ['durable', 0.59, '无关记忆'],
     ['concise', 0.49, '格式不合规'],
+    ['named_rule', 0.49, '格式不合规'],
     ['already_known', 0.6, '重复记忆'],
   ] as const)('lets Jev reject a proposal with the required reason code', async (key, score, reason) => {
     vi.stubEnv('JEV_API_KEY', 'test-je-v-key');
     reviewerSet = { mode: 'owner_fallback', reviewers: [ROOM_OWNER], offlineReviewers: [] };
-    const scores = { is_chinese: 0.9, durable: 0.9, concise: 0.9, already_known: 0.1, [key]: score };
+    const scores = { is_chinese: 0.9, durable: 0.9, concise: 0.9, named_rule: 0.9, already_known: 0.1, [key]: score };
     vi.stubGlobal('fetch', vi.fn<FetchArgs, Promise<Response>>(async () => new Response(JSON.stringify({
       model: 'jev-1.13.0',
       answers: Object.fromEntries(Object.entries(scores).map(([id, noul]) => [id, { type: 'noul', noul }])),

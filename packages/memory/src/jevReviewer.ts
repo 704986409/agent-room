@@ -6,6 +6,7 @@ export const JEV_REVIEW_THRESHOLDS = {
   isChinese: 0.5,
   durable: 0.6,
   concise: 0.5,
+  namedRule: 0.5,
   alreadyKnown: 0.6,
 } as const;
 
@@ -56,6 +57,11 @@ const QUESTIONS: Record<string, JevQuestion> = {
     instructions: '判断记忆是否是简体中文的一句简洁表达，没有臃肿内容、多个事项或明显冗余。',
     criteria: { true: '是一句简洁中文表达，没有多个事项或明显冗余。', false: '不是简体中文，或内容臃肿、包含多个事项、不是一句简洁表达。' },
   },
+  named_rule: {
+    type: 'noul',
+    instructions: '判断记忆是否按「对象 + 规则」一句话写清：标准、工具、协议、端口、路径写出了正式名称或原值，没有用“国际标准格式”“东京时间”“那个代理”这类代称，也没有只用例子代替规则本身。',
+    criteria: { true: '写出了对象和规则，名称或数值是正式名称或原值。', false: '用了代称、间接描述，或只给了例子，没写出规则的正式名称或原值。' },
+  },
   already_known: {
     type: 'noul',
     instructions: '判断 existing_memories 中是否已经有一条与这条新记忆意思相同的记忆。',
@@ -83,9 +89,11 @@ export function resolveJevReviewer(env: NodeJS.ProcessEnv = process.env): JevRev
       const isChinese = scores.is_chinese!.noul;
       const durable = scores.durable!.noul;
       const concise = scores.concise!.noul;
+      const namedRule = scores.named_rule!.noul;
       const alreadyKnown = scores.already_known!.noul;
 
-      if (isChinese < JEV_REVIEW_THRESHOLDS.isChinese || concise < JEV_REVIEW_THRESHOLDS.concise) {
+      if (isChinese < JEV_REVIEW_THRESHOLDS.isChinese || concise < JEV_REVIEW_THRESHOLDS.concise
+        || namedRule < JEV_REVIEW_THRESHOLDS.namedRule) {
         return { decision: 'reject', reason: '格式不合规' };
       }
       if (durable < JEV_REVIEW_THRESHOLDS.durable) return { decision: 'reject', reason: '无关记忆' };

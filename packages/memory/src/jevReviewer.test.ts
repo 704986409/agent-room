@@ -16,7 +16,7 @@ function mockScores(scores: Record<string, number>) {
   }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
 }
 
-const passing = { is_chinese: 0.9, durable: 0.9, concise: 0.9, already_known: 0.1 };
+const passing = { is_chinese: 0.9, durable: 0.9, concise: 0.9, named_rule: 0.9, already_known: 0.1 };
 
 describe('Jev reviewer', () => {
   afterEach(() => {
@@ -43,7 +43,7 @@ describe('Jev reviewer', () => {
       state: { action: 'create', title: input.title, content: input.content, existing_memories: input.existingMemories },
       questions: {
         is_chinese: { type: 'noul' }, durable: { type: 'noul' }, concise: { type: 'noul' },
-        already_known: { type: 'noul' },
+        named_rule: { type: 'noul' }, already_known: { type: 'noul' },
       },
     });
   });
@@ -52,6 +52,7 @@ describe('Jev reviewer', () => {
     [{ ...passing, is_chinese: 0.49 }, '格式不合规'],
     [{ ...passing, durable: 0.59 }, '无关记忆'],
     [{ ...passing, concise: 0.49 }, '格式不合规'],
+    [{ ...passing, named_rule: 0.49 }, '格式不合规'],
     [{ ...passing, already_known: 0.6 }, '重复记忆'],
   ])('rejects with the first failing reason', async (scores, reason) => {
     vi.stubEnv('JEV_API_KEY', 'test-key');
