@@ -4,6 +4,7 @@ import {
   appendMessage,
   appendSystemMessage,
   createRoom,
+  createAgentInvite,
   createRoomReport,
   createRemoteRoomClient,
   endRoom,
@@ -270,6 +271,17 @@ async function dispatchRoomHttpAction(
           str(p.requesterName),
           typeof p.hostKey === 'string' ? p.hostKey : undefined,
         ),
+      };
+    }
+
+    case 'createAgentInvite': {
+      // Host-only ('+' dialog in the web room). Returns the plaintext code once;
+      // only its hash is stored. Valid for 5 minutes, spent by one MCP room_join.
+      return {
+        invite: await createAgentInvite(client, str(p.code), {
+          hostKey: typeof p.hostKey === 'string' ? p.hostKey : undefined,
+          role: p.role,
+        }),
       };
     }
 

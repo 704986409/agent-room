@@ -72,6 +72,16 @@ import {
 } from '@agent-room/upstash-client';
 import type { UpstashClient } from '@agent-room/upstash-client';
 import { dispatchRoomWebhooks, validateWebhookUrl } from './_webhookDispatch.js';
+import {
+  AGENT_INVITE_MESSAGES,
+  AgentInviteError,
+  claimAgentInvite,
+  createAgentInvite as storeCreateAgentInvite,
+  lookupAgentInvite,
+  markAgentInviteUsed,
+  releaseAgentInvite,
+  type AgentInviteRecord,
+} from './_agentInvite.js';
 
 /** Same shape the hosted deployment's client throws, so the tool layer's
  *  error handling is identical on both. */
@@ -294,6 +304,7 @@ async function assertHostFor(
  */
 function translate(e: unknown): never {
   if (e instanceof RemoteRoomApiError) throw e;
+  if (e instanceof AgentInviteError) throw new RemoteRoomApiError(e.message, e.status, e.code);
   if (e instanceof DeliverRuleError) throw new RemoteRoomApiError(e.message, 400, 'bad_request');
   if (e instanceof VerifyNoteRequiredError) throw new RemoteRoomApiError(e.message, 400, 'VerifyNoteRequiredError');
   if (e instanceof MutedError) throw new RemoteRoomApiError(e.message, 403, 'MutedError');
@@ -443,6 +454,18 @@ export async function joinRoom(
     }
     return { ...finalRoom, participant: result.participant, seatKey, ...(reclaimed ? { reclaimed: true } : {}) } as
       Room & { participant: Participant; seatKey: string };
+  });
+}
+
+/** Host-only: mint a one-time agent invite (5-minute validity) bound to this room + role/Persona. */
+export async function createAgentInvite(
+  client: RemoteRoomClient,
+  code: string,
+  input: { hostKey?: string; role: unknown },
+): Promise<Awaited<ReturnType<typeof storeCreateAgentInvite>>> {
+  return guarded(async () => {
+    const room = await storeGetRoom(client.store, code);
+    return storeCreateAgentInvite(client.store, room, input);
   });
 }
 
