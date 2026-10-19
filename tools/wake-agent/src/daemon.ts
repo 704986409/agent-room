@@ -1,8 +1,11 @@
 import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LauncherAdapter } from './adapter.js';
+import type { CredentialStore } from './credstore.js';
 import { nextWait } from './interval.js';
-import { launchPrompt, wakePrompt } from './prompt.js';
+import { joinRoomOverMcp, type RoomJoin } from './mcpJoin.js';
+import { firstRunPrompt, wakePrompt } from './prompt.js';
+import type { SecretRegistry } from './redact.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
 
 export interface WakeSeatView {
@@ -70,6 +73,16 @@ export class MemoryRunLock implements RunLock {
   has(seatId: string): boolean { return this.held.has(seatId); }
 }
 
+export interface StartAgentInput {
+  server: string;
+  code: string;
+  inviteCode: string;
+  name: string;
+  adapterId: string;
+  model: string;
+  cwd: string;
+}
+
 export interface WakeDaemonOptions {
   api: WakeApi;
   adapters: ReadonlyMap<string, LauncherAdapter>;
@@ -82,34 +95,56 @@ export interface WakeDaemonOptions {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   env?: Record<string, string>;
-  adapterCommand?: string;
+  adapterCommand?: string | ((adapterId: string) => string);
+  credentials?: CredentialStore;
+  server?: string;
+  stateDir?: string;
+  joinRoom?: RoomJoin;
+  secrets?: SecretRegistry;
 }
 
 export class WakeDaemon {
   private polling = false;
   private stopped = false;
+  private authBlocked = false;
   emptyStreak = 0;
   waitMs = 5_000;
   serverNextPollMs = 5_000;
   readonly polls: Promise<unknown>[] = [];
   private readonly options: WakeDaemonOptions;
+  private readonly claimsBySeat = new Map<string, string[]>();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private wakeSleep: (() => void) | undefined;
 
   constructor(options: WakeDaemonOptions) {
     this.options = options;
-    this.options.state = reconcileAfterRestart(options.state, options.inspect, options.adapterCommand ?? 'codex');
+    const resolve = options.adapterCommand
+      ?? ((adapterId: string) => options.adapters.get(adapterId)?.command ?? adapterId);
+    this.options.state = reconcileAfterRestart(options.state, options.inspect, resolve);
   }
 
   get seats(): readonly SeatRecord[] { return this.options.state.seats; }
+  get state(): DaemonState { return this.options.state; }
+  get authState(): 'ok' | 'unauthorized' { return this.authBlocked ? 'unauthorized' : 'ok'; }
 
-  stop(): void { this.stopped = true; }
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    this.wakeSleep?.();
+  }
+
+  /** Polling resumes after a successful re-pair. Seats marked revoked stay revoked. */
+  resumeAfterPair(): void { this.authBlocked = false; }
 
   /** One poll. A second call while the first is in flight does not issue another request. */
   async tick(): Promise<void> {
-    if (this.polling) return;
+    if (this.polling || this.stopped || this.authBlocked) return;
     this.polling = true;
     let networkError = false;
     let busy = false;
-    const flight = this.options.api.poll().then(result => result, error => { networkError = true; throw error; });
+    let skipped = false;
+    let failure: unknown;
+    const flight = this.options.api.poll().then(result => result, error => { failure = error; throw error; });
     this.polls.push(flight);
     try {
       const result = await flight;
@@ -117,6 +152,10 @@ export class WakeDaemon {
       for (const remote of result.seats) {
         const seat = this.options.state.seats.find(item => item.seatId === remote.seatId);
         if (!seat) continue;
+        if (remote.status === 'revoked') {
+          this.markRevoked(seat, `seat ${seat.seatId} revoked`);
+          continue;
+        }
         if (remote.status !== 'active') continue;
         const claimIds = remote.inFlight.map(event => event.claimId).filter((id): id is string => !!id);
         if (claimIds.length) await this.options.api.renew({ claimIds });
@@ -129,42 +168,88 @@ export class WakeDaemon {
         else if (seat.status === 'idle') await this.resumeSeat(seat, remote);
       }
     } catch {
-      networkError = true;
+      if (messageOf(failure) === 'unpaired') skipped = true;
+      else {
+        networkError = true;
+        if (statusOf(failure) === 401) this.markUnauthorized();
+      }
     } finally {
       this.polling = false;
-      const decision = nextWait({
-        emptyStreak: this.emptyStreak,
-        busy,
-        networkError,
-        serverNextPollMs: this.serverNextPollMs,
-        random: this.options.random?.() ?? 0,
-      });
-      this.emptyStreak = decision.emptyStreak;
-      this.waitMs = decision.waitMs;
+      if (!skipped) {
+        const decision = nextWait({
+          emptyStreak: this.emptyStreak,
+          busy,
+          networkError,
+          serverNextPollMs: this.serverNextPollMs,
+          random: this.options.random?.() ?? 0,
+        });
+        this.emptyStreak = decision.emptyStreak;
+        this.waitMs = decision.waitMs;
+      }
       await this.options.persist?.(this.options.state);
     }
   }
 
-  async run(): Promise<void> {
-    while (!this.stopped) {
-      await this.tick();
-      await (this.options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms))))(this.waitMs);
+  /** Locks left by a previous daemon process (killed mid-run) would block resume forever. */
+  async releaseStaleLocks(): Promise<void> {
+    for (const seat of this.options.state.seats) {
+      if (seat.status !== 'running') await this.options.lock.release(seat.seatId);
     }
   }
 
-  async startAgent(input: { code: string; name: string; cwd: string; adapterId: string; seatKey: string; cursor: number }): Promise<SeatRecord> {
+  async run(): Promise<void> {
+    await this.releaseStaleLocks();
+    const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>(resolve => {
+      this.wakeSleep = resolve;
+      this.timer = setTimeout(() => {
+        this.wakeSleep = undefined;
+        resolve();
+      }, ms);
+    }));
+    while (!this.stopped) {
+      await this.tick();
+      if (this.stopped) break;
+      await sleep(this.waitMs);
+    }
+  }
+
+  async startAgent(input: StartAgentInput): Promise<SeatRecord> {
     const adapter = this.adapter(input.adapterId);
-    const prompt = launchPrompt(input.code, input.name);
-    this.options.log?.(prompt);
-    const launched = await adapter.launch({ cwd: input.cwd, prompt, env: this.options.env ?? {} });
+    if (!adapter.models.includes(input.model)) throw new Error('model_not_allowed');
+    const join = this.options.joinRoom ?? joinRoomOverMcp;
+    const joined = await join({
+      server: input.server, code: input.code, name: input.name, inviteCode: input.inviteCode,
+    });
+    const seatName = joined.name || joined.yourName || input.name;
     const registered = await this.options.api.register({
-      code: input.code, name: input.name, seatKey: input.seatKey, cursor: input.cursor,
+      code: input.code, name: seatName, seatKey: joined.seatKey, cursor: joined.cursor,
+    });
+    this.options.secrets?.add(joined.seatKey);
+    await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
+    const prompt = firstRunPrompt({ code: input.code, name: seatName, readFrom: joined.cursor });
+    this.options.log?.(prompt);
+    const launched = await adapter.launch({
+      cwd: input.cwd,
+      prompt,
+      model: input.model,
+      env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey),
+      logFile: this.logFile(registered.seatId),
     });
     const seat: SeatRecord = {
-      seatId: registered.seatId, code: input.code, name: input.name, adapterId: input.adapterId,
-      sessionId: launched.sessionId, cwd: input.cwd, pid: launched.pid, status: 'running',
+      seatId: registered.seatId,
+      roomInstanceId: registered.roomInstanceId,
+      code: input.code,
+      name: seatName,
+      adapterId: input.adapterId,
+      model: input.model,
+      sessionId: launched.sessionId,
+      cwd: input.cwd,
+      pid: launched.pid,
+      status: 'running',
+      startedAt: new Date().toISOString(),
     };
     this.options.state.seats.push(seat);
+    this.watchExit(seat.seatId, launched.pid, launched.exited);
     await this.options.persist?.(this.options.state);
     return seat;
   }
@@ -173,6 +258,40 @@ export class WakeDaemon {
     const adapter = this.options.adapters.get(id);
     if (!adapter) throw new Error('launcher_unavailable');
     return adapter;
+  }
+
+  private logFile(seatId: string): string | undefined {
+    return this.options.stateDir ? join(this.options.stateDir, 'logs', `${seatId}.log`) : undefined;
+  }
+
+  private async childEnv(seatId: string, code: string, name: string, server: string, seatKey?: string): Promise<Record<string, string>> {
+    const stored = seatKey ?? await this.options.credentials?.get(`seat:${seatId}`) ?? '';
+    if (stored) this.options.secrets?.add(stored);
+    return {
+      ...(this.options.env ?? {}),
+      AGENT_ROOM_MANAGED: '1',
+      AGENT_ROOM_SERVER: server || this.options.server || '',
+      AGENT_ROOM_CODE: code,
+      AGENT_ROOM_NAME: name,
+      AGENT_ROOM_SEAT_KEY: stored,
+    };
+  }
+
+  private markRevoked(seat: SeatRecord, line: string): void {
+    if (seat.status === 'revoked') return;
+    this.options.log?.(line);
+    seat.status = 'revoked';
+    seat.pid = undefined;
+    seat.wakeRunId = undefined;
+    void this.options.lock.release(seat.seatId);
+  }
+
+  private markUnauthorized(): void {
+    if (this.authBlocked) return;
+    this.authBlocked = true;
+    this.waitMs = 5_000;
+    this.options.log?.('device unauthorized; polling stopped until re-paired');
+    for (const seat of this.options.state.seats) this.markRevoked(seat, `seat ${seat.seatId} revoked`);
   }
 
   private observeProcess(seat: SeatRecord): void {
@@ -185,8 +304,25 @@ export class WakeDaemon {
     void this.options.lock.release(seat.seatId);
   }
 
+  private watchExit(seatId: string, pid: number, exited: Promise<number>): void {
+    void exited.then(code => {
+      const seat = this.options.state.seats.find(item => item.seatId === seatId);
+      if (!seat || seat.pid !== pid || seat.status !== 'running') return;
+      const claims = this.claimsBySeat.get(seatId) ?? [];
+      seat.status = 'idle';
+      seat.pid = undefined;
+      seat.wakeRunId = undefined;
+      this.claimsBySeat.delete(seatId);
+      void this.options.lock.release(seatId);
+      if (code !== 0 && claims.length) {
+        void this.options.api.progress({ claims: claims.map(claimId => ({ claimId, status: 'resume_failed' as const })) });
+      }
+      void this.options.persist?.(this.options.state);
+    });
+  }
+
   private async resumeSeat(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
-    if (!seat.sessionId) return;
+    if (!seat.sessionId || !seat.model) return;
     if (!(await this.options.lock.tryAcquire(seat.seatId))) return;
     const claimed = await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId) });
     const ok = claimed.claims.filter(claim => claim.claimId);
@@ -199,11 +335,18 @@ export class WakeDaemon {
     try {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
       const child = await this.adapter(seat.adapterId).resume({
-        sessionId: seat.sessionId, cwd: seat.cwd, prompt, env: this.options.env ?? {},
+        sessionId: seat.sessionId,
+        cwd: seat.cwd,
+        prompt,
+        model: seat.model,
+        env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? ''),
+        logFile: this.logFile(seat.seatId),
       });
       seat.pid = child.pid;
       seat.status = 'running';
       seat.wakeRunId = claimed.wakeRunId;
+      this.claimsBySeat.set(seat.seatId, ok.map(claim => claim.claimId!));
+      this.watchExit(seat.seatId, child.pid, child.exited);
     } catch {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_failed' as const })) });
       await this.options.lock.release(seat.seatId);
@@ -216,10 +359,22 @@ export class WakeDaemon {
     const ok = claimed.claims.filter(claim => claim.claimId);
     if (!ok.length) return;
     seat.wakeRunId = claimed.wakeRunId;
+    this.claimsBySeat.set(seat.seatId, ok.map(claim => claim.claimId!));
     await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
   }
 
   private async merge(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
     await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId), wakeRunId: seat.wakeRunId });
   }
+}
+
+function statusOf(error: unknown): number | undefined {
+  if (typeof error === 'object' && error && 'status' in error && typeof (error as { status: unknown }).status === 'number') {
+    return (error as { status: number }).status;
+  }
+  return undefined;
+}
+
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : '';
 }

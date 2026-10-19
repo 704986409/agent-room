@@ -3,7 +3,8 @@ import { Link, useNavigate } from 'react-router-dom';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
-import { AccountApiError, accountApi, type AccountSession, type AccountUser } from '../lib/accountApi.js';
+import { AccountApiError, accountApi, type AccountDevice, type AccountSession, type AccountUser } from '../lib/accountApi.js';
+import { copyText } from '../lib/copy.js';
 
 export function Account() {
   const { t, formatDateTime } = useLocale();
@@ -11,6 +12,9 @@ export function Account() {
   const navigate = useNavigate();
   const [user, setUser] = useState<AccountUser | null>(null);
   const [sessions, setSessions] = useState<AccountSession[]>([]);
+  const [devices, setDevices] = useState<AccountDevice[]>([]);
+  const [pairing, setPairing] = useState<{ pairingCode: string; expiresAt: number } | null>(null);
+  const [pairingBusy, setPairingBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [currentPassword, setCurrentPassword] = useState('');
@@ -25,8 +29,9 @@ export function Account() {
     try {
       const me = await accountApi.me();
       setUser(me.user);
-      const listed = await accountApi.sessions();
+      const [listed, deviceList] = await Promise.all([accountApi.sessions(), accountApi.listDevices()]);
       setSessions(listed.sessions);
+      setDevices(deviceList.devices);
       setError(null);
     } catch (err) {
       if (err instanceof AccountApiError && err.status === 401 && attempt === 0) {
@@ -60,6 +65,30 @@ export function Account() {
       return;
     }
     await load();
+  }
+
+  async function generatePairingCode() {
+    setError(null);
+    setPairingBusy(true);
+    try {
+      setPairing(await accountApi.pairStart());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.unknownError'));
+    } finally {
+      setPairingBusy(false);
+    }
+  }
+
+  async function revokeDevice(deviceId: string) {
+    if (!window.confirm(t('account.revokeDeviceConfirm'))) return;
+    setError(null);
+    try {
+      await accountApi.revokeDevice(deviceId);
+      setNotice(t('account.deviceRevoked'));
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.unknownError'));
+    }
   }
 
   async function changePassword(event: FormEvent) {
@@ -116,8 +145,54 @@ export function Account() {
         </section>
 
         <section className="rounded-xl border border-border bg-white p-5">
-          <h2 className="text-sm font-semibold">{t('account.devices')}</h2>
-          <p className="mt-2 text-sm text-ink-soft">{t('account.devicesPlaceholder')}</p>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-sm font-semibold">{t('account.devices')}</h2>
+            <button
+              type="button"
+              className="rounded-lg bg-ink px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
+              disabled={pairingBusy}
+              onClick={() => { void generatePairingCode(); }}
+            >
+              {t('account.generatePairingCode')}
+            </button>
+          </div>
+          <p className="mt-2 text-sm text-ink-soft">{t('account.pairingHint')}</p>
+          {pairing && (
+            <div className="mt-3">
+              <label className="block text-xs font-semibold text-ink-muted" htmlFor="pairing-code">{t('account.pairingCode')}</label>
+              <div className="mt-1 flex gap-2">
+                <input
+                  id="pairing-code"
+                  readOnly
+                  value={pairing.pairingCode}
+                  className="min-w-0 flex-1 rounded-lg border border-border bg-surface-soft px-3 py-2 font-mono text-sm"
+                />
+                <button
+                  type="button"
+                  className="rounded-lg border border-border px-3 py-2 text-xs font-semibold text-ink"
+                  onClick={() => { void copyText(pairing.pairingCode, t('common.copiedToClipboard')); }}
+                >
+                  {t('common.copy')}
+                </button>
+              </div>
+              <p className="mt-2 text-xs text-ink-soft">{t('account.pairingExpires', { time: formatDateTime(pairing.expiresAt) })}</p>
+            </div>
+          )}
+          {loading && devices.length === 0 ? <p className="mt-3 text-sm text-ink-soft">{t('common.loading')}</p> : devices.length === 0 ? (
+            <p className="mt-3 text-sm text-ink-soft">{t('account.devicesEmpty')}</p>
+          ) : (
+            <ul className="mt-3 space-y-2">
+              {devices.map(device => (
+                <li key={device.deviceId} className="flex items-center justify-between gap-3 rounded-lg border border-border-faint px-3 py-2 text-xs">
+                  <div>
+                    <div className="font-semibold text-ink">{device.name} · {device.platform}</div>
+                    <div className="text-ink-soft">{device.hostname ? `${device.hostname} · ` : ''}{formatDateTime(device.lastSeenAt)}</div>
+                  </div>
+                  <button type="button" className="font-semibold text-rose-700" onClick={() => { void revokeDevice(device.deviceId); }}>{t('account.revoke')}</button>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
 
         <form onSubmit={changePassword} className="rounded-xl border border-border bg-white p-5">

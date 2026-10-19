@@ -1,0 +1,5 @@
+node_modules/
+daemon-dist/
+dist-pkg/
+src-tauri/target/
+src-tauri/gen/

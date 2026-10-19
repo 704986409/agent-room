@@ -77,7 +77,7 @@ describe('account HTTP', () => {
     const me = await fetch(`${base}/api/account/me`, { headers: { cookie: adaCookie } });
     expect(me.status).toBe(200);
     const devices = await fetch(`${base}/api/account/devices`, { headers: { cookie: adaCookie } });
-    expect(await devices.json()).toMatchObject({ devices: [], available: false });
+    expect(await devices.json()).toEqual({ devices: [] });
 
     const bea = await login('Bea', 'user-password-1', '203.0.113.31');
     const beaCookie = cookieFrom(bea);

@@ -6,19 +6,34 @@ type FetchFn = (input: string, init: { method: string; headers: Record<string, s
   json: () => Promise<unknown>;
 }>;
 
+export class WakeHttpError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'WakeHttpError';
+    this.status = status;
+  }
+}
+
 /** Outbound client for POST /api/wake. The daemon never listens. */
-export function createHttpWakeApi(baseUrl: string, token: string, fetchFn: FetchFn = fetch): WakeApi {
+export function createHttpWakeApi(
+  baseUrl: string,
+  token: string | (() => string | Promise<string>),
+  fetchFn: FetchFn = fetch,
+): WakeApi {
   const endpoint = new URL('/api/wake', baseUrl).toString();
   async function post(body: unknown): Promise<unknown> {
+    const bearer = typeof token === 'function' ? await token() : token;
+    if (!bearer) throw new WakeHttpError('unpaired', 0);
     const response = await fetchFn(endpoint, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
       body: JSON.stringify(body),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const error = new Error(typeof (payload as { error?: string }).error === 'string' ? (payload as { error: string }).error : 'wake_http');
-      throw error;
+      const message = typeof (payload as { error?: string }).error === 'string' ? (payload as { error: string }).error : 'wake_http';
+      throw new WakeHttpError(message, response.status);
     }
     return payload;
   }

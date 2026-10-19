@@ -35,6 +35,12 @@ import {
   revokeSessionHandler,
   sessionsHandler,
 } from '../../api/account.js';
+import {
+  deviceSelfHandler,
+  pairCompleteHandler,
+  pairStartHandler,
+  revokeDeviceHandler,
+} from '../../api/device.js';
 import deleteRoomBlobsHandler from '../../api/delete-room-blobs.js';
 import elevenlabsTtsHandler from '../../api/elevenlabs-tts.js';
 import installHandler from '../../api/install.js';
@@ -110,6 +116,10 @@ const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   'account/sessions/revoke-others': revokeOtherSessionsHandler,
   'account/password': passwordHandler,
   'account/devices': devicesHandler,
+  'account/devices/revoke': revokeDeviceHandler,
+  'device/pair-start': pairStartHandler,
+  'device/pair-complete': pairCompleteHandler,
+  'device/self': deviceSelfHandler,
   'admin/users': adminUsersHandler,
   'admin/users/disable': adminDisableHandler,
   'admin/users/enable': adminEnableHandler,
