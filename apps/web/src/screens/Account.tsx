@@ -16,18 +16,42 @@ export function Account() {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
-  async function load() {
-    const [me, listed] = await Promise.all([accountApi.me(), accountApi.sessions()]);
-    setUser(me.user);
-    setSessions(listed.sessions);
+  const [loading, setLoading] = useState(true);
+
+  // Each part renders as soon as it arrives; a slow or failed sessions call no
+  // longer leaves the header and admin link blank. One retry covers a request
+  // that raced the fresh login cookie.
+  async function load(attempt = 0): Promise<void> {
+    try {
+      const me = await accountApi.me();
+      setUser(me.user);
+      const listed = await accountApi.sessions();
+      setSessions(listed.sessions);
+      setError(null);
+    } catch (err) {
+      if (err instanceof AccountApiError && err.status === 401 && attempt === 0) {
+        await new Promise(resolve => setTimeout(resolve, 300));
+        return load(1);
+      }
+      throw err;
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
-    load().catch(err => {
-      if (err instanceof AccountApiError && err.status === 401) navigate('/login');
+    let alive = true;
+    const run = () => load().catch(err => {
+      if (!alive) return;
+      if (err instanceof AccountApiError && err.status === 401) navigate('/login?next=/account');
       else setError(err instanceof Error ? err.message : t('common.unknownError'));
     });
-  }, [navigate, t]);
+    void run();
+    const onVisible = () => { if (document.visibilityState === 'visible') void run(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { alive = false; document.removeEventListener('visibilitychange', onVisible); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function revoke(id: string) {
     await accountApi.revokeSession(id);
@@ -72,16 +96,16 @@ export function Account() {
         <section className="rounded-xl border border-border bg-white p-5">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-sm font-semibold">{t('account.sessions')}</h2>
-            <button type="button" className="text-xs font-semibold text-accent" onClick={() => { void accountApi.revokeOthers().then(load); }}>
+            <button type="button" className="text-xs font-semibold text-accent" onClick={() => { void accountApi.revokeOthers().then(() => load()); }}>
               {t('account.revokeOthers')}
             </button>
           </div>
-          {sessions.length === 0 ? <p className="mt-3 text-sm text-ink-soft">{t('account.noSessions')}</p> : (
+          {loading && sessions.length === 0 ? <p className="mt-3 text-sm text-ink-soft">{t('common.loading')}</p> : sessions.length === 0 ? <p className="mt-3 text-sm text-ink-soft">{t('account.noSessions')}</p> : (
             <ul className="mt-3 space-y-2">
               {sessions.map(session => (
                 <li key={session.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-faint px-3 py-2 text-xs">
                   <div>
-                    <div className="font-semibold text-ink">{session.ua || session.ip}{session.current ? ` · ${t('account.current')}` : ''}</div>
+                    <div className="font-semibold text-ink">{session.label || session.ip}{session.current ? ` · ${t('account.current')}` : ''}</div>
                     <div className="text-ink-soft">{session.ip} · {formatDateTime(session.lastSeenAt)}</div>
                   </div>
                   <button type="button" className="font-semibold text-rose-700" onClick={() => { void revoke(session.id); }}>{t('account.revoke')}</button>
