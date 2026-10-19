@@ -24,6 +24,7 @@ import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpea
 import { createClient, getTurnState, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
 import { roomApi } from '../lib/roomWrites.js';
+import { CopyInviteButton } from '../components/CopyInviteButton.js';
 import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
 import { deleteRoomBlobs } from '../lib/upload.js';
@@ -648,19 +649,14 @@ export function Room() {
     await forceRefresh();
   }
 
-  async function copyHumanInvite() {
+  async function inviteLinkText(): Promise<string | null> {
     if (!isHost) {
       const { showToast } = await import('../components/Toast.js');
       showToast(t('room.ownerInviteOnly'), 'info');
-      return;
+      return null;
     }
-    try {
-      const invite = await roomApi.createInvite({ code });
-      await copyText(`${window.location.origin}/i/${invite.token}`, t('room.inviteLinkCopied'));
-    } catch (e) {
-      const { showToast } = await import('../components/Toast.js');
-      showToast(e instanceof Error ? e.message : t('common.unknownError'), 'error');
-    }
+    const invite = await roomApi.createInvite({ code });
+    return `${window.location.origin}/i/${invite.token}`;
   }
 
   async function handleAskAgent(p: Participant) {
@@ -767,12 +763,12 @@ export function Room() {
             <LocaleSwitcher compact className="border-0 bg-transparent p-0" />
             <MemoryReviewPanel roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
             <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="header" />
-            <button
-              onClick={() => { void copyHumanInvite(); }}
-              className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition"
-            >
-              {t('room.share')}
-            </button>
+            <CopyInviteButton
+              label={t('room.share')}
+              successMsg={t('room.inviteLinkCopied')}
+              getText={inviteLinkText}
+              className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition disabled:opacity-60"
+            />
             <MeetingCodePill code={code} />
           </div>
         </header>
@@ -828,12 +824,12 @@ export function Room() {
               <div className="hidden lg:block mt-3">
                 <MeetingCodePill code={code} />
               </div>
-              <button
-                onClick={() => { void copyHumanInvite(); }}
-                className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20"
-              >
-                {t('room.copyInviteLink')}
-              </button>
+              <CopyInviteButton
+                label={t('room.copyInviteLink')}
+                successMsg={t('room.inviteLinkCopied')}
+                getText={inviteLinkText}
+                className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20 disabled:opacity-60"
+              />
               <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="panel" />
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
@@ -1093,13 +1089,14 @@ export function Room() {
                       : t('room.noMessagesWithAgent')}
                   </p>
                   {roomAgents.length === 0 && (
-                    <button
-                      type="button"
-                      onClick={() => { void copyHumanInvite(); }}
-                      className="mt-4 min-h-10 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white shadow-sm transition active:scale-[0.98] hover:opacity-90"
-                    >
-                      {t('room.copyInviteLink')}
-                    </button>
+                    <div className="mt-4">
+                      <CopyInviteButton
+                        label={t('room.copyInviteLink')}
+                        successMsg={t('room.inviteLinkCopied')}
+                        getText={inviteLinkText}
+                        className="min-h-10 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white shadow-sm transition active:scale-[0.98] hover:opacity-90 disabled:opacity-60"
+                      />
+                    </div>
                   )}
                 </div>
               )}
