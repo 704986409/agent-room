@@ -190,7 +190,15 @@ export class WakeDaemon {
     }
   }
 
+  /** Locks left by a previous daemon process (killed mid-run) would block resume forever. */
+  async releaseStaleLocks(): Promise<void> {
+    for (const seat of this.options.state.seats) {
+      if (seat.status !== 'running') await this.options.lock.release(seat.seatId);
+    }
+  }
+
   async run(): Promise<void> {
+    await this.releaseStaleLocks();
     const sleep = this.options.sleep ?? ((ms: number) => new Promise<void>(resolve => {
       this.wakeSleep = resolve;
       this.timer = setTimeout(() => {

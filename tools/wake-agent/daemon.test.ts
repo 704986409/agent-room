@@ -67,6 +67,21 @@ function api(): WakeApi & { calls: string[]; polls: number; registered: { seatKe
 }
 
 describe('wake daemon', () => {
+  it('releases a stale file lock left by a killed daemon so idle seats can resume', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-lock-'));
+    const lock = new FileRunLock(directory);
+    expect(await lock.tryAcquire('st_old')).toBe(true);
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map(),
+      state: { seats: [{ seatId: 'st_old', code: 'C', name: 'n', adapterId: 'codex', cwd: '/', status: 'running', pid: 999999 }] },
+      lock,
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    await daemon.releaseStaleLocks();
+    expect(await lock.tryAcquire('st_old')).toBe(true);
+  });
+
   it('launches Codex, registers, and writes a 0600 state file without the seatKey', async () => {
     const child = spawner(['boot\n', THREAD]);
     const adapter = new CodexCliAdapter(child);

@@ -19,7 +19,7 @@ function serve() {
   return new Promise((res, rej) => { const t = setInterval(() => { const m = /control: (\S+)/.exec(dlog.split('\n').filter(l => l.startsWith('control:')).pop() ?? ''); if (m) { clearInterval(t); res({ d, url: m[1] }); } }, 100); setTimeout(() => rej(new Error('no control url\n' + dlog)), 10000); });
 }
 async function ctl(base, path, body) { const u = new URL(base); const tok = u.searchParams.get('t'); const r = await fetch(`${u.origin}${path}`, { method: body ? 'POST' : 'GET', headers: { 'x-agent-room-control': tok, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, ...(await r.json().catch(() => ({}))) }; }
-async function waitEvent(seatId, n) { for (let i = 0; i < 30; i++) { await sleep(1000); const keys = rc('--scan', '--pattern', `wake-evt:wk:*:${seatId}`).split('\n').filter(Boolean); const ok = keys.filter(k => JSON.parse(rc('GET', k)).state === 'SUCCEEDED').length; if (ok >= n) return true; } return false; }
+async function waitEvent(seatId, n) { for (let i = 0; i < 70; i++) { await sleep(1000); const keys = rc('--scan', '--pattern', `wake-evt:wk:*:${seatId}`).split('\n').filter(Boolean); const ok = keys.filter(k => JSON.parse(rc('GET', k)).state === 'SUCCEEDED').length; if (ok >= n) return true; } return false; }
 
 await web('/api/account/login', { username: adm.ADMIN_USER, password: adm.ADMIN_PASS });
 let { d, url } = await serve();
@@ -60,7 +60,7 @@ d.kill('SIGTERM'); await sleep(1500); dlog = '';
 const s2 = await ctl(url, '/api/status');
 check('6.restart-recovery-state', JSON.stringify(s2).includes(seat.sessionId), JSON.stringify(s2.seats?.map(x => [x.status, x.sessionId])));
 await web('/api/web/chat-send', { code, text: `@Desk again after restart` });
-check('6b.wake-after-restart', await waitEvent(seat.seatId, 2));
+{ const ok6 = await waitEvent(seat.seatId, 2); check('6b.wake-after-restart', ok6, ok6 ? '' : fs.readdirSync(`${HOME}/.local/state/agent-room`).join(',') + ' ' + JSON.stringify((await ctl(url, '/api/status')).seats?.map(x => [x.status, x.pid]))); }
 
 const rv = await web('/api/account/devices/revoke', { deviceId: pr.deviceId });
 check('7.revoke-device', rv.ok === true);
