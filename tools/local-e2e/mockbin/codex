@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+// MOCK codex for local e2e: never calls any model. Acts like an agent that
+// follows the wake prompt via MCP with a locally stored seatKey.
+const fs = require('fs'); const { createRequire } = require('module');
+const r = createRequire('/home/box/MERYANG/agent-room-integration/package.json');
+const log = m => fs.appendFileSync('/home/box/MERYANG/localtest/mock-codex.log', `${new Date().toISOString()} ${m}\n`);
+(async () => {
+  const args = process.argv.slice(2); const prompt = args[args.length - 1] || '';
+  log(`argv=${JSON.stringify(args.slice(0, -1))} managed=${process.env.AGENT_ROOM_MANAGED}`);
+  const m = /room_listen\(\{ code: "([^"]+)", name: "([^"]+)", since: (\d+)/.exec(prompt);
+  if (!m) { console.log('{"thread_id":"mock-thread"}'); return; }
+  const [, code, name, since] = m; const seat = JSON.parse(fs.readFileSync('/home/box/MERYANG/localtest/mock-seat.json', 'utf8'));
+  const { Client } = await import(r.resolve('@modelcontextprotocol/sdk/client/index.js'));
+  const { StreamableHTTPClientTransport } = await import(r.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'));
+  const c = new Client({ name: 'mock-codex', version: '0' }); await c.connect(new StreamableHTTPClientTransport(new URL('http://127.0.0.1:3300/mcp')));
+  const pj = v => JSON.parse(v.content[0].text);
+  const read = pj(await c.callTool({ name: 'room_listen', arguments: { code, name, since: Number(since), timeoutMs: 0, managed: { seatKey: seat.seatKey } } }));
+  log(`read since=${since} got=${read.messages?.length} cursor=${read.cursor}`);
+  await c.callTool({ name: 'room_send', arguments: { code, name, seatKey: seat.seatKey, text: 'mock agent: done' } });
+  const cur = read.cursor + 1;
+  const sl = pj(await c.callTool({ name: 'room_sleep', arguments: { code, name, seatKey: seat.seatKey, cursor: cur } }));
+  log(`sleep ${JSON.stringify(sl)}`); await c.close();
+})().catch(e => { log('ERR ' + e.stack); process.exit(1); });

@@ -43,7 +43,8 @@ async function main(): Promise<void> {
     inspect: inspectProcess,
     persist: state => writeState(statePath, state),
     log: line => process.stderr.write(`${line}\n`),
-    env: {},
+    // Daemon-launched sessions carry the managed marker so the Stop Hook never auto-continues (§2.5).
+    env: { AGENT_ROOM_MANAGED: '1' },
   });
   process.once('SIGTERM', () => daemon.stop());
   process.once('SIGINT', () => daemon.stop());
