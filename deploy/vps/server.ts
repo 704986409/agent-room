@@ -46,7 +46,24 @@ import reportPageHandler from '../../api/report-page.js';
 import roomHandler from '../../api/room.js';
 import sttHandler from '../../api/stt.js';
 import uploadHandler from '../../api/upload.js';
-import { commandExposesSensitiveKey } from './redisProxyPolicy.js';
+import {
+  chatSendHandler,
+  deliverHandler,
+  hostHandler,
+  inviteAcceptHandler,
+  inviteCreateHandler,
+  inviteRevokeHandler,
+  joinHandler,
+  presenceHandler,
+  roomCreateHandler,
+  taskHandler,
+  typingHandler,
+  whoamiHandler,
+} from '../../api/web-writes.js';
+import { canReadRoom } from '../../api/_roomAccess.js';
+import { serverRedis } from '../../api/_redisEnv.js';
+import { GUEST_COOKIE, SESSION_COOKIE } from '../../api/_httpAuth.js';
+import { REDIS_READ_COMMANDS, commandExposesSensitiveKey, redisCommandKeys, roomCodeFromRedisKey } from './redisProxyPolicy.js';
 
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
 const WEB_ROOT = resolve(process.env.WEB_ROOT?.trim() || resolve(process.cwd(), 'apps/web/dist'));
@@ -96,6 +113,18 @@ const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   'admin/users/reset-password': adminResetPasswordHandler,
   'admin/users/sessions': adminSessionsHandler,
   'admin/users/revoke-sessions': adminRevokeSessionsHandler,
+  'web/room-create': roomCreateHandler,
+  'web/join': joinHandler,
+  'web/whoami': whoamiHandler,
+  'web/chat-send': chatSendHandler,
+  'web/presence': presenceHandler,
+  'web/typing': typingHandler,
+  'web/task': taskHandler,
+  'web/host': hostHandler,
+  'web/deliver': deliverHandler,
+  'web/invite': inviteCreateHandler,
+  'web/invite-revoke': inviteRevokeHandler,
+  'web/invite-accept': inviteAcceptHandler,
   'delete-room-blobs': deleteRoomBlobsHandler,
   'elevenlabs-tts': elevenlabsTtsHandler,
   install: installHandler,
@@ -109,10 +138,7 @@ const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   upload: uploadHandler,
 };
 
-const REDIS_COMMANDS = new Set([
-  'GET', 'SET', 'DEL', 'RPUSH', 'INCR', 'LTRIM', 'LRANGE', 'LLEN',
-  'EXPIRE', 'EXPIREAT', 'SADD', 'SISMEMBER', 'SMEMBERS', 'SREM', 'EVAL', 'PING', 'TTL',
-]);
+const REDIS_COMMANDS = REDIS_READ_COMMANDS;
 const REDIS_DENY_COMMANDS = new Set([
   'FLUSHALL', 'FLUSHDB', 'KEYS', 'SCAN', 'CONFIG', 'ACL', 'MODULE', 'SHUTDOWN',
   'MONITOR', 'DEBUG', 'MIGRATE', 'REPLICAOF', 'SLAVEOF',
@@ -308,6 +334,36 @@ function validateRedisPayload(pathname: string, body: unknown): { ok: true; body
   return { ok: true, body };
 }
 
+async function authorizeRedisRoomRead(
+  request: IncomingMessage,
+  pathname: string,
+  body: unknown,
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const commands = pathname === '/redis/pipeline' ? (body as unknown[][]) : [body as unknown[]];
+  const cookies = parseCookies(request.headers.cookie);
+  const allowed = new Set<string>();
+  let redis: ReturnType<typeof serverRedis> | null = null;
+  for (const command of commands) {
+    if (redisCommandName(command) === 'PING') continue;
+    const keys = redisCommandKeys(command);
+    if (keys.length === 0) return { ok: false, status: 403, error: 'redis_key_not_allowed' };
+    for (const key of keys) {
+      const code = roomCodeFromRedisKey(key);
+      if (!code) return { ok: false, status: 403, error: 'redis_key_not_allowed' };
+      if (allowed.has(code)) continue;
+      try {
+        redis ??= serverRedis();
+      } catch {
+        return { ok: false, status: 503, error: 'redis_proxy_not_configured' };
+      }
+      const readable = await canReadRoom(redis, code, cookies[SESSION_COOKIE] ?? '', cookies[GUEST_COOKIE] ?? '');
+      if (!readable) return { ok: false, status: 403, error: 'room_access_required' };
+      allowed.add(code);
+    }
+  }
+  return { ok: true };
+}
+
 async function handleRedisProxy(
   request: IncomingMessage,
   response: ServerResponse,
@@ -355,6 +411,12 @@ async function handleRedisProxy(
   const checked = validateRedisPayload(pathname, body);
   if (!checked.ok) {
     writeJson(response, checked.status, { error: checked.error });
+    return;
+  }
+
+  const roomAccess = await authorizeRedisRoomRead(request, pathname, checked.body);
+  if (!roomAccess.ok) {
+    writeJson(response, roomAccess.status, { error: roomAccess.error });
     return;
   }
 

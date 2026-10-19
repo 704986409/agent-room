@@ -8,6 +8,7 @@ type Entry = { value: string };
 export class MemoryRedis implements UpstashClient {
   private readonly kv = new Map<string, Entry>();
   private readonly sets = new Map<string, Set<string>>();
+  private readonly lists = new Map<string, string[]>();
   private readonly expiry = new Map<string, number>();
 
   async command<T = unknown>(cmd: readonly (string | number)[]): Promise<T> {
@@ -41,10 +42,40 @@ export class MemoryRedis implements UpstashClient {
           this.purge(item);
           if (this.kv.delete(item)) removed += 1;
           if (this.sets.delete(item)) removed += 1;
+          if (this.lists.delete(item)) removed += 1;
           this.expiry.delete(item);
         }
         return removed;
       }
+      case 'RPUSH': {
+        if (!key) return 0;
+        const list = this.lists.get(key) ?? [];
+        for (const item of cmd.slice(2)) list.push(item);
+        this.lists.set(key, list);
+        return list.length;
+      }
+      case 'LLEN':
+        return key ? (this.lists.get(key)?.length ?? 0) : 0;
+      case 'LRANGE': {
+        const list = key ? (this.lists.get(key) ?? []) : [];
+        const start = Number(cmd[2]);
+        const stop = Number(cmd[3]);
+        const from = start < 0 ? Math.max(list.length + start, 0) : start;
+        const to = stop < 0 ? list.length + stop : stop;
+        return list.slice(from, to + 1);
+      }
+      case 'LTRIM': {
+        if (!key) return 'OK';
+        const list = this.lists.get(key) ?? [];
+        const start = Number(cmd[2]);
+        const stop = Number(cmd[3]);
+        const from = start < 0 ? Math.max(list.length + start, 0) : start;
+        const to = stop < 0 ? list.length + stop : stop;
+        this.lists.set(key, list.slice(from, to + 1));
+        return 'OK';
+      }
+      case 'EVAL':
+        return this.eval(cmd);
       case 'EXISTS':
         return key && (this.kv.has(key) || this.sets.has(key)) ? 1 : 0;
       case 'INCR': {
@@ -61,7 +92,7 @@ export class MemoryRedis implements UpstashClient {
         return 1;
       }
       case 'EXPIREAT': {
-        if (!key || (!this.kv.has(key) && !this.sets.has(key))) return 0;
+        if (!key || !this.hasKey(key)) return 0;
         const unix = Number(cmd[2]);
         if (!Number.isFinite(unix)) return 0;
         this.expiry.set(key, unix * 1000);
@@ -143,11 +174,32 @@ export class MemoryRedis implements UpstashClient {
     return removed;
   }
 
+  private hasKey(key: string): boolean {
+    return this.kv.has(key) || this.sets.has(key) || this.lists.has(key);
+  }
+
+  private eval(cmd: string[]): number {
+    const script = cmd[1] ?? '';
+    if (script.includes('AR11 listen-presence CAS')) {
+      const key = cmd[3] ?? '';
+      const expected = cmd[4] ?? '';
+      const next = cmd[5] ?? '';
+      this.purge(key);
+      if ((this.kv.get(key)?.value ?? null) !== expected) return 0;
+      const expiresAt = this.expiry.get(key);
+      this.kv.set(key, { value: next });
+      if (expiresAt !== undefined) this.expiry.set(key, expiresAt);
+      return 1;
+    }
+    throw new Error('MemoryRedis EVAL is only implemented for presence CAS');
+  }
+
   private purge(key: string): void {
     const at = this.expiry.get(key);
     if (at === undefined || at > Date.now()) return;
     this.kv.delete(key);
     this.sets.delete(key);
+    this.lists.delete(key);
     this.expiry.delete(key);
   }
 }

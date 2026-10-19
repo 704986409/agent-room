@@ -10,9 +10,11 @@ import {
   readSession,
   touchSession,
 } from './_accounts.js';
+import { GUEST_COOKIE, GUEST_TTL_MS } from './_roomAccess.js';
 import { serverRedis } from './_redisEnv.js';
 
 export const SESSION_COOKIE = 'ar_session';
+export { GUEST_COOKIE };
 
 export function clientIp(req: IncomingMessage): string {
   const forwarded = req.headers['x-forwarded-for'];
@@ -50,6 +52,11 @@ export function sessionCookie(token: string, maxAge = SESSION_TTL_SECONDS): stri
 
 export function clearSessionCookie(): string {
   return `${SESSION_COOKIE}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
+}
+
+export function guestCookie(token: string): string {
+  const maxAge = Math.ceil(GUEST_TTL_MS / 1000);
+  return `${GUEST_COOKIE}=${encodeURIComponent(token)}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
 }
 
 export function readCookie(req: VercelRequest, name: string): string {

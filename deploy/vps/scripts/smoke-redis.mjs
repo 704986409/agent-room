@@ -71,15 +71,23 @@ async function run() {
   process.stdout.write('web ACL EVAL TYPE for task verification: PASS\n');
 
   const proxyBase = 'http://127.0.0.1:3000/redis';
-  await setGet(proxyBase, proxyToken, proxyKey, 'browser-proxy');
-  process.stdout.write('/redis command proxy: PASS\n');
-
-  const proxyPipeline = await post(proxyBase, proxyToken, '/pipeline', [
+  for (const command of [
+    ['SET', proxyKey, 'browser-proxy', 'EX', 60],
+    ['SADD', proxyKey, 'x'],
+    ['DEL', proxyKey],
+    ['LPUSH', proxyKey, 'x'],
+    ['EVAL', 'return 1', '0'],
+    ['EVALSHA', 'abc', '0'],
+  ]) {
+    const denied = await post(proxyBase, proxyToken, '/', command);
+    assert.equal(denied.response.status, 403, `proxy allowed ${command[0]}`);
+  }
+  const deniedPipeline = await post(proxyBase, proxyToken, '/pipeline', [
     ['SET', `${proxyKey}:pipeline`, 'proxy-pipeline', 'EX', 60],
     ['GET', `${proxyKey}:pipeline`],
   ]);
-  assert.deepEqual(pipelineResults(proxyPipeline), ['OK', 'proxy-pipeline']);
-  process.stdout.write('/redis pipeline: PASS\n');
+  assert.equal(deniedPipeline.response.status, 403);
+  process.stdout.write('/redis proxy rejects writes: PASS\n');
 
   const dangerous = await post(proxyBase, proxyToken, '/', ['FLUSHALL']);
   assert.equal(dangerous.response.status, 403);
