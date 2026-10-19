@@ -23,6 +23,7 @@ import {
   listMessages,
   setListenUntil,
   sweepRoom,
+  type ListMessagesResult,
   type RemoteRoomClient,
 } from './_mcpRoomClient.js';
 import {
@@ -382,14 +383,17 @@ export function listenStatusFields(terminated?: 'room_ended' | 'kicked'): {
  * Exported for unit tests that inject a failing fetchFn.
  */
 export async function listMessagesResilient(
-  fetchFn: (client: RemoteRoomClient, code: string, since: number) => Promise<Message[]>,
+  fetchFn: (client: RemoteRoomClient, code: string, since: number) => Promise<ListMessagesResult | Message[]>,
   client: RemoteRoomClient,
   code: string,
   since: number,
-): Promise<{ ok: true; messages: Message[] } | { ok: false; error: unknown }> {
+): Promise<{ ok: true; messages: Message[]; cursor: number; oldestRetained: number } | { ok: false; error: unknown }> {
   try {
-    const messages = await fetchFn(client, code, since);
-    return { ok: true, messages };
+    const raw = await fetchFn(client, code, since);
+    if (Array.isArray(raw)) {
+      return { ok: true, messages: raw, cursor: since + raw.length, oldestRetained: 0 };
+    }
+    return { ok: true, messages: raw.messages, cursor: raw.cursor, oldestRetained: raw.oldestRetained };
   } catch (error) {
     return { ok: false, error };
   }
@@ -440,6 +444,7 @@ async function runListenInner(
   // it is what the digest returns if the hold times out with nobody calling
   // on us. Nothing is dropped; it just arrives in one turn instead of N.
   let held: ListenResult['messages'] = [];
+  let heldCursor = since;
   const selective = wakeOn === 'addressed' && !!selfName;
   // Refreshed on every poll, because it is a fact about the room and the room
   // changes under us: a second agent joining has to restore the @ filter within
@@ -509,7 +514,7 @@ async function runListenInner(
       const forMe = (m: typeof msgs[number]) => messageAddressesAgent(m, selfName as string, { sole, humanBroadcastsToMe, deliverLead });
       const addressed = selective && msgs.some(forMe);
       if (!selective || addressed) {
-        const cursor = since + msgs.length;
+        const cursor = listed.cursor;
         return {
           messages: msgs,
           cursor,
@@ -518,11 +523,12 @@ async function runListenInner(
         };
       }
       held = msgs;
+      heldCursor = listed.cursor;
     }
     await new Promise(r => setTimeout(r, 2000));
   }
   if (held.length > 0) {
-    const cursor = since + held.length;
+    const cursor = heldCursor;
     return {
       messages: held,
       cursor,

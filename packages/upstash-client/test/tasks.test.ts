@@ -305,7 +305,7 @@ describe('task board evidence gate', () => {
     await expect(
       verifyTask(client, CODE, task.id, OWNER, 'done', undefined),
     ).rejects.toBeInstanceOf(OwnerCannotVerifyError);
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
@@ -319,7 +319,7 @@ describe('task board evidence gate', () => {
     await expect(
       verifyTask(client, CODE, task.id, { name: 'Gemini', client: 'cc' }, 'done', undefined),
     ).rejects.toBeInstanceOf(NotVerifierError);
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
@@ -338,7 +338,7 @@ describe('task board evidence gate', () => {
     );
     expect(verified.state).toBe('done');
     expect(verified.verdict?.by).toBe('GPT');
-    const messages = await listMessages(client, CODE, 0);
+    const { messages } = await listMessages(client, CODE, 0);
     expect(messages).toHaveLength(1);
     expect(messages[0]).toMatchObject({
       type: 'sys',
@@ -371,7 +371,7 @@ describe('task board evidence gate', () => {
     await expect(
       verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined),
     ).rejects.toBeInstanceOf(TaskStateError);
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
@@ -385,14 +385,14 @@ describe('task board evidence gate', () => {
     await submitTask(client, CODE, task.id, OWNER, { ...FULL_EVIDENCE, exitCode: 1 });
     const { task: rejected } = await verifyTask(client, CODE, task.id, VERIFIER, 'rejected', 'tests fail');
     expect(rejected.state).toBe('rejected');
-    const rejectionMessages = await listMessages(client, CODE, 0);
+    const { messages: rejectionMessages } = await listMessages(client, CODE, 0);
     expect(rejectionMessages).toHaveLength(1);
     expect(rejectionMessages[0]!.text).toContain('验收未通过');
     expect(rejectionMessages[0]!.text).toContain('原因：tests fail');
     await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
     const { task: done } = await verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined);
     expect(done.state).toBe('done');
-    expect(await listMessages(client, CODE, 0)).toHaveLength(2);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(2);
     expect(store.get(`room-msg-count:${CODE}`)).toBe('2');
   });
 
@@ -405,7 +405,7 @@ describe('task board evidence gate', () => {
 
     await expect(verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked again'))
       .rejects.toBeInstanceOf(TaskDoneImmutableError);
-    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(1);
   });
 
   it('allows only one concurrent verifier to commit one event', async () => {
@@ -420,7 +420,7 @@ describe('task board evidence gate', () => {
     ]);
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
-    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(1);
     expect(await getMessageTotalCount(client, CODE)).toBe(1);
   });
 
@@ -434,7 +434,7 @@ describe('task board evidence gate', () => {
     await expect(verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked'))
       .rejects.toMatchObject({ name: 'NetworkError' });
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 
@@ -455,10 +455,10 @@ describe('task board evidence gate', () => {
       .filter(command => command[0] === 'EVAL');
     expect(attemptedCommands).toHaveLength(0);
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
   });
 
-  it('keeps absolute cursors, the 500-message cap, and the fixed seven-day message expiry', async () => {
+  it('keeps absolute cursors, the 1000-message cap, and the fixed seven-day message expiry', async () => {
     const store = installFakeRedis();
     const client = createClient(ENV);
     const oldMessages = Array.from({ length: MAX_MESSAGES_PER_ROOM }, (_, index) => JSON.stringify({
@@ -473,14 +473,14 @@ describe('task board evidence gate', () => {
       time: index,
     }));
     store.set(`room-msgs:${CODE}`, JSON.stringify(oldMessages));
-    store.set(`room-msg-count:${CODE}`, '700');
+    store.set(`room-msg-count:${CODE}`, '1200');
     const { task } = await createTask(client, CODE, { title: 'Cursor boundary', createdBy: 'Host' });
     await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
     await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'checked', 1_800_000_000_000);
 
     expect(JSON.parse(store.get(`room-msgs:${CODE}`)!).length).toBe(MAX_MESSAGES_PER_ROOM);
-    expect(await getMessageTotalCount(client, CODE)).toBe(701);
-    const unread = await listMessages(client, CODE, 700);
+    expect(await getMessageTotalCount(client, CODE)).toBe(1201);
+    const { messages: unread } = await listMessages(client, CODE, 1200);
     expect(unread).toHaveLength(1);
     expect(unread[0]!.metadata?.eventType).toBe('task_update');
 
@@ -517,7 +517,7 @@ describe('task board evidence gate', () => {
     await verifyTask(client, CODE, task.id, VERIFIER, 'done', undefined);
 
     expect(await getMessageTotalCount(client, CODE)).toBe(9);
-    const unread = await listMessages(client, CODE, 8);
+    const { messages: unread } = await listMessages(client, CODE, 8);
     expect(unread).toHaveLength(1);
     expect(unread[0]!.metadata?.taskId).toBe(task.id);
   });
@@ -548,7 +548,7 @@ describe('task board evidence gate', () => {
       await submitTask(client, CODE, task.id, OWNER, FULL_EVIDENCE);
       await verifyTask(client, CODE, task.id, VERIFIER, 'done', 'reviewed');
 
-      const messages = await listMessages(client, CODE, 0);
+      const { messages } = await listMessages(client, CODE, 0);
       expect(messages).toHaveLength(1);
       expect(messages[0]!.type).toBe('sys');
       expect(messages[0]!.metadata?.eventType).toBe('task_update');
@@ -1480,7 +1480,7 @@ describe('verifyTask structured follow-up', () => {
 
     expect(verified.state).toBe('done');
     expect(verified.verdict?.followUp).toBeUndefined();
-    const messages = await listMessages(client, CODE, 0);
+    const messages = (await listMessages(client, CODE, 0)).messages;
     expect(messages).toHaveLength(1);
     expect(messages[0]!.text).toContain('Acceptance passed.');
     expect(messages[0]!.text).not.toContain('后续处理：');
@@ -1501,7 +1501,7 @@ describe('verifyTask structured follow-up', () => {
       request: 'Check the deployment window.',
       targetClient: 'cc',
     });
-    const messages = await listMessages(client, CODE, 0);
+    const messages = (await listMessages(client, CODE, 0)).messages;
     expect(messages).toHaveLength(1);
     expect(messages[0]!.text).toContain('@Build Agent Check the deployment window.');
     expect(messages[0]!.metadata).toMatchObject({
@@ -1523,7 +1523,7 @@ describe('verifyTask structured follow-up', () => {
 
     expect(rejected.state).toBe('rejected');
     expect(rejected.verdict?.followUp?.target).toBe('Producer');
-    const messages = await listMessages(client, CODE, 0);
+    const messages = (await listMessages(client, CODE, 0)).messages;
     expect(messages).toHaveLength(1);
     expect(messages[0]!.text).toContain('原因：Reconnect repeats the last message.');
     expect(messages[0]!.text).toContain('@Producer Fix reconnect idempotency and submit new evidence.');
@@ -1547,7 +1547,7 @@ describe('verifyTask structured follow-up', () => {
       ).rejects.toBeInstanceOf(TaskVerifyReasonError);
       expect((await getTaskBoard(client, CODE))?.tasks[0]?.state, label).toBe('awaiting_review');
       expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict, label).toBeUndefined();
-      expect(await listMessages(client, CODE, 0), label).toHaveLength(0);
+      expect((await listMessages(client, CODE, 0)).messages, label).toHaveLength(0);
       expect(await getMessageTotalCount(client, CODE), label).toBeNull();
       expect(store.get(`task-board:${CODE}`), label).toBe(pendingBoardRaw);
       expect(store.has(`room-msgs:${CODE}`), label).toBe(false);
@@ -1558,7 +1558,7 @@ describe('verifyTask structured follow-up', () => {
     const { task: rejected } = await verifyTask(
       client, CODE, task.id, VERIFIER, 'rejected', boundaryReason,
     );
-    const messages = await listMessages(client, CODE, 0);
+    const messages = (await listMessages(client, CODE, 0)).messages;
     expect(rejected.state).toBe('rejected');
     expect(rejected.verdict?.note).toBe(boundaryReason);
     expect(messages).toHaveLength(1);
@@ -1573,7 +1573,7 @@ describe('verifyTask structured follow-up', () => {
     );
 
     expect(rejected.verdict?.note).toBe('Inspect because retry');
-    const [message] = await listMessages(client, CODE, 0);
+    const [message] = (await listMessages(client, CODE, 0)).messages;
     expect(message!.text).toContain(`原因：${rejected.verdict?.note}`);
   });
 
@@ -1585,7 +1585,7 @@ describe('verifyTask structured follow-up', () => {
     );
 
     expect(verified.verdict?.followUp).toMatchObject({ target: 'Room Host', targetClient: 'web' });
-    expect((await listMessages(client, CODE, 0))[0]!.metadata).toMatchObject({
+    expect((await listMessages(client, CODE, 0)).messages[0]!.metadata).toMatchObject({
       targetAgentName: 'Room Host',
       targetAgentClient: 'web',
     });
@@ -1606,7 +1606,7 @@ describe('verifyTask structured follow-up', () => {
       request: 'Please verify the data.',
       targetClient: 'cc',
     });
-    expect((await listMessages(client, CODE, 0))[0]!.metadata?.targetAgentClient).toBe('cc');
+    expect((await listMessages(client, CODE, 0)).messages[0]!.metadata?.targetAgentClient).toBe('cc');
   });
 
   it('rejects invalid or ambiguous follow-ups without changing state or messages', async () => {
@@ -1637,7 +1637,7 @@ describe('verifyTask structured follow-up', () => {
       ).rejects.toBeInstanceOf(TaskVerifyFollowUpError);
       expect((await getTaskBoard(client, CODE))?.tasks[0]?.state, label).toBe('awaiting_review');
       expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict, label).toBeUndefined();
-      expect(await listMessages(client, CODE, 0), label).toHaveLength(0);
+      expect((await listMessages(client, CODE, 0)).messages, label).toHaveLength(0);
       expect(await getMessageTotalCount(client, CODE), label).toBeNull();
       expect(store.has(`room-msgs:${CODE}`), label).toBe(false);
     }
@@ -1656,7 +1656,7 @@ describe('verifyTask structured follow-up', () => {
     expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter(result => result.status === 'rejected')).toHaveLength(1);
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp?.target).toBe('Producer');
-    expect(await listMessages(client, CODE, 0)).toHaveLength(1);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(1);
     expect(await getMessageTotalCount(client, CODE)).toBe(1);
   });
 
@@ -1673,7 +1673,7 @@ describe('verifyTask structured follow-up', () => {
 
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp).toBeUndefined();
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(await getMessageTotalCount(client, CODE)).toBeNull();
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
@@ -1693,7 +1693,7 @@ describe('verifyTask structured follow-up', () => {
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.state).toBe('awaiting_review');
     expect((await getTaskBoard(client, CODE))?.tasks[0]?.verdict?.followUp).toBeUndefined();
     expect(store.get(`room-msg-count:${CODE}`)).toBe('9223372036854775807');
-    expect(await listMessages(client, CODE, 0)).toHaveLength(0);
+    expect((await listMessages(client, CODE, 0)).messages).toHaveLength(0);
     expect(store.has(`room-msgs:${CODE}`)).toBe(false);
   });
 });

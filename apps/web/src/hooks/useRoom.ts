@@ -56,7 +56,8 @@ export function useRoom(code: string, selfName: string) {
     const startedAt = Date.now();
     console.debug(traceTag, 'pullMessages.fire', { cursor: cursor.current, t: startedAt });
     try {
-      const fresh = await listMessages(clientRef.current, code, cursor.current);
+      const listed = await listMessages(clientRef.current, code, cursor.current);
+      const fresh = Array.isArray(listed) ? listed : listed.messages;
       setState(s => s.error === null ? s : { ...s, error: null });
       console.debug(traceTag, 'pullMessages.fetched', {
         fresh: fresh.length,
@@ -73,7 +74,8 @@ export function useRoom(code: string, selfName: string) {
         const total = await getMessageTotalCount(clientRef.current, code);
         if (total !== null && cursor.current > total) {
           cursor.current = 0;
-          const recover = await listMessages(clientRef.current, code, 0);
+          const recoverListed = await listMessages(clientRef.current, code, 0);
+          const recover = Array.isArray(recoverListed) ? recoverListed : recoverListed.messages;
           cursor.current = total;
           setState(s => {
             const seen = new Set(s.messages.map(m => m.id));
@@ -97,7 +99,7 @@ export function useRoom(code: string, selfName: string) {
       // what the server has" regardless of how the local arithmetic went.
       // Two concurrent polls will both write the same value → no drift.
       const total = await getMessageTotalCount(clientRef.current, code);
-      cursor.current = total ?? (cursor.current + fresh.length);
+      cursor.current = total ?? (Array.isArray(listed) ? (cursor.current + fresh.length) : listed.cursor);
       setState(s => {
         const seen = new Set(s.messages.map(m => m.id));
         const deduped = fresh.filter(m => !seen.has(m.id));
@@ -144,13 +146,14 @@ export function useRoom(code: string, selfName: string) {
   const forceRefresh = useCallback(async () => {
     cursor.current = 0;
     try {
-      const [r, fresh, total] = await Promise.all([
+      const [r, listed, total] = await Promise.all([
         getRoom(clientRef.current, code),
         listMessages(clientRef.current, code, 0),
         getMessageTotalCount(clientRef.current, code),
       ]);
+      const fresh = Array.isArray(listed) ? listed : listed.messages;
       // Match server-side logical cursor (counter) so polling stays correct after LTRIM; legacy rooms fall back.
-      cursor.current = total ?? fresh.length;
+      cursor.current = total ?? (Array.isArray(listed) ? fresh.length : listed.cursor);
       setState({ room: r, messages: fresh, error: null });
     } catch (e) {
       setState(s => ({ ...s, error: String(e) }));

@@ -432,7 +432,9 @@ describe('listMessages', () => {
 
     const client = createClient(ENV);
     const got = await listMessages(client, 'ABC-DEF-GHJ', 5);
-    expect(got).toEqual([msg1, msg2]);
+    expect(got.messages).toEqual([msg1, msg2]);
+    expect(got.cursor).toBe(7);
+    expect(got.oldestRetained).toBe(0);
 
     // Sanity: the LRANGE call we issued used start=5, end=-1.
     const [, rangeInit] = fetchMock.mock.calls[1]!;
@@ -444,7 +446,7 @@ describe('listMessages', () => {
       .mockResolvedValueOnce(mockResp([{ result: null }, { result: 0 }]));
     vi.stubGlobal('fetch', fetchMock);
     const client = createClient(ENV);
-    expect(await listMessages(client, 'ABC-DEF-GHJ', 0)).toEqual([]);
+    expect(await listMessages(client, 'ABC-DEF-GHJ', 0)).toEqual({ messages: [], cursor: 0, oldestRetained: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(1); // metadata only, no LRANGE
   });
 
@@ -462,8 +464,10 @@ describe('listMessages', () => {
 
     const client = createClient(ENV);
     const got = await listMessages(client, 'ABC-DEF-GHJ', 0);
-    expect(got).toHaveLength(1);
-    expect(got[0]!.text).toBe('');
+    expect(got.messages).toHaveLength(1);
+    expect(got.messages[0]!.text).toBe('');
+    expect(got.cursor).toBe(1);
+    expect(got.oldestRetained).toBe(0);
   });
 
   it('legacy room (no count key): falls back to using fromIndex as a list-index', async () => {
@@ -477,39 +481,43 @@ describe('listMessages', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
-    await listMessages(client, 'XYZ-123-ABC', 42);
+    const got = await listMessages(client, 'XYZ-123-ABC', 42);
+    expect(got.cursor).toBe(100);
+    expect(got.oldestRetained).toBe(0);
 
     const [, rangeInit] = fetchMock.mock.calls[1]!;
     expect(JSON.parse((rangeInit as any).body)).toEqual(['LRANGE', 'room-msgs:XYZ-123-ABC', 42, -1]);
   });
 
   // Regression test for the LTRIM cursor-drift bug. Before the fix:
-  //   list had 499 entries → +2 RPUSH → list=501 → LTRIM keeps last 500
-  //   → first new message is now at index 498, second at 499
-  //   → an agent at cursor=499 LRANGE 499 -1 returns ONE message instead of two
+  //   list had 999 entries → +2 RPUSH → list=1001 → LTRIM keeps last 1000
+  //   → first new message is now at index 998, second at 999
+  //   → an agent at cursor=999 LRANGE 999 -1 returns ONE message instead of two
   //   → first new message silently lost
   // After the fix the counter compensates the offset and the agent gets BOTH.
   it('LTRIM cursor-drift regression: returns ALL unread messages even after head was trimmed', async () => {
     const newMsg1: Message = { id: 9001, type: 'msg', name: 'A', initials: 'AA', color: '#111', role: '', text: 'first-new', client: 'web', time: 9001 };
     const newMsg2: Message = { ...newMsg1, id: 9002, text: 'second-new', time: 9002 };
 
-    // totalCount = 501 (499 old + 2 new), listLen = 500 (LTRIM dropped 1 head entry).
-    // Caller's cursor = 499 (had read all 499 originals).
-    // Correct start = 499 - (501 - 500) = 498. LRANGE 498 -1 → both new messages.
+    // totalCount = 1001 (999 old + 2 new), listLen = 1000 (LTRIM dropped 1 head entry).
+    // Caller's cursor = 999 (had read all 999 originals).
+    // Correct start = 999 - (1001 - 1000) = 998. LRANGE 998 -1 → both new messages.
     const fetchMock = mockListMessagesFlow({
-      countRaw: '501',
-      listLen: 500,
+      countRaw: '1001',
+      listLen: 1000,
       rangeResult: [JSON.stringify(newMsg1), JSON.stringify(newMsg2)],
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
-    const got = await listMessages(client, 'ABC-DEF-GHJ', 499);
+    const got = await listMessages(client, 'ABC-DEF-GHJ', 999);
 
-    expect(got).toEqual([newMsg1, newMsg2]); // would have been [newMsg2] under the old code
+    expect(got.messages).toEqual([newMsg1, newMsg2]); // would have been [newMsg2] under the old code
+    expect(got.cursor).toBe(1001);
+    expect(got.oldestRetained).toBe(1);
 
     const [, rangeInit] = fetchMock.mock.calls[1]!;
-    expect(JSON.parse((rangeInit as any).body)).toEqual(['LRANGE', 'room-msgs:ABC-DEF-GHJ', 498, -1]);
+    expect(JSON.parse((rangeInit as any).body)).toEqual(['LRANGE', 'room-msgs:ABC-DEF-GHJ', 998, -1]);
   });
 
   it('cursor far behind LTRIM horizon: clamps start to 0 and hands back surviving prefix', async () => {
@@ -517,26 +525,54 @@ describe('listMessages', () => {
     // would be 50 - 200 = -150, which we clamp to 0. The very-old messages
     // are unrecoverable (LTRIM is destructive — see msgsKey comment).
     const fetchMock = mockListMessagesFlow({
-      countRaw: '700',
-      listLen: 500,
+      countRaw: '1200',
+      listLen: 1000,
       rangeResult: [],
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
-    await listMessages(client, 'ABC-DEF-GHJ', 50);
+    const got = await listMessages(client, 'ABC-DEF-GHJ', 50);
+    expect(got.cursor).toBe(1200);
+    expect(got.oldestRetained).toBe(200);
 
     const [, rangeInit] = fetchMock.mock.calls[1]!;
     expect(JSON.parse((rangeInit as any).body)).toEqual(['LRANGE', 'room-msgs:ABC-DEF-GHJ', 0, -1]);
   });
 
+  it('room with 1200 messages: returns cursor 1200 and oldestRetained 200 when since is in trimmed range', async () => {
+    // 1200 messages total, cap=1000, 200 trimmed.
+    // list has 1000 messages (representing message 200 to 1199).
+    const msg200: Message = { id: 200, type: 'msg', name: 'A', initials: 'AA', color: '#111', role: '', text: 'msg-200', client: 'web', time: 200 };
+    const msg1199: Message = { id: 1199, type: 'msg', name: 'B', initials: 'BB', color: '#222', role: '', text: 'msg-1199', client: 'web', time: 1199 };
+    const fetchMock = mockListMessagesFlow({
+      countRaw: '1200',
+      listLen: 1000,
+      rangeResult: [JSON.stringify(msg200), JSON.stringify(msg1199)],
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const client = createClient(ENV);
+    // Caller asks since 150 (inside trimmed range 0..199)
+    const got = await listMessages(client, 'ABC-DEF-GHJ', 150);
+
+    expect(got.cursor).toBe(1200);
+    expect(got.oldestRetained).toBe(200);
+    expect(got.messages[0]).toEqual(msg200);
+    expect(got.messages[1]).toEqual(msg1199);
+
+    // Sanity: start clamped to 0
+    const [, rangeInit] = fetchMock.mock.calls[1]!;
+    expect(JSON.parse((rangeInit as any).body)).toEqual(['LRANGE', 'room-msgs:ABC-DEF-GHJ', 0, -1]);
+  });
+
   it('cursor at or past totalCount: skips LRANGE and returns []', async () => {
-    // start = 700 - (700 - 500) = 500; listLen = 500 → start >= listLen → [].
+    // start = 1200 - (1200 - 1000) = 1000; listLen = 1000 → start >= listLen → [].
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(mockResp([{ result: '700' }, { result: 500 }]));
+      .mockResolvedValueOnce(mockResp([{ result: '1200' }, { result: 1000 }]));
     vi.stubGlobal('fetch', fetchMock);
     const client = createClient(ENV);
-    expect(await listMessages(client, 'ABC-DEF-GHJ', 700)).toEqual([]);
+    expect(await listMessages(client, 'ABC-DEF-GHJ', 1200)).toEqual({ messages: [], cursor: 1200, oldestRetained: 200 });
     expect(fetchMock).toHaveBeenCalledTimes(1); // no LRANGE issued
   });
 });

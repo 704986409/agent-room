@@ -59,18 +59,19 @@ export async function dispatchRoomSend(
     reason?: string;
     metadata?: { roleAtSend?: string; turnId?: number; extendsTurn?: boolean; modeAtSend?: string };
   };
-  const msgs = await listMessages(client, a.code, 0);
+  const listed = await listMessages(client, a.code, 0);
+  const cursor = Array.isArray(listed) ? listed.length : listed.cursor;
   const sendInbox = await boardInbox(client, profile, a.code, senderName, false, result?.metadata?.modeAtSend);
-  const sendNextAction = nextActionForInbox(sendInbox, a.code, msgs.length, senderName);
+  const sendNextAction = nextActionForInbox(sendInbox, a.code, cursor, senderName);
   const sendContinuation = inboxRequiresWork(sendInbox)
     ? sendInbox.hint
-    : NEXT_LISTEN(a.code, msgs.length);
+    : NEXT_LISTEN(a.code, cursor);
   if (result && result.appended === false && result.reason === 'no_addition') {
     return sendOk({
       sent: true,
       appended: false,
       reason: 'no_addition',
-      cursor: msgs.length,
+      cursor,
       nextAction: sendNextAction,
       ...(sendInbox.hint ? { yourTasks: sendInbox } : {}),
       hint: `Your "__no_addition__" was accepted — the supplement turn was skipped without posting. ${sendContinuation}`,
@@ -92,7 +93,7 @@ export async function dispatchRoomSend(
   return sendOk({
     sent: true,
     appended: true,
-    cursor: msgs.length,
+    cursor,
     nextAction: sendNextAction,
     ...(sendInbox.hint ? { yourTasks: sendInbox } : {}),
     ...(postedAsStatus ? { extendsTurn: extended } : {}),
