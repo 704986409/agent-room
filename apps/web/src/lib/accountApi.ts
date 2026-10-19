@@ -12,7 +12,8 @@ export interface AccountSession {
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
-  ua: string;
+  /** Short device label, e.g. 'Chrome · Windows' or '脚本/API'. */
+  label: string;
   ip: string;
   current: boolean;
 }
@@ -37,7 +38,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function get<T>(path: string): Promise<T> {
-  const response = await fetch(path, { credentials: 'include' });
+  const response = await fetch(path, { credentials: 'include', cache: 'no-store' });
   const payload = await response.json().catch(() => ({})) as { message?: string };
   if (!response.ok) throw new AccountApiError(payload.message || 'Request failed.', response.status);
   return payload as T;

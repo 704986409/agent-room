@@ -1,6 +1,7 @@
 // Account store (design §4.1). Redis only, server-side. Passwords are scrypt
 // hashes with a per-user salt; sessions store the SHA-256 of the token.
 
+import { deviceLabel } from './_deviceLabel.js';
 import { createHash, randomBytes, scrypt as scryptCb, timingSafeEqual } from 'node:crypto';
 import type { UpstashClient } from '@agent-room/upstash-client';
 
@@ -69,6 +70,8 @@ export interface SessionRecord {
   lastSeenAt: number;
   expiresAt: number;
   ua: string;
+  /** Short label such as 'Chrome · Windows'; older sessions derive it on read. */
+  label?: string;
   ip: string;
 }
 
@@ -77,7 +80,7 @@ export interface PublicSession {
   createdAt: number;
   lastSeenAt: number;
   expiresAt: number;
-  ua: string;
+  label: string;
   ip: string;
   current: boolean;
 }
@@ -348,6 +351,7 @@ export async function issueSession(
     lastSeenAt: now,
     expiresAt: now + SESSION_TTL_MS,
     ua: (meta.ua || '').slice(0, 200),
+    label: deviceLabel(meta.ua),
     ip: (meta.ip || '').slice(0, 80),
   };
   await client.command(['SET', sessionKey(hash), JSON.stringify(session), 'EX', SESSION_TTL_SECONDS]);
@@ -427,7 +431,7 @@ export async function listSessions(
       createdAt: session.createdAt,
       lastSeenAt: session.lastSeenAt,
       expiresAt: session.expiresAt,
-      ua: session.ua,
+      label: session.label ?? deviceLabel(session.ua),
       ip: session.ip,
       current: hash === currentHash,
     });
