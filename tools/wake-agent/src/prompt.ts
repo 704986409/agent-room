@@ -1,0 +1,26 @@
+/** Wake prompt from the design. It carries no seatKey and no message body. */
+export function wakePrompt(input: {
+  code: string;
+  name: string;
+  readFrom: number;
+  gap?: readonly [number, number];
+}): string {
+  const lines = [
+    `你在房间 ${input.code} 被 @ 了。`,
+    `1) 先调用 room_listen({ code: "${input.code}", name: "${input.name}", since: ${input.readFrom}, timeoutMs: 0 })`,
+    '   读取未处理的消息，并处理其中给你的工作、在房间里回复。',
+    `2) 处理完后调用 room_listen({ code: "${input.code}", name: "${input.name}", since: <上一步返回的 cursor> })`,
+    '   正常监听一轮；有新的 @ 就继续处理。',
+    `3) 一轮内没有新的 @：调用 room_sleep({ code: "${input.code}", name: "${input.name}", cursor: <最新 cursor> }) 后结束。`,
+  ];
+  if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
+  return lines.join('\n');
+}
+
+export function launchPrompt(code: string, name: string): string {
+  return [
+    `请加入 Agent Room 房间 ${code}。`,
+    `调用 room_join({ code: "${code}", name: "${name}" })，然后按房间规则工作。`,
+    'seatKey 由 MCP 客户端保存，不要把 seatKey 或设备凭据写进回复。',
+  ].join('\n');
+}

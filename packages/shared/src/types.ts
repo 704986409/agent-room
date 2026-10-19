@@ -30,6 +30,11 @@ export interface Participant {
   authenticatedIdentity?: AuthenticatedMemberIdentity;
   /** Server-issued memory seat binding. Only the SHA-256 hash of the opaque key is persisted. */
   seatKeyHash?: string;
+  /**
+   * Stable seat id issued once when the seat is created (or on first managed
+   * register for a legacy row). Survives seatKey rotation.
+   */
+  seatId?: string;
   /** Optional stable Persona selected at seat creation; never used without a valid seatKey. */
   memoryPersonaId?: string;
   /** Server-assigned principal ID for non-Persona memory identities. */

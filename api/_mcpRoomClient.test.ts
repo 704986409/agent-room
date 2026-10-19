@@ -30,6 +30,7 @@ vi.mock('@agent-room/upstash-client', async (importOriginal) => {
     addHostDirected: storeMocks.addHostDirected,
     appendSystemMessage: storeMocks.appendSystemMessage,
     createClient: storeMocks.createClient,
+    setMessageCommittedHook: vi.fn(),
     endRoom: storeMocks.endRoom,
     getMessageTotalCount: storeMocks.getMessageTotalCount,
     getRoom: storeMocks.getRoom,
@@ -179,6 +180,7 @@ describe('_mcpRoomClient HTTP helpers', () => {
       memoryIdentityType: 'persona' as const,
       memoryPersonaId: 'persona-stable',
       memoryPrincipalId: randomUUID(),
+      seatId: 'st_kept',
       seatKeyHash: createHash('sha256').update(oldKey).digest('hex'),
     };
     storeMocks.getRoom.mockResolvedValueOnce({ ...room, roomInstanceId: randomUUID(), participants: [previous] });
@@ -192,7 +194,7 @@ describe('_mcpRoomClient HTTP helpers', () => {
     const result = await joinRoom(client, room.code, participant, { seatKey: oldKey });
     expect(result.seatKey).not.toBe(oldKey);
     expect(storeMocks.joinRoom.mock.calls[0]![2]).toMatchObject({
-      memoryIdentityType: 'persona', memoryPersonaId: 'persona-stable',
+      memoryIdentityType: 'persona', memoryPersonaId: 'persona-stable', seatId: 'st_kept',
     });
     expect(storeMocks.joinRoom.mock.calls[0]![3]).toMatchObject({
       priorIdentity: { name: participant.name, client: 'cc' },

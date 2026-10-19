@@ -21,6 +21,9 @@
 // that makes a model stop calling tools.
 
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { invalidateRemovedSeats, invalidateSeatKeyRotation } from './_wakeHooks.js';
+import { newSeatId } from './_wakeBind.js';
+import { installWakeSendHook } from './_wakeSend.js';
 import { generateCode, hasActiveListenLease } from '@agent-room/shared';
 import type { Message, Participant, Room, RoomReport } from '@agent-room/shared';
 import {
@@ -122,6 +125,7 @@ export function createRemoteRoomClient(_requestHost: string | undefined): Remote
     );
   }
   const store = createClient({ url, token });
+  installWakeSendHook(store);
   return { store, post: (payload) => dispatchAction(store, payload) as never };
 }
 
@@ -476,9 +480,14 @@ export async function joinRoom(
     const principalId = identityType === 'room_owner' ? roomInstanceId : validResume
       ? previous?.memoryPrincipalId ?? randomUUID()
       : randomUUID();
+    // A resumed or reclaimed seat keeps its seatId across seatKey rotation.
+    // Legacy rows without one are assigned here; register backfills anything still missing.
+    const continuing = Boolean(previous && (validResume || reclaimed || !previous.seatKeyHash));
+    const seatId = continuing && previous?.seatId ? previous.seatId : newSeatId();
     const boundParticipant: Participant = {
       ...participant,
       ...((validResume || reclaimed) && previous ? { name: previous.name } : {}),
+      seatId,
       seatKeyHash: hashSeatKey(seatKey),
       memoryIdentityType: identityType,
       memoryPrincipalId: principalId,
@@ -511,6 +520,10 @@ export async function joinRoom(
     if (personaId && identityType === 'persona') {
       finalRoom = await removeOrphanPersonaSeats(client, code, personaId, result.participant.name, participant.client);
     }
+    if (previous?.seatId && previous.seatId === seatId) {
+      await invalidateSeatKeyRotation(client.store, previous.seatId);
+    }
+    await invalidateRemovedSeats(client.store, current, finalRoom, 'seat_removed');
     // The invite this join spent: room_join hands its role profile to the agent and saves it as Persona memory.
     const agentInvite: JoinedAgentInvite | undefined = claimedInvite ? {
       role: claimedInvite.record.role,
@@ -696,7 +709,10 @@ export async function removeParticipant(
       await requireHostKey(client.store, code, hostKey);
     }
 
-    return storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient);
+    const before = await storeGetRoom(client.store, code);
+    const removed = await storeRemoveParticipant(client.store, code, requesterName, targetName, targetClient);
+    await invalidateRemovedSeats(client.store, before, removed, 'seat_removed');
+    return removed;
   });
 }
 
@@ -726,7 +742,10 @@ export async function endRoom(
 ): Promise<Room> {
   return guarded(async () => {
     await assertHost(client, code, hostKey);
-    return storeEndRoom(client.store, code);
+    const before = await storeGetRoom(client.store, code);
+    const ended = await storeEndRoom(client.store, code);
+    await invalidateRemovedSeats(client.store, before, { ...ended, participants: [] }, 'room_ended');
+    return ended;
   });
 }
 

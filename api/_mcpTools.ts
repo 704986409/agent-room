@@ -78,6 +78,8 @@ import {
   type WakeOn,
 } from './_mcpListen.js';
 import { declaresObjectOutput, FULL_TOOLS, isRoomCreateEnabled, listTools, type McpProfile } from './_mcpToolDefs.js';
+import { parseManaged, settleManagedRead } from './_wakeListen.js';
+import { RedisWakeStore } from './_wakeRedis.js';
 
 export { CORE_TOOLS, FULL_TOOLS, isRoomCreateEnabled, listTools, SERVER_INSTRUCTIONS, serverInstructions } from './_mcpToolDefs.js';
 export type { McpProfile } from './_mcpToolDefs.js';
@@ -390,7 +392,17 @@ async function dispatch(
             hint: `Transient listMessages failure — retry. ${NEXT_LISTEN(a.code, since)}`,
           }, [], structured);
         }
-        const cursor = listed.cursor;
+        let cursor = listed.cursor;
+        const managedRead = parseManaged(a.managed);
+        if (managedRead && selfName) {
+          try {
+            const settled = await settleManagedRead(client.store, {
+              code: a.code, name: selfName, managed: managedRead, since,
+              messages: listed.messages, timeoutMs: 0,
+            });
+            if (settled) cursor = settled.cursor;
+          } catch { /* ordinary read; an unacked trigger stays until lease retry */ }
+        }
         const all = since === 0
           ? listed.messages
           : await Promise.resolve(listMessages(client, a.code, 0)).then(
@@ -462,6 +474,21 @@ async function dispatch(
           );
         digestFields = contextFields(all);
       }
+      let listenEpoch: number | undefined;
+      let managedCursor: number | undefined;
+      const managedListen = parseManaged(a.managed);
+      if (managedListen && selfName && !result.terminated) {
+        try {
+          const settled = await settleManagedRead(client.store, {
+            code: a.code, name: selfName, managed: managedListen, since,
+            messages: result.messages, timeoutMs,
+          });
+          if (settled) {
+            managedCursor = settled.cursor;
+            listenEpoch = settled.listenEpoch;
+          }
+        } catch { /* ordinary listen result; receipt can be retried */ }
+      }
       const messages = result.messages.map(slimMessage);
       // Read the board on EVERY hold that returns, not only the ones that
       // returned messages. A quiet hold used to skip it to stay lean, which
@@ -473,16 +500,18 @@ async function dispatch(
         ? { toVerify: [], toDo: [], current: [], queued: [], hint: '' }
         : await boardInbox(client, profile, a.code, selfName ?? '', result.addressedYou === true, room?.replyMode);
       const mustWork = inboxRequiresWork(inbox);
+      const cursor = managedCursor ?? result.cursor;
       return ok({
         messages,
-        cursor: result.cursor,
+        cursor,
         ...digestFields,
         ...listenStatusFields(result.terminated),
         ...(result.addressedYou ? { addressedYou: true } : {}),
         ...(result.terminated ? { terminated: result.terminated } : {}),
         ...(!result.terminated
-          ? { nextAction: nextActionForInbox(inbox, a.code, result.cursor, selfName, nextPrefs) }
+          ? { nextAction: nextActionForInbox(inbox, a.code, cursor, selfName, nextPrefs) }
           : {}),
+        ...(listenEpoch ? { listenEpoch } : {}),
         ...(inbox.hint ? { yourTasks: inbox } : {}),
         ...(replyMode ? { replyMode } : {}),
         ...(roomPolicy ? { roomPolicy, policyVersion: ROOM_POLICY_VERSION } : {}),
@@ -547,6 +576,22 @@ async function dispatch(
         }, [], structured);
       }
       return ok(base, [], structured);
+    }
+
+    case 'room_sleep': {
+      const cursor = typeof a.cursor === 'number' ? a.cursor : Number.NaN;
+      const seatKey = typeof a.seatKey === 'string' ? a.seatKey : '';
+      const name = typeof a.name === 'string' ? a.name.trim() : '';
+      if (!name || !seatKey || !Number.isFinite(cursor)) {
+        return ok({ slept: false, error: 'bad_request' }, [], structured);
+      }
+      try {
+        const seat = await new RedisWakeStore(client.store).sleep(a.code, name, seatKey, cursor, Date.now());
+        return ok({ slept: true, cursor, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId }, [], structured);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'seat_unauthorized';
+        return ok({ slept: false, error: code }, [], structured);
+      }
     }
 
     case 'room_leave': {
