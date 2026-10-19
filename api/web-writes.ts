@@ -2,6 +2,7 @@
 // cookie. Callers cannot pick someone else's name, and system messages are
 // produced only on the paths below.
 
+import { invalidateRemovedSeats } from './_wakeHooks.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { generateCode, isValidCode, type Message, type MessageMetadata, type ReplyMode, type ReplyModeConfig, type SystemEventType } from '@agent-room/shared';
 import {
@@ -334,6 +335,8 @@ export async function hostHandler(req: VercelRequest, res: VercelResponse): Prom
       const name = str(body.name);
       const client = body.client === 'cc' ? 'cc' : 'web';
       const roomNext = await removeParticipant(redis, room.code, actor.displayName, name, client);
+      // Wake bindings must not outlive the seat (design §3.4 immediate invalidation).
+      await invalidateRemovedSeats(redis, room, roomNext, 'seat_removed');
       if (client === 'web') {
         await revokeGuestByName(redis, room, name);
         const member = await findMemberByName(redis, room, name);
@@ -343,7 +346,9 @@ export async function hostHandler(req: VercelRequest, res: VercelResponse): Prom
       return;
     }
     if (op === 'end') {
-      sendJson(res, 200, { room: await endRoom(redis, room.code) });
+      const ended = await endRoom(redis, room.code);
+      await invalidateRemovedSeats(redis, room, { ...ended, participants: [] }, 'room_ended');
+      sendJson(res, 200, { room: ended });
       return;
     }
     if (op === 'reactivate') {
