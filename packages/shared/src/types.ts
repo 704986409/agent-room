@@ -214,6 +214,8 @@ export interface Room {
   topic: string;
   createdAt: number;
   createdBy: string;
+  /** Signed-in account that created the room. Same value as ownerId for new rooms. */
+  ownerUserId?: string;
   ownerId?: string;
   ownerEmail?: string;
   ownerName?: string;

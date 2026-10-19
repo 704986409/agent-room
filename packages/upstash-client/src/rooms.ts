@@ -42,6 +42,7 @@ export interface CreateRoomInput {
   topic: string;
   createdBy: string;
   ownerId?: string;
+  ownerUserId?: string;
   ownerEmail?: string;
   ownerName?: string;
   projectId?: string;
@@ -75,6 +76,7 @@ export async function createRoom(client: UpstashClient, input: CreateRoomInput):
     createdAt: now,
     createdBy: input.createdBy,
     ownerId: input.ownerId,
+    ownerUserId: input.ownerUserId ?? input.ownerId,
     ownerEmail: input.ownerEmail,
     ownerName: input.ownerName,
     projectId: input.projectId,

@@ -11,11 +11,10 @@ import {
   createClient,
   getRoom,
   listMessages,
-  appendMessage,
-  updatePresence,
   getMessageTotalCount,
 } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
+import { roomApi } from '../lib/roomWrites.js';
 
 interface UseRoomState {
   room: Room | null;
@@ -183,7 +182,8 @@ export function useRoom(code: string, selfName: string) {
       msgTimer = setInterval(pullMessages, msgMs);
       roomTimer = setInterval(pullRoom, roomMs);
       hbTimer = setInterval(() => {
-        updatePresence(clientRef.current, code, selfName, Date.now()).catch(() => {});
+        if (!selfName) return;
+        roomApi.presence(code).catch(() => {});
       }, HEARTBEAT_MS);
     };
 
@@ -243,7 +243,13 @@ export function useRoom(code: string, selfName: string) {
     });
 
     try {
-      await appendMessage(clientRef.current, code, msg);
+      await roomApi.sendChat({
+        code,
+        text: msg.text,
+        id: msg.id,
+        role: msg.role,
+        attachments: msg.attachments,
+      });
       await pullMessages();
     } catch (e) {
       // Roll back the optimistic add — server didn't accept the message.

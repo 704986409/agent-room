@@ -612,12 +612,13 @@ async function dispatch(
     case 'room_webhook': {
       switch (a.action) {
         case 'register': {
-          const err = requireFields(a, ['name', 'url']);
+          const err = requireFields(a, ['name', 'url', 'seatKey']);
           if (err) return ok({ error: 'bad_request', hint: err }, [], structured);
-          const body = await client.post<{ webhook: { id: string; url: string } }>({
+          const body = await client.post<{ webhook: { id: string; url: string; hasSecret?: boolean } }>({
             action: 'webhookSet',
             code: a.code,
             requesterName: a.name,
+            seatKey: a.seatKey,
             url: a.url,
             ...(typeof a.secret === 'string' && a.secret ? { secret: a.secret } : {}),
           });
@@ -636,9 +637,15 @@ async function dispatch(
           return ok({ webhooks: body.webhooks }, [], structured);
         }
         case 'unregister': {
-          const err = requireFields(a, ['name', 'id']);
+          const err = requireFields(a, ['name', 'id', 'seatKey']);
           if (err) return ok({ error: 'bad_request', hint: err }, [], structured);
-          const body = await client.post<{ removed: boolean }>({ action: 'webhookDelete', code: a.code, requesterName: a.name, id: a.id });
+          const body = await client.post<{ removed: boolean }>({
+            action: 'webhookDelete',
+            code: a.code,
+            requesterName: a.name,
+            seatKey: a.seatKey,
+            id: a.id,
+          });
           return ok({ removed: body.removed }, [], structured);
         }
         default:

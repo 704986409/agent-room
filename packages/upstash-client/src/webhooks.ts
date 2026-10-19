@@ -38,6 +38,27 @@ export interface RoomWebhook {
   failCount?: number;
 }
 
+/** List responses must not carry the signing secret (R11). */
+export interface PublicRoomWebhook {
+  id: string;
+  url: string;
+  registeredBy: string;
+  hasSecret: boolean;
+  createdAt: number;
+  failCount?: number;
+}
+
+export function toPublicRoomWebhook(hook: RoomWebhook): PublicRoomWebhook {
+  return {
+    id: hook.id,
+    url: hook.url,
+    registeredBy: hook.registeredBy,
+    hasSecret: Boolean(hook.secret),
+    createdAt: hook.createdAt,
+    ...(hook.failCount !== undefined ? { failCount: hook.failCount } : {}),
+  };
+}
+
 function webhooksKey(code: string): string { return `room-webhooks:${code}`; }
 
 function randomId(): string {

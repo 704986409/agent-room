@@ -55,6 +55,7 @@ import {
   reassignRoomTaskRoles,
   registerRoomWebhook,
   listRoomWebhooks,
+  toPublicRoomWebhook,
   unregisterRoomWebhook,
   WebhookLimitError,
   NotParticipantError,
@@ -193,6 +194,10 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
 
       // ── resident webhooks ───────────────────────────────────────────────
       case 'webhookSet': {
+        // A display name is not a seat. seatKey has to match the stored hash
+        // before a webhook can be registered, or anyone with the room code
+        // can attach a URL to someone else's seat (R11).
+        await assertWebhookSeat(store, code, str(p.requesterName), str(p.seatKey));
         // upstash-client's registerRoomWebhook accepts any string. That is
         // harmless while nothing in this repo calls it, but the moment a
         // webhook is registrable over an open HTTP endpoint, an unvalidated
@@ -208,18 +213,12 @@ async function dispatchAction(store: UpstashClient, p: Record<string, unknown>):
           registeredBy: str(p.requesterName),
           ...(typeof p.secret === 'string' && p.secret ? { secret: p.secret } : {}),
         });
-        return { webhook };
+        return { webhook: toPublicRoomWebhook(webhook) };
       }
       case 'webhookList':
-        return { webhooks: await listRoomWebhooks(store, code) };
+        return { webhooks: (await listRoomWebhooks(store, code)).map(toPublicRoomWebhook) };
       case 'webhookDelete':
-        // Deliberate parity gap, documented rather than papered over: the
-        // hosted server checks the requester before unregistering, this
-        // repo's unregisterRoomWebhook takes no requester at all. Registering
-        // already requires being a participant, so the exposure is "one
-        // participant can drop another's webhook in a room they are both in",
-        // not "anyone with the code can". Left as-is instead of inventing a
-        // check the web app does not apply either.
+        await assertWebhookSeat(store, code, str(p.requesterName), str(p.seatKey));
         return { removed: await unregisterRoomWebhook(store, code, str(p.id)) };
 
       // ── host / moderator controls ───────────────────────────────────────
@@ -589,6 +588,23 @@ function seatKeyMatches(storedHash: string, seatKey: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
+async function assertWebhookSeat(
+  store: UpstashClient,
+  code: string,
+  name: string,
+  seatKey: string,
+): Promise<void> {
+  if (!name || !seatKey) {
+    throw new RemoteRoomApiError('webhookSet and webhookDelete require seatKey and the participant name.', 400, 'bad_request');
+  }
+  const room = await storeGetRoom(store, code);
+  const matched = room.participants.some(participant =>
+    participant.name === name && !!participant.seatKeyHash && seatKeyMatches(participant.seatKeyHash, seatKey));
+  if (!matched) {
+    throw new RemoteRoomApiError('seatKey does not match that participant.', 403, 'seat_key_invalid');
+  }
+}
+
 export type { ListMessagesResult };
 
 export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<ListMessagesResult> {
@@ -764,7 +780,7 @@ export async function reactivateRoom(
 export async function createRoomReport(client: RemoteRoomClient, code: string): Promise<RoomReport> {
   return guarded(async () => {
     const room = await storeGetRoom(client.store, code);
-    const messages = await storeListMessages(client.store, code, 0);
+    const { messages } = await storeListMessages(client.store, code, 0);
     return storeCreateRoomReport(client.store, room, messages);
   });
 }

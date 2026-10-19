@@ -66,7 +66,7 @@ export function useTaskBoard(code: string) {
    * version. Errors surface as a toast and leave the board untouched.
    */
   const run = useCallback(async (
-    action: (client: ReturnType<typeof createClient>) => Promise<unknown>,
+    action: () => Promise<unknown>,
     failureLabel: string,
   ): Promise<boolean> => {
     // Guard on a ref, not the `busy` state. Two taps inside one tick (an
@@ -81,7 +81,7 @@ export function useTaskBoard(code: string) {
     busyRef.current = true;
     setBusy(true);
     try {
-      await action(clientRef.current);
+      await action();
       await reload();
       return true;
     } catch (e) {

@@ -1,8 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { createClient, createRoom } from '@agent-room/upstash-client';
-import { generateCode, ROLE_PRESETS } from '@agent-room/shared';
-import { ENV } from '../env.js';
+import { ROLE_PRESETS } from '@agent-room/shared';
+import { roomApi, RoomWriteError } from '../lib/roomWrites.js';
 import { ROOM_TEMPLATES, localizedRoleLabel, localizedTemplate, templateById } from '../lib/templates.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
@@ -45,16 +44,9 @@ export function CreateMeeting() {
     if (!topic.trim() || !name.trim()) return;
     setBusy(true); setError(null);
     try {
-      const client = createClient(ENV.upstash);
-      const code = generateCode();
-      const created = await createRoom(client, { code, topic: topic.trim(), createdBy: name.trim() });
-      sessionStorage.setItem(`room:${code}:self`, JSON.stringify({ name: name.trim(), role: role.trim() }));
-      // Stash the host key — required to claim the host's display name on
-      // any future join (refresh, second tab, accidental End → Reactivate
-      // even from a fresh browser session). Lives in localStorage instead
-      // of sessionStorage so it survives tab close — the room itself has
-      // a 7-day Redis TTL, so a localStorage entry that outlives a tab but
-      // not the room is the right scope.
+      const created = await roomApi.createRoom({ topic: topic.trim(), displayName: name.trim(), role: role.trim() });
+      const code = created.code;
+      sessionStorage.setItem(`room:${code}:self`, JSON.stringify({ name: created.name, role: role.trim() }));
       localStorage.setItem(`room:${code}:hostKey`, created.hostKey);
       // Stash the chosen template so Lobby (and the room itself) can post the
       // opening message + show suggested roles. We use sessionStorage and not
@@ -64,6 +56,10 @@ export function CreateMeeting() {
       }
       navigate(`/r/${code}/lobby`);
     } catch (e: unknown) {
+      if (e instanceof RoomWriteError && e.status === 401) {
+        navigate('/login?next=/new');
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Unknown error');
     } finally {
       setBusy(false);

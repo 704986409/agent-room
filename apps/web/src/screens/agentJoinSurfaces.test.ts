@@ -40,13 +40,15 @@ describe('AgentJoinNotice', () => {
 describe('/j/:code', () => {
   const src = read('Join.tsx');
 
-  it('shows the notice above the human form', () => {
+  it('shows the agent notice and does not join a human by room code', () => {
     expect(src).toContain('<AgentJoinNotice');
-    expect(src.indexOf('<AgentJoinNotice')).toBeLessThan(src.indexOf('<CodeInput'));
+    expect(src).toContain('noticeCode');
+    expect(src).not.toContain('joinRoom(');
+    expect(src).not.toContain('<CodeInput');
   });
 
   it('passes the room code through once the URL supplies one', () => {
-    expect(src).toContain('raw.length === CODE_LEN ? withDashes(raw) : undefined');
+    expect(src).toContain('raw.length === CODE_LEN && isValidCode(withDashes(raw))');
   });
 });
 

@@ -1,6 +1,5 @@
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { useState } from 'react';
-import { isValidCode } from '@agent-room/shared';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { TopNav } from '../components/TopNav.js';
 import { copyText } from '../lib/copy.js';
@@ -12,12 +11,6 @@ const PUBLIC_BASE_URL = (import.meta.env as Record<string, string | undefined>).
 const MCP_URL = `${PUBLIC_BASE_URL}/mcp`;
 const CLAUDE_ADD_COMMAND = `claude mcp add --transport http agent-room ${MCP_URL}`;
 const CURL_COMMAND = `curl -fsSL ${PUBLIC_BASE_URL}/install | sh`;
-
-function normalize(raw: string): string {
-  const bare = raw.replace(/-/g, '').trim().toUpperCase();
-  if (bare.length !== 9) return raw.trim().toUpperCase();
-  return `${bare.slice(0, 3)}-${bare.slice(3, 6)}-${bare.slice(6)}`;
-}
 
 function CommandRow({ label, command }: { label: string; command: string }) {
   const [copied, setCopied] = useState(false);
@@ -47,21 +40,8 @@ function CommandRow({ label, command }: { label: string; command: string }) {
 // agent. Everything else (tool reference, self-hosting, protocol) lives on
 // /mcp and in the repo docs.
 export function Home() {
-  const navigate = useNavigate();
   const { t } = useLocale();
   useDocumentTitle(`Agent Room — ${t('common.openRoom')}`);
-  const [code, setCode] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-
-  function go() {
-    const normalized = normalize(code);
-    if (isValidCode(normalized)) {
-      setErr(null);
-      navigate(`/j/${normalized}`);
-    } else {
-      setErr('Invalid code');
-    }
-  }
 
   return (
     <div className="min-h-screen bg-surface-soft text-ink">
@@ -82,24 +62,8 @@ export function Home() {
                 {t('home.createRoom')}
               </Link>
               <div className="min-w-0 rounded-xl border border-border-faint bg-surface-softer p-4">
-                <label className="mb-2 block text-xs font-semibold text-ink-muted">{t('home.joinWithCode')}</label>
-                <div className="flex gap-2">
-                  <input
-                    value={code}
-                    onChange={e => { setCode(e.target.value.toUpperCase()); if (err) setErr(null); }}
-                    onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); go(); } }}
-                    placeholder="ABC-DEF-GHJ"
-                    aria-label={t('home.roomCodeInput')}
-                    className="min-w-0 flex-1 rounded-lg border border-border bg-white px-3 py-2.5 font-mono text-sm outline-none focus:border-accent focus:ring-4 focus:ring-accent-tint"
-                  />
-                  <button
-                    onClick={go}
-                    className="rounded-lg bg-ink px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
-                  >
-                    {t('home.join')}
-                  </button>
-                </div>
-                {err && <div className="mt-2 text-xs text-red-600">{t('common.invalidCode')}</div>}
+                <div className="text-xs font-semibold text-ink-muted">{t('home.joinWithCode')}</div>
+                <p className="mt-2 text-sm leading-relaxed text-ink-muted">{t('home.inviteOnly')}</p>
               </div>
             </div>
             <Link

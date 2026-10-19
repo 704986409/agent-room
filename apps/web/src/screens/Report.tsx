@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { extractArtifacts, normalizeEscapedWhitespace, ROOM_TTL_SECONDS, type ArtifactKind, type Message, type RoomArtifact, type RoomReport } from '@agent-room/shared';
-import { createClient, createRoomReport, getRoom, getRoomReport, listMessages } from '@agent-room/upstash-client';
+import { createClient, getRoomReport } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
+import { roomApi } from '../lib/roomWrites.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import type { Locale, MessageKey, MessageValues } from '../i18n/messages.js';
@@ -30,12 +31,8 @@ export function Report() {
     setRefreshing(true);
     setError(null);
     try {
-      const client = createClient(ENV.upstash);
-      const room = await getRoom(client, code);
-      const listed = await listMessages(client, code, 0);
-      const messages = Array.isArray(listed) ? listed : listed.messages;
-      const next = await createRoomReport(client, room, messages);
-      setReport(next);
+      const next = await roomApi.host({ code, op: 'report' });
+      setReport((next.report ?? null) as RoomReport | null);
       setMissing(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

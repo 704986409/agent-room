@@ -153,7 +153,11 @@ export class WakeService {
       if (snap.count !== null && snap.scan !== null && snap.count > snap.scan) {
         const managed = await this.managedSeat(binding);
         if (managed) {
-          await this.store.scan(managed.seat, from => this.store.loadMessages(binding.code, from), now, managed.expiresAt);
+          await this.store.scan(managed.seat, async from => {
+            const snapshot = await this.store.loadMessages(binding.code, from);
+            if (!snapshot) throw new Error('room_expired');
+            return snapshot;
+          }, now, managed.expiresAt);
         }
       }
       const length = Number(await this.client.command(['LLEN', `room-msgs:${binding.code}`]) ?? 0);

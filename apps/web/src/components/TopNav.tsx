@@ -24,6 +24,9 @@ export function TopNav() {
         </div>
         <div className="flex items-center gap-2">
           <LocaleSwitcher />
+          <Link to="/login" className="text-sm font-medium text-ink-soft hover:text-ink transition">
+            {t('nav.signIn')}
+          </Link>
           <Link
           to="/new"
           className="inline-flex shrink-0 items-center justify-center rounded-lg border border-accent-tint-border bg-white px-3 py-2.5 text-xs font-semibold text-accent hover:bg-accent-tint transition sm:px-5 sm:text-sm"

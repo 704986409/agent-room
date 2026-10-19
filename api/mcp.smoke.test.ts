@@ -794,9 +794,10 @@ describe('hosted MCP endpoint', () => {
     // upstash-client's registerRoomWebhook accepts any string; the guard lives
     // at this seam. Without it, a room code would be enough to make the server
     // POST chat content at cloud metadata.
+    const seatKey = created.seatKey as string;
     for (const url of ['http://169.254.169.254/latest/meta-data/', 'https://localhost/hook', 'https://127.0.0.1/hook']) {
       const res = parsed(await mcp.callTool({
-        name: 'room_webhook', arguments: { code, name: 'Host', action: 'register', url },
+        name: 'room_webhook', arguments: { code, name: 'Host', action: 'register', url, seatKey },
       }));
       expect(res.registered).toBeFalsy();
     }
