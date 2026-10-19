@@ -1,0 +1,13 @@
+{
+  "name": "agent-room-wake-agent",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Stub: local wake + CLI session resume for Agent Room thin shell. Not wired into workspaces yet.",
+  "type": "module",
+  "bin": {
+    "agent-room-wake-agent": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts"
+  }
+}
