@@ -39,13 +39,15 @@ export class MapDeviceAuthenticator implements DeviceAuthenticator {
 
 /**
  * Reads device-cred:{sha256(token)}.
- * Legacy tests may store a plain deviceId, or JSON { deviceId, revoked? } without userId.
- * Pairing stores JSON { deviceId, userId } and also requires a live device and user.
+ * Pairing stores JSON { deviceId, userId }; it also requires a live device
+ * record and an enabled owner. Stub-format values (plain deviceId, or JSON
+ * without userId) are accepted only when `allowLegacy` is set (unit tests).
  */
 export class RedisDeviceAuthenticator implements DeviceAuthenticator {
   constructor(
     private readonly client: Pick<UpstashClient, 'command'>,
     private readonly now: () => number = Date.now,
+    private readonly allowLegacy = false,
   ) {}
   async authenticate(authorization: string | undefined): Promise<DevicePrincipal | null> {
     const token = bearerToken(authorization);
@@ -53,7 +55,7 @@ export class RedisDeviceAuthenticator implements DeviceAuthenticator {
     const raw = await this.client.command<string | null>(['GET', `device-cred:${deviceCredentialHash(token)}`]);
     if (!raw) return null;
     if (!raw.startsWith('{')) {
-      return /^[\w.-]{1,128}$/.test(raw) ? { deviceId: raw } : null;
+      return this.allowLegacy && /^[\w.-]{1,128}$/.test(raw) ? { deviceId: raw } : null;
     }
     let parsed: { deviceId?: string; userId?: string; revoked?: boolean };
     try {
@@ -64,7 +66,7 @@ export class RedisDeviceAuthenticator implements DeviceAuthenticator {
     if (parsed.revoked) return null;
     const deviceId = parsed.deviceId ?? '';
     if (!/^[\w.-]{1,128}$/.test(deviceId)) return null;
-    if (typeof parsed.userId !== 'string' || !parsed.userId) return { deviceId };
+    if (typeof parsed.userId !== 'string' || !parsed.userId) return this.allowLegacy ? { deviceId } : null;
     const ok = await authorizeStoredDevice(this.client, deviceId, parsed.userId, deviceCredentialHash(token), this.now());
     return ok ? { deviceId } : null;
   }

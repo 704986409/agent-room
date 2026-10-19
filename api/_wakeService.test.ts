@@ -43,7 +43,7 @@ function service(redis: WakeTestRedis, now = () => Date.now()) {
 describe('device credentials', () => {
   it('rejects missing, unknown, and revoked credentials', async () => {
     const redis = new WakeTestRedis();
-    const auth = new RedisDeviceAuthenticator(redis);
+    const auth = new RedisDeviceAuthenticator(redis, Date.now, true);
     expect(await auth.authenticate(undefined)).toBeNull();
     expect(await auth.authenticate('Bearer nope')).toBeNull();
     redis.values.set(`device-cred:${deviceCredentialHash('good')}`, JSON.stringify({ deviceId: 'dev-1' }));
