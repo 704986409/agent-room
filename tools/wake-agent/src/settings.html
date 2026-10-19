@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Room 本机设置</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; background: #f4f5f7; color: #1c1d1f; }
+    header { padding: 20px 24px 0; }
+    h1 { font-size: 22px; margin: 0 0 8px; }
+    main { display: grid; gap: 16px; padding: 16px 24px 40px; max-width: 960px; }
+    section { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 18px; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    form, .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin: 8px 0; }
+    label { display: grid; gap: 4px; font-size: 13px; }
+    input, select, button { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #c5c8ce; }
+    button { background: #1f4b99; color: #fff; border-color: #1f4b99; cursor: pointer; }
+    button.quiet { background: #fff; color: #1c1d1f; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+    pre { white-space: pre-wrap; background: #111; color: #e8e8e8; padding: 12px; border-radius: 8px; max-height: 280px; overflow: auto; }
+    .muted { color: #5c616a; font-size: 13px; }
+    .err { color: #9b1c1c; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Agent Room 本机设置</h1>
+    <p class="muted">只在这台电脑上使用。远端网页不能调用这里的接口。</p>
+  </header>
+  <main>
+    <section>
+      <h2>绑定本机</h2>
+      <div id="pair-status" class="muted">正在读取状态…</div>
+      <form id="pair-code">
+        <label>配对码 <input name="pairingCode" required autocomplete="off"></label>
+        <button type="submit">绑定</button>
+      </form>
+      <form id="pair-login">
+        <span class="muted">用账号登录绑定</span>
+        <label>用户名 <input name="username" required autocomplete="username"></label>
+        <label>密码 <input name="password" type="password" required autocomplete="current-password"></label>
+        <button type="submit">登录并绑定</button>
+      </form>
+      <button type="button" class="quiet" id="unpair">解除绑定</button>
+    </section>
+    <section>
+      <h2>本机 Agent</h2>
+      <div id="agents" class="muted">尚未检测</div>
+    </section>
+    <section>
+      <h2>托管座位</h2>
+      <table>
+        <thead><tr><th>房间</th><th>名字</th><th>适配器</th><th>模型</th><th>状态</th><th>会话</th><th>PID</th></tr></thead>
+        <tbody id="seats"></tbody>
+      </table>
+      <h3>新建托管 Agent</h3>
+      <form id="start-agent">
+        <label>房间码 <input name="code" required></label>
+        <label>邀请码 <input name="inviteCode" required></label>
+        <label>名字 <input name="name" required></label>
+        <label>适配器 <select name="adapterId" id="adapter" required></select></label>
+        <label>模型 <select name="model" id="model" required></select></label>
+        <label>工作目录 <input name="cwd" required placeholder="/home/me/work"></label>
+        <button type="submit">新建托管 Agent</button>
+      </form>
+    </section>
+    <section>
+      <h2>MCP 一键配置</h2>
+      <div id="mcp" class="muted">尚未检测</div>
+    </section>
+    <section>
+      <h2>日志</h2>
+      <p class="muted">最近 100 行，凭据已打码。</p>
+      <pre id="logs"></pre>
+      <button type="button" class="quiet" id="refresh">刷新</button>
+      <p id="error" class="err"></p>
+    </section>
+  </main>
+  <script>
+    const token = new URLSearchParams(location.search).get('t') || '';
+    const errorBox = document.getElementById('error');
+    const adapterSelect = document.getElementById('adapter');
+    const modelSelect = document.getElementById('model');
+    let adapterModels = {};
+
+    async function api(path, options) {
+      const response = await fetch(path, {
+        method: options && options.method || 'GET',
+        headers: { 'content-type': 'application/json', 'x-agent-room-control': token },
+        body: options && options.body ? JSON.stringify(options.body) : undefined,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || response.statusText);
+      return payload;
+    }
+
+    function showError(error) {
+      errorBox.textContent = error && error.message ? error.message : '';
+    }
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, function (ch) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
+      });
+    }
+
+    function shortId(value) {
+      if (!value) return '';
+      return value.length > 8 ? value.slice(0, 8) + '…' : value;
+    }
+
+    function fillModels(id) {
+      const models = adapterModels[id] || [];
+      modelSelect.innerHTML = models.map(model => '<option>' + esc(model) + '</option>').join('');
+    }
+
+    async function refresh() {
+      showError(null);
+      const status = await api('/api/status');
+      const pair = document.getElementById('pair-status');
+      if (status.paired) {
+        const user = status.user && (status.user.username || status.user.userId) || '未知用户';
+        pair.textContent = '已绑定 ' + (status.server || '') + ' / ' + user + ' / ' + (status.deviceId || '') + '（' + status.auth + '）';
+      } else {
+        pair.textContent = '尚未绑定（' + status.auth + '）';
+      }
+      adapterModels = {};
+      document.getElementById('agents').innerHTML = (status.adapters || []).map(adapter => {
+        adapterModels[adapter.id] = adapter.models || [];
+        const version = adapter.installed ? (adapter.version || '已安装') : '未安装';
+        return '<div>' + esc(adapter.id) + ' · ' + esc(version) + (adapter.path ? ' · ' + esc(adapter.path) : '') + '</div>';
+      }).join('') || '没有适配器';
+      adapterSelect.innerHTML = (status.adapters || []).map(adapter => '<option value="' + esc(adapter.id) + '">' + esc(adapter.id) + '</option>').join('');
+      fillModels(adapterSelect.value);
+      document.getElementById('seats').innerHTML = (status.seats || []).map(seat =>
+        '<tr><td>' + esc(seat.code) + '</td><td>' + esc(seat.name) + '</td><td>' + esc(seat.adapterId) +
+        '</td><td>' + esc(seat.model) + '</td><td>' + esc(seat.status) + '</td><td>' + esc(shortId(seat.sessionId)) +
+        '</td><td>' + esc(seat.pid) + '</td></tr>'
+      ).join('');
+      const mcp = await api('/api/mcp');
+      document.getElementById('mcp').innerHTML = (mcp.tools || []).map(tool =>
+        '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') +
+        ' <button type="button" data-target="' + esc(tool.id) + '">安装</button></div>'
+      ).join('');
+      const logs = await api('/api/logs');
+      document.getElementById('logs').textContent = (logs.lines || []).join('\n');
+    }
+
+    adapterSelect.addEventListener('change', () => fillModels(adapterSelect.value));
+    document.getElementById('pair-code').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        await api('/api/pair', { method: 'POST', body: { pairingCode: event.target.pairingCode.value } });
+        event.target.reset();
+        await refresh();
+      } catch (error) { showError(error); }
+    });
+    document.getElementById('pair-login').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        await api('/api/pair-login', { method: 'POST', body: { username: event.target.username.value, password: event.target.password.value } });
+        event.target.reset();
+        await refresh();
+      } catch (error) { showError(error); }
+    });
+    document.getElementById('unpair').addEventListener('click', async () => {
+      try { await api('/api/unpair', { method: 'POST', body: {} }); await refresh(); }
+      catch (error) { showError(error); }
+    });
+    document.getElementById('start-agent').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.target;
+      try {
+        await api('/api/agents', { method: 'POST', body: {
+          code: form.code.value, inviteCode: form.inviteCode.value, name: form.name.value,
+          adapterId: form.adapterId.value, model: form.model.value, cwd: form.cwd.value,
+        } });
+        await refresh();
+      } catch (error) { showError(error); }
+    });
+    document.getElementById('mcp').addEventListener('click', async event => {
+      const target = event.target && event.target.dataset && event.target.dataset.target;
+      if (!target) return;
+      try { await api('/api/mcp/install', { method: 'POST', body: { target } }); await refresh(); }
+      catch (error) { showError(error); }
+    });
+    document.getElementById('refresh').addEventListener('click', () => refresh().catch(showError));
+    refresh().catch(showError);
+  </script>
+</body>
+</html>

@@ -2,23 +2,34 @@ import { readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export type SeatRuntime = 'idle' | 'running';
+export type SeatRuntime = 'idle' | 'running' | 'revoked';
 
 /** Local seat row. seatKey and device credentials are never stored here. */
 export interface SeatRecord {
   seatId: string;
+  roomInstanceId?: string;
   code: string;
   name: string;
   adapterId: string;
+  model?: string;
   sessionId?: string;
   cwd: string;
   pid?: number;
   status: SeatRuntime;
   wakeRunId?: string;
+  startedAt?: string;
+}
+
+/** Paired device. The device credential lives in the credential store, not here. */
+export interface DeviceRecord {
+  server: string;
+  deviceId: string;
+  pairedAt: string;
 }
 
 export interface DaemonState {
   seats: SeatRecord[];
+  device?: DeviceRecord;
 }
 
 export function emptyState(): DaemonState {
@@ -70,16 +81,34 @@ export interface ProcessInspection {
   cmdline: string;
 }
 
-/** Alive processes whose command line is not this adapter are treated as PID reuse. */
-export function reconcileAfterRestart(state: DaemonState, inspect: (pid: number) => ProcessInspection, adapterCommand: string): DaemonState {
-  const base = adapterCommand.split('/').pop() ?? adapterCommand;
+function commandBasename(command: string): string {
+  const base = command.split('/').pop() ?? command;
+  return base || command;
+}
+
+/** True when argv contains the adapter binary name or a path ending in that name. */
+export function cmdlineMatchesAdapter(cmdline: string, adapterCommand: string): boolean {
+  const base = commandBasename(adapterCommand);
+  const tokens = cmdline.replace(/\0/g, ' ').split(/\s+/).filter(Boolean);
+  return tokens.some(token => token === base || token.endsWith(`/${base}`));
+}
+
+/**
+ * Alive processes whose command line is not that seat's adapter are PID reuse.
+ * `adapterCommand` is either one command for every seat or a per-adapter lookup.
+ */
+export function reconcileAfterRestart(
+  state: DaemonState,
+  inspect: (pid: number) => ProcessInspection,
+  adapterCommand: string | ((adapterId: string) => string),
+): DaemonState {
+  const resolve = typeof adapterCommand === 'function' ? adapterCommand : () => adapterCommand;
   return {
     seats: state.seats.map(seat => {
+      if (seat.status === 'revoked') return seat;
       if (seat.status !== 'running' || !seat.pid) return { ...seat, status: 'idle', pid: undefined, wakeRunId: undefined };
       const seen = inspect(seat.pid);
-      const cmdline = seen.cmdline.replace(/\0/g, ' ');
-      const matches = cmdline.split(/\s+/).includes(base);
-      if (seen.alive && matches) return seat;
+      if (seen.alive && cmdlineMatchesAdapter(seen.cmdline, resolve(seat.adapterId))) return seat;
       return { ...seat, status: 'idle', pid: undefined, wakeRunId: undefined };
     }),
   };
