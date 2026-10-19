@@ -54,7 +54,7 @@ describe('launcher adapters', () => {
     const cursorSpawn = fake([CURSOR_LINE.slice(0, 15), CURSOR_LINE.slice(15)]);
     const cursor = createCursorAdapter(cursorSpawn);
     expect((await cursor.launch({ ...opts, model: 'grok-4.7-high' })).sessionId).toBe('22222222-2222-4222-8222-222222222222');
-    expect(cursorSpawn.calls[0]).toEqual(['-p', '--output-format', 'stream-json', '--trust', '--model', 'grok-4.7-high', 'hello room']);
+    expect(cursorSpawn.calls[0]).toEqual(['-p', '--output-format', 'stream-json', '--trust', '--approve-mcps', '--model', 'grok-4.7-high', 'hello room']);
     await cursor.resume({ ...opts, model: 'grok-4.7', sessionId: '22222222-2222-4222-8222-222222222222' });
     expect(cursorSpawn.calls[1]).toContain('--resume');
     expect(cursorSpawn.calls[1]).toContain('--model');

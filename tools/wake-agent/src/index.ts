@@ -42,11 +42,13 @@ function hasFlag(name: string): boolean {
 }
 
 function defaultStatePath(): string {
-  return join(homedir(), '.local/state/agent-room/daemon.json');
+  return process.env.AGENT_ROOM_STATE_DIR
+    ? join(process.env.AGENT_ROOM_STATE_DIR, 'daemon.json')
+    : join(homedir(), '.local/state/agent-room/daemon.json');
 }
 
 function defaultConfigDir(): string {
-  return join(homedir(), '.config/agent-room');
+  return process.env.AGENT_ROOM_CONFIG_DIR || join(homedir(), '.config/agent-room');
 }
 
 async function readPassword(): Promise<string> {

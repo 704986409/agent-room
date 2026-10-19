@@ -202,8 +202,8 @@ const CURSOR: AdapterDefinition = {
   id: 'cursor-agent',
   command: 'cursor-agent',
   models: ['grok-4.7-high', 'grok-4.7'],
-  launchArgs: (model, prompt) => ['-p', '--output-format', 'stream-json', '--trust', '--model', model, prompt],
-  resumeArgs: (sessionId, model, prompt) => ['-p', '--output-format', 'stream-json', '--trust', '--resume', sessionId, '--model', model, prompt],
+  launchArgs: (model, prompt) => ['-p', '--output-format', 'stream-json', '--trust', '--approve-mcps', '--model', model, prompt],
+  resumeArgs: (sessionId, model, prompt) => ['-p', '--output-format', 'stream-json', '--trust', '--approve-mcps', '--resume', sessionId, '--model', model, prompt],
   pick: pickInitSession,
 };
 
