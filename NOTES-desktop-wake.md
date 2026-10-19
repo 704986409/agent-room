@@ -125,11 +125,51 @@ The daemon, launcher adapters, CLI validation, load script/measurement and
 end-to-end MCP handoff remain later phases. The parallel branch owns §3.11's
 room_create/room_join cursor fixes and 1000-message cap; neither was duplicated.
 
-### Commit blocker
+### Commit
 
-The requested commit was attempted after validation, but `git add` failed:
-`Unable to create '/home/box/MERYANG/agent-room/.git/worktrees/agent-room-desktop-wake/index.lock': Read-only file system`.
-The worktree uses that external shared Git directory. This session cannot
-request elevated filesystem access. No commit was created; all six new files
-remain intact and untracked in this worktree. Commit these files once the Git
-metadata is writable. No branch switch, reset, merge or push was performed.
+Phase 1 is `2a32472`. The earlier `index.lock` read-only failure was resolved
+outside this session. No branch switch, reset, merge or push was performed.
+
+## Phase 2
+
+M2–M4 on top of the Phase 1 store. The state machine and Redis primitives were
+not rewritten. §3.11 absolute cursor / `listMessages` / 1000 cap stays on
+`feat/small-fixes`. `packages/upstash-client/src/messages.ts` only gained the
+send-path hook.
+
+### 已完成
+
+- `Participant.seatId`：签发一次；seatKey 轮换保留；老座位 register 时补发。
+- `POST /api/wake`：`register` / `unregister` / `poll` / `claim` / `renew` / `progress`，挂在 `deploy/vps/server.ts` 的 `API_HANDLERS.wake`。`startServer` 才启动 patrol（默认 180s）和 send hook；`createVpsApp` 不启 timer。
+- 设备凭据是可插拔 stub：`MapDeviceAuthenticator`（测试）、`RedisDeviceAuthenticator` 读 `device-cred:{sha256}`。不签发凭据（配对是 M6）。
+- 绑定缓存 `wake-bind` / `wake-meta` / `wake-device` / `wake-managed`。座位移除、房间结束、unregister 取消事件；seatKey 轮换把绑定标成 `rebind_required`（仍留在 managed，poll 不返回 pending）。设备换绑 release 旧认领。
+- 发送钩子：`rpushMessage` 用 pipeline `INCR` 结果减 1 作为绝对 index。钩子同步或异步失败都不让已提交写入失败。事件键 `wk:{roomInstanceId}:{sourceMessageIndex}:{seatId}` SET NX。扫描只前进。网页直写和 task verification EVAL 不经过这个钩子。
+- poll 用一条 EVAL 读绑定、managed 计数和 scan；无新消息时不 GET `room:{code}`。扫描键带真实 `roomInstanceId`。
+- `room_listen` 的 `timeoutMs: 0` 和长轮询都走 `settleManagedRead`。错误 seatKey 当普通读取，不确认。`timeoutMs > 0` 才 `beginListen`。join / send / presence 不调用 `confirmRead`。
+- `room_sleep` 调 `RedisWakeStore.sleep`。claim 返回 `readFrom` 和 `gap`。FAILED 且 reason 不是 `room_expired` 时，SET NX `wake-noted` 后写一条系统消息（正文无 `@`，避免再唤醒）。`room_expired` 只对 daemon 可见。
+- `tools/wake-agent`：Codex CLI adapter（`codex exec` / `codex exec resume`，禁止 dangerously / full-auto / --yolo）、状态文件 0600、重启接管、单 poll 循环、claim / renew / progress、run 合并、本地文件锁、自适应间隔。`serve` 用 Bearer token 打 `POST /api/wake`。单测用 mock server 和 mock 子进程。
+- `tools/wake-load`：拒绝 `agent-room.com` 和 `upstash.io`。`--self-test` 不联网。单测只跑内存模型。
+
+### 测试
+
+- 单测覆盖 register 扫描、去重、gap、claim readFrom、lease 回退、rebind/revoke、并发 claim、managed 冒充/跳过/缺口、daemon 重启与 HTTP client、load 退避。
+- 未对生产或本机正在跑的 Redis / VPS 执行负载。Redis 断言走 `api/_wakeTestRedis.ts`。
+- `npm run build:ordered` 与 `npm run build -w packages/memory` 通过（Vite 仍有既有 chunk 警告）。
+- `npm run test:api`：28 files，344 tests 通过。`mcp.smoke` 这次能 listen，工具数是 11（含 `room_sleep`）。
+- `npm test`：shared、upstash-client、room-persistence、web 通过。`packages/memory` 的 `test/brief.integration.test.ts` 有一条连上了本机 Postgres，但 `DROP TABLE` 之后 `loadOnce` 仍返回 brief，没有变成 `STORAGE_ERROR`。这条和 wake 无关，按集成测试忽略。其余 memory integration 这次是通过的。
+
+### 剩下的
+
+- M5：停止 hook、MCP 客户端把 listen 交给 daemon 的交接。
+- M6：配对、钥匙串 / libsecret、凭据签发。
+- M0：Codex CLI 参数还没在真 CLI 上验证。
+- Lua 没对真实 Redis 跑过。
+- 网页直写 Redis 和 task verification EVAL 仍靠扫描兜底。
+- 负载脚本没有对 3000 设备实跑。
+- `room_expired` 不进房间消息。
+
+### 开放问题
+
+- 失败系统消息去掉了 `@`，避免 mention 再生成事件。文案是否还要带座位名，等产品确认。
+- Codex `thread_id` 正则和 `codex exec` 参数是临时的，M0 可能改。
+- `serve` 只轮询状态文件里已有的座位，直到 SIGTERM / SIGINT。首次启动（`startAgent`：launch + register）还没有 CLI 参数。seatKey 不进状态文件，也没有托盘。
