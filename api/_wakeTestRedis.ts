@@ -151,7 +151,8 @@ export class WakeTestRedis {
         const match = meta?.match(/^(\S+)\t(\S+)$/);
         const count = match ? this.get(`room-msg-count:${match[1]}`) : null;
         const scan = match ? this.get(`wake-scan:${match[2]}:${id}`) : null;
-        return [id, bind ?? false, count ?? false, scan ?? false];
+        const events = match ? (this.sets.get(`wake-seat:${match[2]}:${id}`)?.size ?? 0) : 0;
+        return [id, bind ?? false, count ?? false, scan ?? false, events];
       });
     }
     if (script === ROOM_REPLACE_SCRIPT) {

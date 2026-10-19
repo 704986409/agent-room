@@ -150,6 +150,12 @@ export class WakeService {
         continue;
       }
       const seat = { roomInstanceId: binding.roomInstanceId, seatId: binding.seatId };
+      // Idle fast path (design §3.4/P1-4): no unscanned messages and no events for this seat ->
+      // the snapshot EVAL was the only Redis work. Room expiry and leases are left to patrol.
+      if (snap.count !== null && snap.scan !== null && snap.count <= snap.scan && snap.events === 0) {
+        seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const, pending: [], inFlight: [], failed: [] });
+        continue;
+      }
       if (snap.count !== null && snap.scan !== null && snap.count > snap.scan) {
         const managed = await this.managedSeat(binding);
         if (managed) {

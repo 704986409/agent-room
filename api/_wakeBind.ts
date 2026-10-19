@@ -33,14 +33,16 @@ for i, id in ipairs(ids) do
   local meta = redis.call('GET', 'wake-meta:' .. id)
   local count = false
   local scan = false
+  local events = 0
   if meta then
     local code, roomInstance = string.match(meta, '^(%S+)\t(%S+)$')
     if code and roomInstance then
       count = redis.call('GET', 'room-msg-count:' .. code)
       scan = redis.call('GET', 'wake-scan:' .. roomInstance .. ':' .. id)
+      events = redis.call('SCARD', 'wake-seat:' .. roomInstance .. ':' .. id)
     end
   end
-  rows[i] = { id, bind or false, count or false, scan or false }
+  rows[i] = { id, bind or false, count or false, scan or false, events }
 end
 return rows`;
 
@@ -124,6 +126,8 @@ export interface PollSeatSnapshot {
   binding: WakeBinding | null;
   count: number | null;
   scan: number | null;
+  /** Size of the seat's event index; 0 + no unscanned messages means nothing to do. */
+  events: number;
 }
 
 function asNumber(value: unknown): number | null {
@@ -136,12 +140,13 @@ export async function readPollSnapshot(client: CommandClient, deviceId: string):
   const rows = await client.command<unknown>(['EVAL', POLL_SNAPSHOT_SCRIPT, 1, deviceKey(deviceId)]);
   const list = Array.isArray(rows) ? rows : [];
   return list.map(row => {
-    const [seatId, bindRaw, countRaw, scanRaw] = row as [string, string | false | null, string | number | false | null, string | number | false | null];
+    const [seatId, bindRaw, countRaw, scanRaw, eventsRaw] = row as [string, string | false | null, string | number | false | null, string | number | false | null, number | null | undefined];
     return {
       seatId: String(seatId),
       binding: bindRaw ? JSON.parse(String(bindRaw)) as WakeBinding : null,
       count: asNumber(countRaw),
       scan: asNumber(scanRaw),
+      events: Number(eventsRaw ?? 0),
     };
   });
 }

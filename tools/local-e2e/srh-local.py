@@ -12,10 +12,11 @@ def run(cmd):
     try: return {"result": conv(R.execute_command(*cmd))}
     except Exception as e: return {"error": str(e)}
 class H(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'  # keep-alive, like real SRH
     def log_message(self,*a): pass
     def do_POST(self):
         if self.headers.get('Authorization') != 'Bearer '+TOK:
-            self.send_response(401); self.end_headers(); return
+            self.send_response(401); self.send_header('Content-Length','0'); self.end_headers(); return
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))) or b'null')
         out = [run(c) for c in body] if self.path.rstrip('/') in ('/pipeline','/multi-exec') else run(body)
         data = json.dumps(out).encode()
