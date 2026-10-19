@@ -782,4 +782,24 @@ M7 只依赖 M1b（任务创建走服务器），可与 M2–M6 并行。桌面�
 
 ## 附录 B：验证与压测记录
 
-（M0 验证、M2 压测完成后填写。）
+### B.1 M0：CLI 适配器实测（2026-10-20，Linux / Debian 13）
+
+只用允许的模型做最小真实探测（提示词 "Reply with just: ok"，空目录 `/tmp/m0probe`）；Claude Code 只看 `--help`，未运行任何模型。
+
+| 适配器 | 版本 | 首次无头启动 | 会话 id 从哪来 | 无头恢复 | 实测 |
+|---|---|---|---|---|---|
+| Codex CLI | codex-cli 0.162.1 | `codex exec --json --skip-git-repo-check -s workspace-write -m <model> <prompt>` | 第一行 `{"type":"thread.started","thread_id":"<UUIDv7>"}` | `codex exec resume <id> --json … <prompt>` | 参数按 `--help` 核对；会话格式取自本机已有的 `--json` 输出与 `~/.codex/sessions`（共享 GPT 额度，未新跑） |
+| Cursor CLI | cursor-agent 2026.10.16 | `cursor-agent -p --output-format stream-json --trust --model grok-4.7-high <prompt>` | 第一行 `{"type":"system","subtype":"init","session_id":"<uuid>"}` | 加 `--resume <id>`，回显同一 session_id，上下文保留 | ✅ 启动 + 恢复都真跑通过 |
+| Antigravity CLI | agy 1.4.2 | `agy -p <prompt> --model gemini-3.8-flash-high --output-format stream-json` | 第一行 `{"event":"init","conversation_id":"<uuid>"}` | 加 `--conversation <id>`，同一 conversation_id，上下文保留 | ✅ 启动 + 恢复都真跑通过 |
+| Claude Code | 2.1.300 | `claude -p --output-format stream-json --verbose --model <m> <prompt>` | `{"type":"system","subtype":"init","session_id":…}`（另有 `--session-id <uuid>` 可预先指定） | `--resume <id>` | 只看了 `--help`；适配器的模型允许列表为空，托管时拒绝启动 |
+| Gemini CLI | 未安装 | — | — | — | 跳过 |
+
+所有适配器都**必须显式传模型**，并按允许列表校验（Codex：gpt-6.1-sol / gpt-6-luna；Cursor：grok-4.7-high / grok-4.7；agy：gemini-3.8-flash-high；Claude：空）；`--yolo / --force / --dangerously-* / --full-auto` 一律拒绝。
+
+### B.2 M6 决定
+
+- Q8：Linux 先出 **AppImage + deb**，另附便携 tarball（`run.sh`）。外壳 = Tauri v2；daemon 用系统 Node（≥ 20）运行打包后的单文件 `agent-room-daemon.mjs`。
+- 设置页的实现：daemon 在 `127.0.0.1` 随机端口提供本地设置页，要求随机 token（`control.json` 0600），拒绝外来 Origin；外壳用第二个 WebView 打开它。两个 WebView 都不开放任何 Tauri IPC 权限。
+- 配对码的获取（复用 WebView 登录）：在 WebView 里打开 个人中心 → "生成配对码"，复制后粘贴到本机设置页；也可以在设置页用账号密码直接绑定（密码与 cookie 只留在内存里）。
+- 钥匙串：有 `secret-tool` 且 Secret Service 能正常存取时用它；否则退回 `~/.config/agent-room/credentials.json`（0600），并提示一次。
+- seatKey 交给 Agent：V1 由 daemon 自己 `room_join` 拿到 seatKey，存进钥匙串，启动或恢复 CLI 时通过环境变量 `AGENT_ROOM_SEAT_KEY` 交给子进程（不进提示词、不进状态文件）。等 `agent-room-mcp` 支持后，改为由它直接从环境变量读取。

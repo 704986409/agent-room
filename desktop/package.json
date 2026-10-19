@@ -1,0 +1,15 @@
+{
+  "name": "agent-room-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Agent Room Desktop shell (Tauri v2): WebView of the web app, tray, local settings page; spawns the Node daemon.",
+  "scripts": {
+    "bundle-daemon": "node scripts/bundle-daemon.mjs",
+    "tauri": "tauri",
+    "dev": "npm run bundle-daemon && tauri dev",
+    "package": "npm run bundle-daemon && tauri build --bundles appimage,deb && node scripts/tarball.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}
