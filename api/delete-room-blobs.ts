@@ -62,7 +62,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   let continuationToken: string | undefined;
   let deleted = 0;
   // Page through. R2 caps ListObjectsV2 at 1000 keys per page; under our
-  // 10 MB / 5-per-msg / 500-msg-cap a single room can hold up to 2500
+  // 10 MB / 5-per-msg / 1000-msg-cap a single room can hold up to 5000
   // objects, well within a few pages.
   const MAX_PAGES = 20;
   for (let page = 0; page < MAX_PAGES; page++) {

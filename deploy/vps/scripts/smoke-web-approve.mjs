@@ -69,7 +69,8 @@ async function run() {
   });
   assert.equal(submitted.task.state, 'awaiting_review', 'task did not enter awaiting_review before approval');
 
-  const before = await listMessages(client, code, 0);
+  const beforeListed = await listMessages(client, code, 0);
+  const before = Array.isArray(beforeListed) ? beforeListed : beforeListed.messages;
   const notificationForTask = message => message.type === 'sys'
     && message.metadata?.eventType === 'task_update'
     && message.metadata?.taskId === task.id;
@@ -81,7 +82,8 @@ async function run() {
   const finalTask = board?.tasks.find(item => item.id === task.id);
   assert.equal(finalTask?.state, 'done', 'persisted task state is not done');
 
-  const messages = await listMessages(client, code, 0);
+  const messagesListed = await listMessages(client, code, 0);
+  const messages = Array.isArray(messagesListed) ? messagesListed : messagesListed.messages;
   const notifications = messages.filter(notificationForTask);
   assert.equal(notifications.length, 1, 'AR-06 must append exactly one task verification system notification');
   assert.ok(notifications[0]?.metadata?.eventId, 'verification notification is missing its eventId');
