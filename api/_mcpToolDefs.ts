@@ -351,6 +351,11 @@ export function declaresObjectOutput(name: string): boolean {
   return OBJECT_OUTPUT_TOOLS.has(name);
 }
 
+export function isRoomCreateEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const enabled = env.MCP_ROOM_CREATE_ENABLED?.trim().toLowerCase();
+  return enabled === 'true' || enabled === '1';
+}
+
 /**
  * The tool list, tailored to the caller where that matters.
  *
@@ -362,7 +367,10 @@ export function declaresObjectOutput(name: string): boolean {
  * unchanged.
  */
 export function listTools(profile: McpProfile, harness?: HttpHarness): ToolDef[] {
-  const base = profile === 'full' ? [...CORE_TOOLS, ...FULL_TOOLS] : [...CORE_TOOLS];
+  let base = profile === 'full' ? [...CORE_TOOLS, ...FULL_TOOLS] : [...CORE_TOOLS];
+  if (!isRoomCreateEnabled()) {
+    base = base.filter(t => t.name !== 'room_create');
+  }
   const tools = isMemoryEnabled() ? [...base, ...MEMORY_TOOLS] : base;
   if (!isWeakLoop(harness)) return tools;
   const cap = harness!.maxListenMs!;

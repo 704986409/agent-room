@@ -40,6 +40,7 @@ process.env.UPSTASH_REDIS_REST_URL = REDIS_BASE;
 process.env.UPSTASH_REDIS_REST_TOKEN = 'smoke-token';
 process.env.SRH_WEB_URL = REDIS_BASE;
 process.env.SRH_WEB_TOKEN = 'smoke-token';
+process.env.MCP_ROOM_CREATE_ENABLED = 'true';
 
 /**
  * A one-time agent invite for a NEW MCP agent seat, written straight into the
@@ -298,6 +299,27 @@ describe('hosted MCP endpoint', () => {
     } finally {
       if (previousPublicBaseUrl === undefined) delete process.env.PUBLIC_BASE_URL;
       else process.env.PUBLIC_BASE_URL = previousPublicBaseUrl;
+    }
+  });
+
+  it('hides room_create by default and returns clear error when called', async () => {
+    delete process.env.MCP_ROOM_CREATE_ENABLED;
+    try {
+      const mcp = await connect();
+      const listedTools = (await mcp.listTools()).tools;
+      const tools = listedTools.map(t => t.name);
+      expect(tools).not.toContain('room_create');
+      expect(tools).toHaveLength(9);
+      const res = await mcp.callTool({
+        name: 'room_create', arguments: { topic: 'test room' },
+      });
+      expect(res.isError).toBe(true);
+      expect(parsed(res)).toMatchObject({
+        error: 'room_create_disabled',
+        message: 'Rooms can only be created by a signed-in user in the web UI.',
+      });
+    } finally {
+      process.env.MCP_ROOM_CREATE_ENABLED = 'true';
     }
   });
 
