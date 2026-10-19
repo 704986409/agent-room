@@ -1,3 +1,20 @@
+/**
+ * First launch, after the daemon has already joined the room.
+ * Names the seatKey env var and never includes the secret itself.
+ */
+export function firstRunPrompt(input: {
+  code: string;
+  name: string;
+  readFrom: number;
+  gap?: readonly [number, number];
+}): string {
+  return [
+    `你是房间 ${input.code} 的座位 ${input.name}。`,
+    '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间工具时必须把它作为 `seatKey` 或 `managed.seatKey` 传入，绝不要打印、复述或写进回复。',
+    wakePrompt({ code: input.code, name: input.name, readFrom: input.readFrom, gap: input.gap }),
+  ].join('\n');
+}
+
 /** Wake prompt from the design. It carries no seatKey and no message body. */
 export function wakePrompt(input: {
   code: string;
