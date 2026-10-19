@@ -232,7 +232,7 @@ describe('RedisRoomPersistence compatibility', () => {
     expect(redis.pipelines[0]).toEqual([
       ['RPUSH', 'room-msgs:ABC-DEF-GHJ', JSON.stringify(message())],
       ['INCR', 'room-msg-count:ABC-DEF-GHJ'],
-      ['LTRIM', 'room-msgs:ABC-DEF-GHJ', -500, -1],
+      ['LTRIM', 'room-msgs:ABC-DEF-GHJ', -1000, -1],
       ['EXPIREAT', 'room-msgs:ABC-DEF-GHJ', Math.floor(room().createdAt / 1000) + ROOM_TTL_SECONDS],
       ['EXPIREAT', 'room-msg-count:ABC-DEF-GHJ', Math.floor(room().createdAt / 1000) + ROOM_TTL_SECONDS],
     ]);

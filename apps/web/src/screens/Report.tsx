@@ -32,7 +32,8 @@ export function Report() {
     try {
       const client = createClient(ENV.upstash);
       const room = await getRoom(client, code);
-      const messages = await listMessages(client, code, 0);
+      const listed = await listMessages(client, code, 0);
+      const messages = Array.isArray(listed) ? listed : listed.messages;
       const next = await createRoomReport(client, room, messages);
       setReport(next);
       setMissing(false);

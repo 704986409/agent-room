@@ -31,6 +31,7 @@ import {
   getRoom as storeGetRoom,
   joinRoom as storeJoinRoom,
   listMessages as storeListMessages,
+  type ListMessagesResult,
   appendSystemMessage as storeAppendSystemMessage,
   getMessageTotalCount,
   sweepTimeouts,
@@ -575,7 +576,9 @@ function seatKeyMatches(storedHash: string, seatKey: string): boolean {
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<Message[]> {
+export type { ListMessagesResult };
+
+export async function listMessages(client: RemoteRoomClient, code: string, since: number): Promise<ListMessagesResult> {
   return guarded(() => storeListMessages(client.store, code, since));
 }
 
@@ -585,9 +588,11 @@ export async function getMessagesWithTotal(
   since: number,
 ): Promise<{ messages: Message[]; total: number | null }> {
   return guarded(async () => {
-    const messages = await storeListMessages(client.store, code, since);
+    const listed = await storeListMessages(client.store, code, since);
+    const messages = Array.isArray(listed) ? listed : listed.messages;
     const total = await getMessageTotalCount(client.store, code);
-    return { messages, total };
+    const cursor = total ?? (Array.isArray(listed) ? (since + messages.length) : listed.cursor);
+    return { messages, total: cursor };
   });
 }
 

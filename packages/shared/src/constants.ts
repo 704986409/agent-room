@@ -15,7 +15,7 @@ export const ROOM_TTL_SECONDS = 7 * 24 * 60 * 60;            // 604800
 export const CHAT_SILENCE_END_MS = 30 * 60 * 1000;
 
 // Message cap
-export const MAX_MESSAGES_PER_ROOM = 500;
+export const MAX_MESSAGES_PER_ROOM = 1000;
 
 // Polling cadence (ms)
 export const MESSAGE_POLL_MS = 3000;

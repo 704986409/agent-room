@@ -154,10 +154,11 @@ async function main() {
   for (let i = 0; i < 10; i++) {
     await appendMessage(client, code, { ...msg1, id: 3000 + i, text: `bulk-${i}`, time: 3000 + i });
   }
-  const allMsgs = await listMessages(client, code, 0);
+  const listed = await listMessages(client, code, 0);
+  const allMsgs = Array.isArray(listed) ? listed : listed.messages;
   check('total = 12 (2 + 10)', allMsgs.length === 12);
   check('last text is bulk-9', allMsgs[11]?.text === 'bulk-9');
-  check('cap is 500 per spec', MAX_MESSAGES_PER_ROOM === 500);
+  check('cap is 1000 per spec', MAX_MESSAGES_PER_ROOM === 1000);
 
   // Cleanup
   console.log('\n[14] Cleanup');

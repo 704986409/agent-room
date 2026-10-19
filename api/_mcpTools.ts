@@ -77,9 +77,9 @@ import {
   runListen,
   type WakeOn,
 } from './_mcpListen.js';
-import { declaresObjectOutput, FULL_TOOLS, listTools, type McpProfile } from './_mcpToolDefs.js';
+import { declaresObjectOutput, FULL_TOOLS, isRoomCreateEnabled, listTools, type McpProfile } from './_mcpToolDefs.js';
 
-export { CORE_TOOLS, FULL_TOOLS, listTools, SERVER_INSTRUCTIONS, serverInstructions } from './_mcpToolDefs.js';
+export { CORE_TOOLS, FULL_TOOLS, isRoomCreateEnabled, listTools, SERVER_INSTRUCTIONS, serverInstructions } from './_mcpToolDefs.js';
 export type { McpProfile } from './_mcpToolDefs.js';
 export { hydrateListenImages, isTrustedAttachmentImageUrl, listMessagesResilient } from './_mcpListen.js';
 export type { WakeOn } from './_mcpListen.js';
@@ -163,6 +163,16 @@ export async function callTool(
   memoryDependencies?: MemoryToolDependencies,
 ): Promise<McpToolResult> {
   const { name, args } = resolveAlias(rawName, rawArgs as Record<string, any>);
+  if (name === 'room_create' && !isRoomCreateEnabled()) {
+    return {
+      ...ok({
+        error: 'room_create_disabled',
+        message: 'Rooms can only be created by a signed-in user in the web UI.',
+        hint: 'Rooms can only be created by a signed-in user in the web UI.',
+      }, [], true),
+      isError: true,
+    };
+  }
   const available = new Set(listTools(profile).map(t => t.name));
   if (!available.has(name)) {
     return {
@@ -215,6 +225,16 @@ async function dispatch(
   const structured = declaresObjectOutput(name);
   switch (name) {
     case 'room_create': {
+      if (!isRoomCreateEnabled()) {
+        return {
+          ...ok({
+            error: 'room_create_disabled',
+            message: 'Rooms can only be created by a signed-in user in the web UI.',
+            hint: 'Rooms can only be created by a signed-in user in the web UI.',
+          }, [], structured),
+          isError: true,
+        };
+      }
       const created = await createRoom(client, { topic: a.topic, createdBy: a.name });
       const code = created.code;
       const participant: Participant = {
@@ -230,17 +250,18 @@ async function dispatch(
         hostKey: created.hostKey,
         personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
       });
-      const msgs = await listMessages(client, code, 0);
+      const listed = await listMessages(client, code, 0);
+      const cursor = Array.isArray(listed) ? listed.length : listed.cursor;
       return ok({
         code,
         topic: created.topic,
         joinUrl: `${publicBaseUrl()}/j/${code}`,
-        cursor: msgs.length,
-        nextAction: nextListenAction(code, msgs.length, a.name),
+        cursor,
+        nextAction: nextListenAction(code, cursor, a.name),
         hostKey: created.hostKey,
         seatKey: hostSeat.seatKey,
         roleBrief: roleBriefFor(a.role ?? ''),
-        hint: `Room created — share the joinUrl; keep the hostKey private. ${NEXT_LISTEN(code, msgs.length)} ${listenWindowHint(harness)}`,
+        hint: `Room created — share the joinUrl; keep the hostKey private. ${NEXT_LISTEN(code, cursor)} ${listenWindowHint(harness)}`,
       }, [], structured);
     }
 
@@ -278,7 +299,9 @@ async function dispatch(
           );
         } catch { /* greeting is nice-to-have */ }
       }
-      const msgs = await listMessages(client, a.code, 0);
+      const listed = await listMessages(client, a.code, 0);
+      const msgs = Array.isArray(listed) ? listed : listed.messages;
+      const cursor = Array.isArray(listed) ? listed.length : listed.cursor;
       const recentMessages = msgs.slice(-16).map(slimMessage);
       const joinInbox = await boardInbox(client, profile, a.code, finalName, false, updated.replyMode);
       const joinListenPrefs = listenPrefsFor(
@@ -329,8 +352,8 @@ async function dispatch(
           client: p.client,
           canSpeak: p.canSpeak !== false,
         })),
-        cursor: msgs.length,
-        nextAction: nextActionForInbox(joinInbox, a.code, msgs.length, finalName, joinListenPrefs),
+        cursor,
+        nextAction: nextActionForInbox(joinInbox, a.code, cursor, finalName, joinListenPrefs),
         recentMessages,
         ...contextFields(msgs),
         ...(joinInbox.hint ? { yourTasks: joinInbox } : {}),
@@ -344,7 +367,7 @@ async function dispatch(
           joinInbox.hint,
           // Board work outranks presence: an agent told to listen right after
           // being handed a task listens, and the task sits.
-          ...(inboxRequiresWork(joinInbox) ? [] : [NEXT_LISTEN(a.code, msgs.length), listenWindowHint(harness)]),
+          ...(inboxRequiresWork(joinInbox) ? [] : [NEXT_LISTEN(a.code, cursor), listenWindowHint(harness)]),
         ].filter(Boolean).join(' '),
       }, await hydrateListenImages(recentMessages), structured);
     }
@@ -367,11 +390,11 @@ async function dispatch(
             hint: `Transient listMessages failure — retry. ${NEXT_LISTEN(a.code, since)}`,
           }, [], structured);
         }
-        const cursor = since + listed.messages.length;
+        const cursor = listed.cursor;
         const all = since === 0
           ? listed.messages
           : await Promise.resolve(listMessages(client, a.code, 0)).then(
-            fetched => fetched ?? listed.messages,
+            fetched => (Array.isArray(fetched) ? fetched : fetched?.messages) ?? listed.messages,
             () => listed.messages,
           );
         const messages = listed.messages.map(slimMessage);
@@ -434,7 +457,7 @@ async function dispatch(
         const all = since === 0
           ? result.messages
           : await Promise.resolve(listMessages(client, a.code, 0)).then(
-            listed => listed ?? result.messages,
+            listed => (Array.isArray(listed) ? listed : listed?.messages) ?? result.messages,
             () => result.messages,
           );
         digestFields = contextFields(all);
@@ -481,7 +504,8 @@ async function dispatch(
     }
 
     case 'room_minutes': {
-      const all = await listMessages(client, a.code, 0);
+      const listed = await listMessages(client, a.code, 0);
+      const all = Array.isArray(listed) ? listed : listed.messages;
       const room = await getRoom(client, a.code);
       let retro;
       if (a.stats === true) {

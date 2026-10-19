@@ -103,13 +103,30 @@ describe('room lifecycle tools return structuredContent', () => {
   });
 
   it('room_create mirrors its JSON text', async () => {
+    process.env.MCP_ROOM_CREATE_ENABLED = 'true';
+    try {
+      const result = await call('room_create', { topic: 'Structured results', name: 'Host', role: 'builder' });
+      expect(textOf(result)).toMatchSnapshot();
+      expectMirroredJson(result);
+      expect(result.isError).toBeUndefined();
+      // hostKey and seatKey were already in the text; structuredContent is the
+      // same value, so this adds no new place for them to leak.
+      expect(result.structuredContent).toMatchObject({ hostKey: 'host-key-fixed', seatKey: 'seat-key-fixed' });
+    } finally {
+      delete process.env.MCP_ROOM_CREATE_ENABLED;
+    }
+  });
+
+  it('room_create returns clear error when disabled by default', async () => {
+    delete process.env.MCP_ROOM_CREATE_ENABLED;
     const result = await call('room_create', { topic: 'Structured results', name: 'Host', role: 'builder' });
-    expect(textOf(result)).toMatchSnapshot();
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toEqual({
+      error: 'room_create_disabled',
+      message: 'Rooms can only be created by a signed-in user in the web UI.',
+      hint: 'Rooms can only be created by a signed-in user in the web UI.',
+    });
     expectMirroredJson(result);
-    expect(result.isError).toBeUndefined();
-    // hostKey and seatKey were already in the text; structuredContent is the
-    // same value, so this adds no new place for them to leak.
-    expect(result.structuredContent).toMatchObject({ hostKey: 'host-key-fixed', seatKey: 'seat-key-fixed' });
   });
 
   it('room_join mirrors its JSON text', async () => {
@@ -137,6 +154,33 @@ describe('room lifecycle tools return structuredContent', () => {
     const result = await call('room_listen', { code: room.code, name: 'Codex', since: 0, timeoutMs: 0 });
     expect(textOf(result)).toMatchSnapshot();
     expectMirroredJson(result);
+  });
+
+  it('room_join returns absolute server cursor when room has 1200 messages', async () => {
+    room.participants = [host];
+    listMessages.mockResolvedValue({
+      messages: [message({ id: 1199, text: 'latest message' })],
+      cursor: 1200,
+      oldestRetained: 200,
+    });
+    const result = await call('room_join', { code: room.code, name: 'Codex', role: 'builder' });
+    expect(result.structuredContent).toMatchObject({
+      cursor: 1200,
+    });
+    expect((result.structuredContent as Record<string, unknown>).cursor).toBe(1200);
+  });
+
+  it('room_listen (timeoutMs: 0) returns absolute server cursor when since falls in trimmed range', async () => {
+    listMessages.mockResolvedValue({
+      messages: [message({ id: 200, text: 'oldest retained' }), message({ id: 1199, text: 'latest message' })],
+      cursor: 1200,
+      oldestRetained: 200,
+    });
+    const result = await call('room_listen', { code: room.code, name: 'Codex', since: 150, timeoutMs: 0 });
+    expect(result.structuredContent).toMatchObject({
+      cursor: 1200,
+    });
+    expect((result.structuredContent as Record<string, unknown>).cursor).toBe(1200);
   });
 
   // The transient-failure reply is built by hand rather than from a listen
