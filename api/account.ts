@@ -2,11 +2,11 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import {
   changePassword,
   listSessions,
-  listUserDevices,
   login,
   revokeAllSessions,
   revokeSession,
 } from './_accounts.js';
+import { listUserDevices } from './_devices.js';
 import {
   clearSessionCookie,
   clientIp,
@@ -138,18 +138,25 @@ export async function passwordHandler(req: VercelRequest, res: VercelResponse): 
   }
 }
 
+function requestedUserId(req: VercelRequest): string {
+  const value = req.query.userId;
+  const raw = Array.isArray(value) ? value[0] : value;
+  return typeof raw === 'string' ? raw.trim() : '';
+}
+
 export async function devicesHandler(req: VercelRequest, res: VercelResponse): Promise<void> {
   if (req.method !== 'GET') {
     sendJson(res, 405, { error: 'method_not_allowed' });
     return;
   }
   try {
-    await requireUser(req);
-    sendJson(res, 200, {
-      devices: await listUserDevices(),
-      available: false,
-      message: 'Device list is not available yet.',
-    });
+    const auth = await requireUser(req);
+    const requested = requestedUserId(req);
+    if (requested && requested !== auth.user.id && auth.user.role !== 'admin') {
+      sendJson(res, 404, { error: 'not_found', message: 'User not found.' });
+      return;
+    }
+    sendJson(res, 200, { devices: await listUserDevices(auth.redis, requested || auth.user.id) });
   } catch (error) {
     sendAccountError(res, error);
   }

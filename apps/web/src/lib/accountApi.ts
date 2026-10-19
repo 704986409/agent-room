@@ -7,6 +7,15 @@ export interface AccountUser {
   createdAt: number;
 }
 
+export interface AccountDevice {
+  deviceId: string;
+  name: string;
+  platform: string;
+  hostname: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+}
+
 export interface AccountSession {
   id: string;
   createdAt: number;
@@ -54,7 +63,11 @@ export const accountApi = {
   revokeOthers: () => post('/api/account/sessions/revoke-others'),
   changePassword: (currentPassword: string, newPassword: string) =>
     post('/api/account/password', { currentPassword, newPassword }),
-  devices: () => get<{ devices: unknown[]; available: boolean }>('/api/account/devices'),
+  listDevices: (userId?: string) => get<{ devices: AccountDevice[] }>(
+    userId ? `/api/account/devices?userId=${encodeURIComponent(userId)}` : '/api/account/devices',
+  ),
+  revokeDevice: (deviceId: string) => post<{ ok: boolean }>('/api/account/devices/revoke', { deviceId }),
+  pairStart: () => post<{ pairingCode: string; expiresAt: number }>('/api/device/pair-start'),
   users: () => get<{ users: AccountUser[] }>('/api/admin/users'),
   addUser: (username: string, password: string, role: 'admin' | 'user') =>
     post<{ user: AccountUser }>('/api/admin/users', { username, password, role }),
