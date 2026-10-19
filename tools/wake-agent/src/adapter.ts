@@ -1,3 +1,5 @@
+import { spawn } from 'node:child_process';
+
 /** Launcher adapter. V1 implements Codex CLI; parameters stay in config until M0 verifies them. */
 export interface LaunchOptions {
   cwd: string;
@@ -17,6 +19,21 @@ export interface SpawnedProcess {
   pid: number;
   stdout: AsyncIterable<string>;
   exited: Promise<number>;
+}
+
+export function nodeSpawner(): ProcessSpawner {
+  return {
+    spawn(command, args, opts) {
+      const child = spawn(command, [...args], { cwd: opts.cwd, env: { ...process.env, ...opts.env } });
+      return {
+        pid: child.pid ?? 0,
+        stdout: (async function* () {
+          for await (const chunk of child.stdout ?? []) yield String(chunk);
+        })(),
+        exited: new Promise(resolve => { child.on('exit', code => resolve(code ?? 1)); }),
+      };
+    },
+  };
 }
 
 export interface ProcessSpawner {

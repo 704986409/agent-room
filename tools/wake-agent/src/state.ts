@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -48,6 +49,20 @@ export async function writeState(path: string, state: DaemonState): Promise<void
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await writeFile(path, JSON.stringify(state, null, 2), { mode: 0o600 });
   await chmod(path, 0o600);
+}
+
+/** Linux /proc check. A live PID whose command line is not the adapter is reuse. */
+export function inspectProcess(pid: number): ProcessInspection {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return { alive: false, cmdline: '' };
+  }
+  try {
+    return { alive: true, cmdline: readFileSync(`/proc/${pid}/cmdline`).toString('utf8') };
+  } catch {
+    return { alive: true, cmdline: '' };
+  }
 }
 
 export interface ProcessInspection {

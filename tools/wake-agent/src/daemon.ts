@@ -1,3 +1,5 @@
+import { mkdir, open, rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { LauncherAdapter } from './adapter.js';
 import { nextWait } from './interval.js';
 import { launchPrompt, wakePrompt } from './prompt.js';
@@ -36,6 +38,25 @@ export interface RunLock {
 
 export interface HeartbeatProbe {
   blocks(seat: SeatRecord): boolean;
+}
+
+/** One daemon process, one lock file per seat. A second acquire fails until release. */
+export class FileRunLock implements RunLock {
+  constructor(private readonly directory: string) {}
+  async tryAcquire(seatId: string): Promise<boolean> {
+    await mkdir(this.directory, { recursive: true });
+    try {
+      const handle = await open(join(this.directory, `${seatId}.lock`), 'wx');
+      await handle.close();
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+  }
+  async release(seatId: string): Promise<void> {
+    await rm(join(this.directory, `${seatId}.lock`), { force: true });
+  }
 }
 
 export class MemoryRunLock implements RunLock {

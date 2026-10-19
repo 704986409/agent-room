@@ -2,7 +2,7 @@
   "name": "agent-room-wake-agent",
   "private": true,
   "version": "0.0.0",
-  "description": "Stub: local wake + CLI session resume for Agent Room thin shell. Not wired into workspaces yet.",
+  "description": "Local wake daemon: poll /api/wake and resume a Codex CLI session. Not an npm workspace.",
   "type": "module",
   "bin": {
     "agent-room-wake-agent": "./src/index.ts"

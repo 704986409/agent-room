@@ -1,32 +1,15 @@
-# wake-agent (local thin-shell wake daemon) — stub
+# wake-agent (local thin-shell wake daemon)
 
-**Status:** skeleton only. Do not run in production. Full design: [`docs/agent-room-thin-shell-wake.md`](../../docs/agent-room-thin-shell-wake.md).
-
-## Intent (P0)
-
-Local process that:
-
-1. Registers this machine’s Codex/Claude seats with the Agent Room server (seatKey + harness thread id).
-2. Receives wake notifies when the host `@`s a seat that is **not** in `room_listen`.
-3. Resumes the CLI session (`codex exec resume …` / Claude resume) or injects into a live TUI.
-4. ACKs success or NACKs so the host can see **未送达**.
-
-Room/memory/invite stay on the server. This folder is **not** an npm workspace package yet (avoids breaking `apps/*` installs).
-
-## Layout
+Linux Node daemon for Desktop wake. Outbound `POST /api/wake` only; this process does not listen on a public port.
 
 ```
-tools/wake-agent/
-  README.md          ← this file
-  package.json       ← private stub metadata only
-  src/index.ts       ← placeholder entry (prints help, exits)
+AGENT_ROOM_DEVICE_TOKEN=... node --experimental-strip-types src/index.ts serve \
+  --state ~/.local/state/agent-room/wake.json --server http://127.0.0.1:8787
 ```
 
-## Non-goals until stack is confirmed
+- Registers seats, polls, claims, renews, and reports progress. It never sends `succeeded`.
+- Codex CLI args (`codex exec` / `codex exec resume <threadId>`) are provisional until M0.
+- State file mode `0600`. It stores session id and pid, never seatKey or the device token.
+- One file lock per seat. A second process refuses the seat until the lock is released.
 
-- No tray UI, no Tauri/Electron shell, no real HTTP server, no production webhook handler.
-- No commit of secrets, seatKeys, or thread ids into room transcripts.
-
-## Next (after user picks stack)
-
-See phased plan in the design doc. Likely: Node daemon + tray (P0), Tauri webview shell (P1).
+Not an npm workspace. Tests run via `npm run test:api`. Do not point `--server` at production unless you intend to wake real seats.

@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CodexCliAdapter, type ProcessSpawner, type SpawnedProcess } from './src/adapter.js';
-import { MemoryRunLock, WakeDaemon, type WakeApi } from './src/daemon.js';
+import { FileRunLock, MemoryRunLock, WakeDaemon, type WakeApi } from './src/daemon.js';
+import { createHttpWakeApi } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { wakePrompt } from './src/prompt.js';
 import { readState, reconcileAfterRestart, writeState, type DaemonState } from './src/state.js';
@@ -167,6 +168,31 @@ describe('wake daemon', () => {
     expect(client.calls).toEqual(['poll']);
     expect(child.calls).toHaveLength(0);
     expect(daemon.seats[0]!.status).toBe('idle');
+  });
+});
+
+describe('local lock and http client', () => {
+  it('allows one holder of a seat lock', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-lock-'));
+    const lock = new FileRunLock(directory);
+    expect(await lock.tryAcquire('st_a')).toBe(true);
+    expect(await lock.tryAcquire('st_a')).toBe(false);
+    await lock.release('st_a');
+    expect(await lock.tryAcquire('st_a')).toBe(true);
+  });
+
+  it('posts wake actions with the device token and never a success status', async () => {
+    const seen: { url: string; body: { action: string; status?: string }; authorization: string }[] = [];
+    const client = createHttpWakeApi('http://127.0.0.1:9', 'device-token', async (url, init) => {
+      const body = JSON.parse(init.body) as { action: string; status?: string };
+      seen.push({ url, body, authorization: init.headers.authorization });
+      return { ok: true, status: 200, json: async () => ({ seats: [], nextPollMs: 5000, wakeRunId: 'wr', readFrom: 1, claims: [] }) };
+    });
+    await client.poll();
+    await client.progress({ claims: [{ claimId: 'cl', status: 'resume_started' }] });
+    expect(seen.every(call => call.authorization === 'Bearer device-token')).toBe(true);
+    expect(seen.map(call => call.body.action)).toEqual(['poll', 'progress']);
+    expect(JSON.stringify(seen)).not.toContain('succeeded');
   });
 });
 
