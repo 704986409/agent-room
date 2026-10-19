@@ -17,7 +17,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../../..');
 const script = resolve(here, 'create-admin.ts');
 const require = createRequire(resolve(root, 'package.json'));
-const tsx = require.resolve('tsx/dist/cli.mjs');
+// tsx does not export ./dist/cli.mjs; resolve its package.json instead.
+const tsx = resolve(dirname(require.resolve('tsx/package.json')), 'dist/cli.mjs');
 
 const child = spawn(process.execPath, [tsx, script, ...process.argv.slice(2)], {
   cwd: root,
