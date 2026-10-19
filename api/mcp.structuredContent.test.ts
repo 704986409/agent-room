@@ -344,7 +344,7 @@ describe('the rest of the tool surface returns structuredContent', () => {
 
   it('the room_webhook_register alias mirrors the registration', async () => {
     post.mockResolvedValue({ webhook: { id: 'wh_1', url: 'https://hook.test/room' } });
-    const result = await call('room_webhook_register', { code: room.code, name: 'Codex', url: 'https://hook.test/room' });
+    const result = await call('room_webhook_register', { code: room.code, name: 'Codex', seatKey: 'seat-key-fixed', url: 'https://hook.test/room' });
     expect(textOf(result)).toMatchSnapshot();
     expectMirroredJson(result);
   });
@@ -358,13 +358,13 @@ describe('the rest of the tool surface returns structuredContent', () => {
 
   it('room_webhook unregister mirrors the removal', async () => {
     post.mockResolvedValue({ removed: true });
-    const result = await call('room_webhook', { code: room.code, action: 'unregister', name: 'Codex', id: 'wh_1' });
+    const result = await call('room_webhook', { code: room.code, action: 'unregister', name: 'Codex', seatKey: 'seat-key-fixed', id: 'wh_1' });
     expect(textOf(result)).toMatchSnapshot();
     expectMirroredJson(result);
   });
 
   it('room_webhook mirrors a missing-field hint', async () => {
-    const result = await call('room_webhook', { code: room.code, action: 'register', name: 'Codex' });
+    const result = await call('room_webhook', { code: room.code, action: 'register', name: 'Codex', seatKey: 'seat-key-fixed' });
     expect(textOf(result)).toMatchSnapshot();
     expectMirroredJson(result);
     expect(post).not.toHaveBeenCalled();
