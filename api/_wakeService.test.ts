@@ -51,6 +51,47 @@ describe('device credentials', () => {
     expect(await auth.authenticate('Bearer good')).toEqual({ deviceId: 'dev-1' });
     expect(await auth.authenticate('Bearer dead')).toBeNull();
   });
+
+  it('rejects a paired credential when the device or user is inactive, and touches lastSeenAt at most once a minute', async () => {
+    const redis = new WakeTestRedis();
+    let now = 1_000_000;
+    const auth = new RedisDeviceAuthenticator(redis, () => now);
+    const token = 'ard_paired';
+    const deviceId = 'dev_aaaaaaaaaaaaaaaaaaaaaaaa';
+    const userId = 'usr_1';
+    const hash = deviceCredentialHash(token);
+    redis.values.set(`device-cred:${hash}`, JSON.stringify({ deviceId, userId }));
+    expect(await auth.authenticate(`Bearer ${token}`)).toBeNull();
+
+    const record = { deviceId, userId, name: 'laptop', platform: 'linux', createdAt: 1, lastSeenAt: now, credHash: hash };
+    redis.values.set(`device:${deviceId}`, JSON.stringify(record));
+    redis.values.set(`user:${userId}`, JSON.stringify({ id: userId, disabled: false }));
+    expect(await auth.authenticate(`Bearer ${token}`)).toEqual({ deviceId });
+    expect(JSON.parse(redis.values.get(`device:${deviceId}`)!).lastSeenAt).toBe(now);
+
+    now += 60_000;
+    expect(await auth.authenticate(`Bearer ${token}`)).toEqual({ deviceId });
+    expect(JSON.parse(redis.values.get(`device:${deviceId}`)!).lastSeenAt).toBe(now);
+
+    redis.values.set(`device:${deviceId}`, JSON.stringify({ ...record, lastSeenAt: now, revokedAt: now }));
+    expect(await auth.authenticate(`Bearer ${token}`)).toBeNull();
+
+    redis.values.set(`device:${deviceId}`, JSON.stringify({ ...record, lastSeenAt: now }));
+    redis.values.set(`user:${userId}`, JSON.stringify({ id: userId, disabled: true }));
+    expect(await auth.authenticate(`Bearer ${token}`)).toBeNull();
+
+    redis.values.set(`user:${userId}`, JSON.stringify({ id: userId, disabled: false }));
+    now += 60_000;
+    const flaky = {
+      async command<T>(command: readonly (string | number)[]): Promise<T> {
+        if (String(command[0]).toUpperCase() === 'SET') throw new Error('write failed');
+        return redis.command(command);
+      },
+    };
+    const shaky = new RedisDeviceAuthenticator(flaky, () => now);
+    expect(await shaky.authenticate(`Bearer ${token}`)).toEqual({ deviceId });
+    expect(JSON.parse(redis.values.get(`device:${deviceId}`)!).lastSeenAt).toBe(now - 60_000);
+  });
 });
 
 describe('POST /api/wake', () => {

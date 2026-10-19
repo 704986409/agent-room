@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
+import { listUserDevices } from './_devices.js';
 import { MemoryRedis } from './_memoryRedis.js';
 import {
   INVALID_LOGIN_MESSAGE,
@@ -12,7 +13,6 @@ import {
   hashToken,
   hasAdmin,
   listSessions,
-  listUserDevices,
   login,
   readSession,
   resetUserPassword,
@@ -134,7 +134,7 @@ describe('accounts', () => {
     await setUserDisabled(redis, user.id, true);
     expect(await readSession(redis, token)).toBeNull();
     expect(await redis.command(['GET', 'device:dev_1'])).toBeNull();
-    expect(await listUserDevices()).toEqual([]);
+    expect(await listUserDevices(redis, user.id)).toEqual([]);
     await expect(login(redis, { username: 'Ada', password: PASSWORD, ip: '8.8.8.8', ua: '' }))
       .rejects.toMatchObject({ status: 401, message: INVALID_LOGIN_MESSAGE });
   });

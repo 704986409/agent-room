@@ -2,6 +2,7 @@
 // talks to Redis REST; tests must not touch the machine's Redis.
 
 import type { UpstashClient } from '@agent-room/upstash-client';
+import { POLL_SNAPSHOT_SCRIPT } from './_wakeBind.js';
 
 type Entry = { value: string };
 
@@ -29,6 +30,13 @@ export class MemoryRedis implements UpstashClient {
         return 'PONG';
       case 'GET':
         return key ? (this.kv.get(key)?.value ?? null) : null;
+      case 'GETDEL': {
+        if (!key) return null;
+        const value = this.kv.get(key)?.value ?? null;
+        this.kv.delete(key);
+        this.expiry.delete(key);
+        return value;
+      }
       case 'MGET':
         return cmd.slice(1).map(item => {
           this.purge(item);
@@ -119,6 +127,15 @@ export class MemoryRedis implements UpstashClient {
     }
   }
 
+  /** Every stored key and string, for tests that forbid raw secrets in Redis. */
+  dumpStrings(): string[] {
+    const out: string[] = [];
+    for (const [key, entry] of this.kv) out.push(key, entry.value);
+    for (const [key, members] of this.sets) out.push(key, ...members);
+    for (const [key, items] of this.lists) out.push(key, ...items);
+    return out;
+  }
+
   private set(cmd: string[]): string | null {
     const key = cmd[1];
     if (!key) return null;
@@ -178,8 +195,9 @@ export class MemoryRedis implements UpstashClient {
     return this.kv.has(key) || this.sets.has(key) || this.lists.has(key);
   }
 
-  private eval(cmd: string[]): number {
+  private eval(cmd: string[]): unknown {
     const script = cmd[1] ?? '';
+    if (script === POLL_SNAPSHOT_SCRIPT) return this.pollSnapshot(cmd[3] ?? '');
     if (script.includes('AR11 listen-presence CAS')) {
       const key = cmd[3] ?? '';
       const expected = cmd[4] ?? '';
@@ -192,6 +210,33 @@ export class MemoryRedis implements UpstashClient {
       return 1;
     }
     throw new Error('MemoryRedis EVAL is only implemented for presence CAS');
+  }
+
+  private pollSnapshot(deviceKey: string): unknown[][] {
+    this.purge(deviceKey);
+    const ids = [...(this.sets.get(deviceKey) ?? [])];
+    return ids.map(id => {
+      const bind = this.readRaw(`wake-bind:${id}`) ?? false;
+      const meta = this.readRaw(`wake-meta:${id}`);
+      let count: string | false = false;
+      let scan: string | false = false;
+      let events = 0;
+      const match = meta ? /^(\S+)\t(\S+)$/.exec(meta) : null;
+      if (match) {
+        const code = match[1]!;
+        const roomInstance = match[2]!;
+        count = this.readRaw(`room-msg-count:${code}`) ?? false;
+        scan = this.readRaw(`wake-scan:${roomInstance}:${id}`) ?? false;
+        this.purge(`wake-seat:${roomInstance}:${id}`);
+        events = this.sets.get(`wake-seat:${roomInstance}:${id}`)?.size ?? 0;
+      }
+      return [id, bind, count, scan, events];
+    });
+  }
+
+  private readRaw(key: string): string | null {
+    this.purge(key);
+    return this.kv.get(key)?.value ?? null;
   }
 
   private purge(key: string): void {

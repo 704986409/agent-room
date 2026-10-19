@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { UpstashClient } from '@agent-room/upstash-client';
+import { authorizeStoredDevice } from './_devices.js';
 
 /** Device identity accepted by /api/wake. Pairing (M6) is the only issuer. */
 export interface DevicePrincipal {
@@ -37,23 +38,34 @@ export class MapDeviceAuthenticator implements DeviceAuthenticator {
 }
 
 /**
- * Reads device-cred:{sha256(token)} written by a future pairing flow.
- * Value is a deviceId string, or JSON { deviceId, revoked? }. Missing and
- * revoked credentials authenticate as null.
+ * Reads device-cred:{sha256(token)}.
+ * Legacy tests may store a plain deviceId, or JSON { deviceId, revoked? } without userId.
+ * Pairing stores JSON { deviceId, userId } and also requires a live device and user.
  */
 export class RedisDeviceAuthenticator implements DeviceAuthenticator {
-  constructor(private readonly client: Pick<UpstashClient, 'command'>) {}
+  constructor(
+    private readonly client: Pick<UpstashClient, 'command'>,
+    private readonly now: () => number = Date.now,
+  ) {}
   async authenticate(authorization: string | undefined): Promise<DevicePrincipal | null> {
     const token = bearerToken(authorization);
     if (!token) return null;
     const raw = await this.client.command<string | null>(['GET', `device-cred:${deviceCredentialHash(token)}`]);
     if (!raw) return null;
-    let deviceId = raw;
-    if (raw.startsWith('{')) {
-      const parsed = JSON.parse(raw) as { deviceId?: string; revoked?: boolean };
-      if (parsed.revoked) return null;
-      deviceId = parsed.deviceId ?? '';
+    if (!raw.startsWith('{')) {
+      return /^[\w.-]{1,128}$/.test(raw) ? { deviceId: raw } : null;
     }
-    return /^[\w.-]{1,128}$/.test(deviceId) ? { deviceId } : null;
+    let parsed: { deviceId?: string; userId?: string; revoked?: boolean };
+    try {
+      parsed = JSON.parse(raw) as { deviceId?: string; userId?: string; revoked?: boolean };
+    } catch {
+      return null;
+    }
+    if (parsed.revoked) return null;
+    const deviceId = parsed.deviceId ?? '';
+    if (!/^[\w.-]{1,128}$/.test(deviceId)) return null;
+    if (typeof parsed.userId !== 'string' || !parsed.userId) return { deviceId };
+    const ok = await authorizeStoredDevice(this.client, deviceId, parsed.userId, deviceCredentialHash(token), this.now());
+    return ok ? { deviceId } : null;
   }
 }

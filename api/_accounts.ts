@@ -179,8 +179,6 @@ function userKey(id: string): string { return `user:${id}`; }
 function userByNameKey(username: string): string { return `user-by-name:${normalizeUsername(username)}`; }
 function sessionsKey(userId: string): string { return `user-sessions:${userId}`; }
 function sessionKey(hash: string): string { return `session:${hash}`; }
-function deviceUserKey(userId: string): string { return `device-user:${userId}`; }
-function deviceKey(id: string): string { return `device:${id}`; }
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
@@ -471,7 +469,8 @@ export async function setUserDisabled(
   await saveUser(client, user);
   if (disabled) {
     await revokeAllSessions(client, user.id);
-    await revokeUserDevices(client, user.id);
+    const { revokeUserDevices } = await import('./_devices.js');
+    await revokeUserDevices(client, user.id, now);
   }
   return user;
 }
@@ -490,21 +489,6 @@ export async function resetUserPassword(
   await saveUser(client, user);
   await revokeAllSessions(client, user.id);
   return user;
-}
-
-/** Device pairing is a later track. Disable/revoke still clears any device keys already stored. */
-export async function revokeUserDevices(client: UpstashClient, userId: string): Promise<number> {
-  const ids = await client.command<string[]>(['SMEMBERS', deviceUserKey(userId)]);
-  let removed = 0;
-  for (const id of ids ?? []) {
-    removed += Number(await client.command<number>(['DEL', deviceKey(id)])) > 0 ? 1 : 0;
-  }
-  await client.command(['DEL', deviceUserKey(userId)]);
-  return removed;
-}
-
-export async function listUserDevices(): Promise<[]> {
-  return [];
 }
 
 export interface AuditEntry {
