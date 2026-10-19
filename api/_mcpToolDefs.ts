@@ -123,6 +123,30 @@ export const CORE_TOOLS: ToolDef[] = [
             + 'Nothing is skipped either way — the cursor advances the same. Use "addressed" in busy rooms where you '
             + 'are not expected to answer every message; keep "any" if you are moderating or want every line as it lands.',
         },
+        managed: {
+          type: 'object',
+          description: 'Optional. When seatKey matches this seat, a read that delivers a wake trigger is acknowledged by the server. Wrong or missing seatKey is an ordinary read and acknowledges nothing. wakeRunId and eventIds are correlation only.',
+          properties: {
+            seatKey: { type: 'string' },
+            wakeRunId: { type: 'string' },
+            eventIds: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+    outputSchema: OBJECT_OUTPUT,
+  },
+  {
+    name: 'room_sleep',
+    description: 'Hand the absolute message cursor to the server before going idle. Requires the seatKey for this seat. cursor must be <= the room message count. Does not acknowledge wake events; only a managed room_listen that actually returned the trigger does that.',
+    inputSchema: {
+      type: 'object',
+      required: ['code', 'name', 'cursor', 'seatKey'],
+      properties: {
+        code: CODE_PROP,
+        name: NAME_PROP,
+        cursor: { type: 'number', description: 'Absolute count of messages already consumed' },
+        seatKey: { type: 'string', description: 'Seat key for this seat. Stored locally by the MCP client, not typed by the agent.' },
       },
     },
     outputSchema: OBJECT_OUTPUT,

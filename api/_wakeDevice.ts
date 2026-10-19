@@ -1,0 +1,59 @@
+import { createHash } from 'node:crypto';
+import type { UpstashClient } from '@agent-room/upstash-client';
+
+/** Device identity accepted by /api/wake. Pairing (M6) is the only issuer. */
+export interface DevicePrincipal {
+  deviceId: string;
+}
+
+/**
+ * Pluggable device-credential check. M6 stores only a hash under device-cred:*;
+ * until then callers inject a map or the Redis lookup below. Neither
+ * implementation mints credentials.
+ */
+export interface DeviceAuthenticator {
+  authenticate(authorization: string | undefined): Promise<DevicePrincipal | null>;
+}
+
+export function bearerToken(authorization: string | undefined): string | null {
+  if (!authorization) return null;
+  const match = /^Bearer\s+(\S+)$/i.exec(authorization.trim());
+  return match?.[1] ?? null;
+}
+
+export function deviceCredentialHash(token: string): string {
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+/** In-memory credential map for tests and local stubs. Unknown tokens are rejected. */
+export class MapDeviceAuthenticator implements DeviceAuthenticator {
+  constructor(private readonly tokens: ReadonlyMap<string, string>) {}
+  async authenticate(authorization: string | undefined): Promise<DevicePrincipal | null> {
+    const token = bearerToken(authorization);
+    if (!token) return null;
+    const deviceId = this.tokens.get(token);
+    return deviceId && /^[\w.-]{1,128}$/.test(deviceId) ? { deviceId } : null;
+  }
+}
+
+/**
+ * Reads device-cred:{sha256(token)} written by a future pairing flow.
+ * Value is a deviceId string, or JSON { deviceId, revoked? }. Missing and
+ * revoked credentials authenticate as null.
+ */
+export class RedisDeviceAuthenticator implements DeviceAuthenticator {
+  constructor(private readonly client: Pick<UpstashClient, 'command'>) {}
+  async authenticate(authorization: string | undefined): Promise<DevicePrincipal | null> {
+    const token = bearerToken(authorization);
+    if (!token) return null;
+    const raw = await this.client.command<string | null>(['GET', `device-cred:${deviceCredentialHash(token)}`]);
+    if (!raw) return null;
+    let deviceId = raw;
+    if (raw.startsWith('{')) {
+      const parsed = JSON.parse(raw) as { deviceId?: string; revoked?: boolean };
+      if (parsed.revoked) return null;
+      deviceId = parsed.deviceId ?? '';
+    }
+    return /^[\w.-]{1,128}$/.test(deviceId) ? { deviceId } : null;
+  }
+}

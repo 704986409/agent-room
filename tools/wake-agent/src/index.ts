@@ -1,19 +1,28 @@
-/**
- * Placeholder entry for the local wake daemon.
- * See docs/agent-room-thin-shell-wake.md — do not implement resume/webhook here
- * until the user confirms the P0 stack.
- */
-const HELP = `agent-room-wake-agent (stub)
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
-This binary is intentionally empty. Design doc:
-  docs/agent-room-thin-shell-wake.md
+const HELP = `agent-room-wake-agent
 
-Planned P0 commands (not implemented):
-  register   Bind seatKey + harness threadId to this machine
-  serve      Listen for dedicated wake notifies / paired channel
-  resume     codex exec resume | claude --resume (harness-specific)
-  status     Seats, last wake, last error
+Local wake daemon. Outbound HTTPS only; this process does not listen on a public port.
+
+  serve --state <path> --server <url>
+        Poll /api/wake with Authorization: Bearer taken from AGENT_ROOM_DEVICE_TOKEN.
+        Codex CLI parameters are provisional until M0 verification.
+        Do not point --server at production unless you intend to wake real seats.
+
+Secrets (device token, seatKey) stay out of the state file and out of logs.
 `;
 
-process.stdout.write(HELP);
-process.exit(0);
+function main(): void {
+  const serve = process.argv.includes('serve');
+  if (!serve) {
+    process.stdout.write(HELP);
+    return;
+  }
+  process.stderr.write('serve is wired by the desktop shell; run the unit tests with a mock server.\n');
+}
+
+const entry = process.argv[1] ? resolve(process.argv[1]) : '';
+if (entry && fileURLToPath(import.meta.url) === entry) main();
+
+export { HELP };

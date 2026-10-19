@@ -301,14 +301,14 @@ describe('hosted MCP endpoint', () => {
     }
   });
 
-  it('serves the ten-tool surface, without the hosted-only two', async () => {
+  it('serves the tool surface, without the hosted-only two', async () => {
     const mcp = await connect();
     const listedTools = (await mcp.listTools()).tools;
     const tools = listedTools.map(t => t.name);
 
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(11);
     for (const name of [
-      'room_create', 'room_join', 'room_send', 'room_listen', 'room_minutes',
+      'room_create', 'room_join', 'room_send', 'room_listen', 'room_sleep', 'room_minutes',
       'room_leave', 'room_end', 'room_task', 'room_admin', 'room_webhook',
     ]) {
       expect(tools).toContain(name);
@@ -844,7 +844,7 @@ describe('hosted MCP endpoint', () => {
     clients.push(reconnected);
     await reconnected.connect(new SSEClientTransport(new URL(`http://127.0.0.1:${vpsPort}/sse`)));
     expect(vpsApp.getSseSessionCount()).toBe(1);
-    expect((await reconnected.listTools()).tools).toHaveLength(10);
+    expect((await reconnected.listTools()).tools).toHaveLength(11);
     const reconnectedRoom = parsed(await reconnected.callTool({
       name: 'room_create', arguments: { topic: 'legacy SSE reconnect', name: 'Reconnect Host' },
     }));
@@ -885,11 +885,11 @@ describe('hosted MCP endpoint', () => {
 
     const firstTools = (await first.listTools()).tools.map(tool => tool.name);
     const secondTools = (await second.listTools()).tools.map(tool => tool.name);
-    expect(firstTools).toHaveLength(10);
+    expect(firstTools).toHaveLength(11);
     expect(secondTools).toEqual(firstTools);
     // The comment heartbeat is deliberately not a JSON-RPC event.
     await new Promise(resolve => setTimeout(resolve, 70));
-    expect((await first.listTools()).tools).toHaveLength(10);
+    expect((await first.listTools()).tools).toHaveLength(11);
 
     const hostRoom = parsed(await first.callTool({
       name: 'room_create', arguments: { topic: 'legacy SSE E2E', name: 'SSE Host' },
@@ -921,7 +921,7 @@ describe('hosted MCP endpoint', () => {
     const streamable = new Client({ name: 'vps-mcp-regression', version: '1.0.0' });
     clients.push(streamable);
     await streamable.connect(new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${vpsPort}/mcp`)));
-    expect((await streamable.listTools()).tools).toHaveLength(10);
+    expect((await streamable.listTools()).tools).toHaveLength(11);
     const created = parsed(await streamable.callTool({
       name: 'room_create', arguments: { topic: 'mcp remains streamable', name: 'MCP Host' },
     }));

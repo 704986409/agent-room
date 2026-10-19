@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, Room } from '@agent-room/shared';
 import { MAX_MESSAGES_PER_ROOM, ROOM_TTL_SECONDS } from '@agent-room/shared';
-import { appendSystemMessage, createClient, appendMessage, listMessages, NotApprovedError, NotParticipantError, NotYourTurnError } from '../src/index.js';
+import { appendSystemMessage, createClient, appendMessage, listMessages, NotApprovedError, NotParticipantError, NotYourTurnError, setMessageCommittedHook } from '../src/index.js';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
 function mockResp(body: unknown) { return new Response(JSON.stringify(body)); }
@@ -76,6 +76,25 @@ describe('appendMessage', () => {
     expect(cmds[4][1]).toBe('room-msg-count:ABC-DEF-GHJ');
     expect(cmds[4][2]).toBe(expectedExpireAt);
     expect(cmds[4][3]).toBe('LT');
+  });
+
+  it('invokes the committed-message hook with the absolute index and ignores hook failures', async () => {
+    const seen: { code: string; index: number }[] = [];
+    setMessageCommittedHook(event => {
+      seen.push({ code: event.code, index: event.index });
+      throw new Error('hook down');
+    });
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(APPROVED_ROOM) }))
+      .mockResolvedValueOnce(mockResp([
+        { result: 1 }, { result: 8 }, { result: 'OK' }, { result: 1 }, { result: 1 },
+      ])));
+    try {
+      await expect(appendMessage(createClient(ENV), 'ABC-DEF-GHJ', MSG)).resolves.toMatchObject({ appended: true });
+      expect(seen).toEqual([{ code: 'ABC-DEF-GHJ', index: 7 }]);
+    } finally {
+      setMessageCommittedHook(undefined);
+    }
   });
 
   it('refuses writes when the room retention deadline has passed', async () => {

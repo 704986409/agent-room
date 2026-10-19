@@ -24,6 +24,21 @@ import {
 } from './turnState.js';
 
 function msgsKey(code: string): string { return `room-msgs:${code}`; }
+
+/** Absolute index of a message that has just been committed to room-msgs. */
+export interface CommittedMessage {
+  code: string;
+  index: number;
+  message: Message;
+}
+
+type MessageCommittedHook = (event: CommittedMessage) => Promise<void> | void;
+let messageCommittedHook: MessageCommittedHook | undefined;
+
+/** Server send paths install this. A hook failure must not fail the already committed write. */
+export function setMessageCommittedHook(hook: MessageCommittedHook | undefined): void {
+  messageCommittedHook = hook;
+}
 // Tracks the absolute count of messages ever appended to this room. Used by
 // listMessages to translate an agent's logical cursor (= "I've consumed N
 // messages so far") into the right LRANGE start position even after LTRIM has
@@ -354,13 +369,17 @@ async function rpushMessage(
   // Every append path (chat, status ping, system event) funnels through here,
   // so a message can never reach the list with an unusable `text` or `time`.
   const safe = normalizeMessageForWrite(message);
-  await client.pipeline([
+  const results = await client.pipeline<unknown>([
     ['RPUSH', msgsKey(code), JSON.stringify(safe)],
     ['INCR', msgCountKey(code)],
     ['LTRIM', msgsKey(code), -MAX_MESSAGES_PER_ROOM, -1],
     ['EXPIREAT', msgsKey(code), expireAt, 'LT'],
     ['EXPIREAT', msgCountKey(code), expireAt, 'LT'],
   ]);
+  const total = Number(results[1]);
+  if (messageCommittedHook && Number.isSafeInteger(total) && total > 0) {
+    await Promise.resolve(messageCommittedHook({ code, index: total - 1, message: safe })).catch(() => {});
+  }
 }
 
 // Append a server-originated system message. Bypasses the speaker/mute/turn

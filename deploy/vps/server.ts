@@ -28,6 +28,9 @@ import reportPageHandler from '../../api/report-page.js';
 import roomHandler from '../../api/room.js';
 import sttHandler from '../../api/stt.js';
 import uploadHandler from '../../api/upload.js';
+import wakeHandler from '../../api/wake.js';
+import { installWakeSendHook } from '../../api/_wakeSend.js';
+import { startWakePatrol } from '../../api/_wakeService.js';
 
 const HOST = process.env.HOST?.trim() || '0.0.0.0';
 const WEB_ROOT = resolve(process.env.WEB_ROOT?.trim() || resolve(process.cwd(), 'apps/web/dist'));
@@ -74,6 +77,7 @@ const API_HANDLERS: Readonly<Record<string, VercelApiHandler>> = {
   room: roomHandler,
   stt: sttHandler,
   upload: uploadHandler,
+  wake: wakeHandler,
 };
 
 const REDIS_COMMANDS = new Set([
@@ -728,10 +732,17 @@ export function createVpsApp(options: VpsServerOptions = {}): VpsApp {
 function startServer(): void {
   const app = createVpsApp();
   const port = parsePort(process.env.PORT);
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.VITE_UPSTASH_REDIS_REST_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.VITE_UPSTASH_REDIS_REST_TOKEN;
+  const patrol = url && token ? startWakePatrol(createClient({ url, token })) : undefined;
+  if (url && token) installWakeSendHook(createClient({ url, token }));
   app.server.listen(port, HOST, () => {
     process.stdout.write(`Agent Room listening on ${HOST}:${port}\n`);
   });
-  const close = () => { void app.close().catch(() => { process.exitCode = 1; }); };
+  const close = () => {
+    patrol?.stop();
+    void app.close().catch(() => { process.exitCode = 1; });
+  };
   process.once('SIGTERM', close);
   process.once('SIGINT', close);
 }

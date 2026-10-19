@@ -1,4 +1,5 @@
 // In-memory command model for wake tests. Never connects to Redis or external APIs.
+import { POLL_SNAPSHOT_SCRIPT, ROOM_REPLACE_SCRIPT } from './_wakeBind.js';
 import { CREATE_EVENT_SCRIPT, EVENT_CAS_SCRIPT, SCAN_CAS_SCRIPT, HANDOFF_SCRIPT, LISTEN_EPOCH_SCRIPT, MESSAGE_SNAPSHOT_SCRIPT } from './_wakeRedis.js';
 export class WakeTestRedis {
   readonly values = new Map<string, string>();
@@ -14,6 +15,11 @@ export class WakeTestRedis {
     this.commands.push(command);
     return this.execute(command) as T;
   }
+  async pipeline<T>(commands: readonly (readonly (string | number)[])[]): Promise<T[]> {
+    const results: T[] = [];
+    for (const command of commands) results.push(await this.command<T>(command));
+    return results;
+  }
   private get(key: string): string | null {
     if ((this.expires.get(key) ?? Infinity) <= this.now) {
       this.values.delete(key); this.sets.delete(key); this.expires.delete(key);
@@ -28,6 +34,61 @@ export class WakeTestRedis {
     const [name, key] = command.map(String);
     if (name === 'GET') return this.get(key!);
     if (name === 'SMEMBERS') { this.get(key!); return [...(this.sets.get(key!) ?? [])]; }
+    if (name === 'SADD') {
+      const members = this.sets.get(key!) ?? new Set<string>();
+      for (const member of command.slice(2).map(String)) members.add(member);
+      this.sets.set(key!, members);
+      return members.size;
+    }
+    if (name === 'SREM') {
+      const members = this.sets.get(key!);
+      if (!members) return 0;
+      let removed = 0;
+      for (const member of command.slice(2).map(String)) if (members.delete(member)) removed += 1;
+      return removed;
+    }
+    if (name === 'DEL') {
+      let removed = 0;
+      for (const item of command.slice(1).map(String)) {
+        const had = this.values.delete(item);
+        const hadSet = this.sets.delete(item);
+        const hadList = this.lists.delete(item);
+        this.expires.delete(item);
+        if (had || hadSet || hadList) removed += 1;
+      }
+      return removed;
+    }
+    if (name === 'MGET') return command.slice(1).map(item => this.get(String(item)));
+    if (name === 'LLEN') return (this.lists.get(key!) ?? []).length;
+    if (name === 'LRANGE') {
+      const list = this.lists.get(key!) ?? [];
+      const start = Number(command[2]);
+      const end = Number(command[3]);
+      const from = start < 0 ? Math.max(0, list.length + start) : start;
+      const to = end < 0 ? list.length + end : end;
+      return list.slice(from, to + 1);
+    }
+    if (name === 'RPUSH') {
+      const list = this.lists.get(key!) ?? [];
+      list.push(String(command[2]));
+      this.lists.set(key!, list);
+      return list.length;
+    }
+    if (name === 'INCR') {
+      const next = Number(this.get(key!) ?? 0) + 1;
+      this.put(key!, String(next));
+      return next;
+    }
+    if (name === 'LTRIM') {
+      const list = this.lists.get(key!) ?? [];
+      const start = Number(command[2]);
+      const end = Number(command[3]);
+      const from = start < 0 ? Math.max(0, list.length + start) : start;
+      const to = end < 0 ? list.length + end : end;
+      this.lists.set(key!, list.slice(from, to + 1));
+      return 'OK';
+    }
+    if (name === 'EXPIRE' || name === 'EXPIREAT') return 1;
     if (name === 'SET') {
       if (command.includes('NX') && this.get(key!) !== null) return null;
       const expiryAt = command.indexOf('PXAT');
@@ -81,6 +142,22 @@ export class WakeTestRedis {
       if (this.get(first) !== a) return 0;
       const epoch = Number(this.get(second) ?? 0) + 1;
       this.put(second, String(epoch), Number(b)); return epoch;
+    }
+    if (script === POLL_SNAPSHOT_SCRIPT) {
+      const ids = [...(this.sets.get(first) ?? [])];
+      return ids.map(id => {
+        const bind = this.get(`wake-bind:${id}`);
+        const meta = this.get(`wake-meta:${id}`);
+        const match = meta?.match(/^(\S+)\t(\S+)$/);
+        const count = match ? this.get(`room-msg-count:${match[1]}`) : null;
+        const scan = match ? this.get(`wake-scan:${match[2]}:${id}`) : null;
+        return [id, bind ?? false, count ?? false, scan ?? false];
+      });
+    }
+    if (script === ROOM_REPLACE_SCRIPT) {
+      if (this.get(first) !== a) return 0;
+      this.put(first, b!);
+      return 1;
     }
     throw new Error('Unknown wake script');
   }
