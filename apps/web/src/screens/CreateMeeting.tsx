@@ -48,6 +48,9 @@ export function CreateMeeting() {
       const code = created.code;
       sessionStorage.setItem(`room:${code}:self`, JSON.stringify({ name: created.name, role: role.trim() }));
       localStorage.setItem(`room:${code}:hostKey`, created.hostKey);
+      // Seed the lobby so it can render instantly from the create response
+      // instead of waiting on a redundant join + first proxy read.
+      sessionStorage.setItem(`room:${code}:created`, JSON.stringify({ topic: created.topic, name: created.name, role: created.role, at: Date.now() }));
       // Stash the chosen template so Lobby (and the room itself) can post the
       // opening message + show suggested roles. We use sessionStorage and not
       // a route param so re-opens or refreshes don't re-trigger the opener.

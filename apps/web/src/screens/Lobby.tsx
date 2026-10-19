@@ -8,6 +8,7 @@ import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { roomApi } from '../lib/roomWrites.js';
 import { copyText } from '../lib/copy.js';
+import { CopyInviteButton } from '../components/CopyInviteButton.js';
 import { templateById, localizedRoleLabel, localizedTemplate } from '../lib/templates.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
@@ -17,7 +18,7 @@ export function Lobby() {
   useDocumentTitle(t('lobby.title'));
   const { code = '' } = useParams();
   const navigate = useNavigate();
-  const [room, setRoom] = useState<Room | null>(null);
+  const [room, setRoom] = useState<Room | null>(() => seedRoomFromCreate(code));
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -29,10 +30,14 @@ export function Lobby() {
 
     async function ensureJoined() {
       try {
-        if (self && !cancelled) {
-          await roomApi.join({ code, role: self.role });
+        // Just-created rooms already contain the host; skip the redundant join.
+        const justCreated = sessionStorage.getItem(`room:${code}:created`) !== null;
+        if (self && !justCreated && !cancelled) {
+          // Read in parallel with the join so the first paint isn't serialized.
+          await Promise.all([roomApi.join({ code, role: self.role }), refresh()]);
         }
         await refresh();
+        sessionStorage.removeItem(`room:${code}:created`);
       } catch (e) {
         if (cancelled) return;
         setErr(e instanceof RoomNotFoundError ? 'Room not found' : String(e));
@@ -84,14 +89,10 @@ export function Lobby() {
   if (!room) return <>{header}<div className="p-10 text-ink-soft">{t('common.loading')}</div></>;
   const current = room;
 
-  async function copyHumanInvite() {
-    try {
-      const invite = await roomApi.createInvite({ code });
-      const url = `${window.location.origin}/i/${invite.token}`;
-      await copyText(t('room.inviteText', { topic: current.topic, code, url }), t('lobby.inviteCopied'));
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    }
+  async function inviteText() {
+    const invite = await roomApi.createInvite({ code });
+    const url = `${window.location.origin}/i/${invite.token}`;
+    return t('room.inviteText', { topic: current.topic, code, url });
   }
   const rawTemplate = templateById(sessionStorage.getItem(`room:pending-template:${code}`));
   const template = rawTemplate ? localizedTemplate(rawTemplate, locale) : undefined;
@@ -110,10 +111,14 @@ export function Lobby() {
           className="absolute top-2.5 right-2.5 bg-surface border border-border w-7 h-7 rounded-md text-ink-soft text-xs">⎘</button>
       </div>
 
-      <button onClick={() => { void copyHumanInvite(); }}
-        className="w-full mb-4 bg-accent-tint text-accent border border-accent/20 py-2 rounded-lg text-xs font-semibold">
-        {t('lobby.copyInviteLink')}
-      </button>
+      <div className="mb-4">
+        <CopyInviteButton
+          label={t('lobby.copyInviteLink')}
+          successMsg={t('lobby.inviteCopied')}
+          getText={inviteText}
+          className="w-full bg-accent-tint text-accent border border-accent/20 py-2 rounded-lg text-xs font-semibold disabled:opacity-60"
+        />
+      </div>
 
       {template && template.suggestedRoleIds.length > 0 && (
         <div className="mb-6 rounded-lg border border-accent-tint-border bg-accent-tint/40 p-3">
@@ -157,4 +162,22 @@ export function Lobby() {
       </div>
     </>
   );
+}
+
+/** Minimal Room built from the create response (stashed by CreateMeeting) so
+ *  the lobby paints immediately; the first proxy read replaces it. */
+function seedRoomFromCreate(code: string): Room | null {
+  try {
+    const raw = sessionStorage.getItem(`room:${code}:created`);
+    if (!raw) return null;
+    const c = JSON.parse(raw) as { topic: string; name: string; role: string; at: number };
+    if (!c?.name || Date.now() - c.at > 5 * 60_000) return null;
+    const initials = c.name.replace(/\s+/g, '').slice(0, 2).toUpperCase() || '?';
+    return {
+      code, topic: c.topic, createdAt: c.at, createdBy: c.name, status: 'active', version: 0,
+      participants: [{ name: c.name, role: c.role ?? '', color: '#6366f1', initials, client: 'web', joinedAt: c.at, lastSeenAt: c.at }],
+    } as unknown as Room;
+  } catch {
+    return null;
+  }
 }
