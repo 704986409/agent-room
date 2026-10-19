@@ -20,9 +20,10 @@ import { SpeakBlockedNotice } from '../components/SpeakBlockedNotice.js';
 import { Composer, TEXTAREA_MAX_HEIGHT, TEXTAREA_MIN_HEIGHT } from '../components/Composer.js';
 import { sendVoiceTranscript, useRoomSend } from './room/useRoomSend.js';
 import { colorForName, initialsFor } from '../lib/colors.js';
-import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type Participant, type ReplyMode, type ReplyModeConfig, type Room, type SystemEventType } from '@agent-room/shared';
-import { appendSystemMessage, directInvoke, getTurnState, hostSkipCurrent, setMuted, setReplyMode, createClient, createRoomReport, endRoom as endRoomApi, reactivateRoom as reactivateRoomApi, removeParticipant, runDeliverSweep, startDeliverPlanAndWake, type TurnState } from '@agent-room/upstash-client';
+import { participantPresenceStatus, activeDeliverPlan, extractArtifacts, webSpeakGate, type Message, type Participant, type ReplyMode, type ReplyModeConfig, type Room } from '@agent-room/shared';
+import { createClient, getTurnState, type TurnState } from '@agent-room/upstash-client';
 import { ENV } from '../env.js';
+import { roomApi } from '../lib/roomWrites.js';
 import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
 import { deleteRoomBlobs } from '../lib/upload.js';
@@ -50,9 +51,19 @@ export function Room() {
   // someone forwarded after pruning the path), we redirect to /j/CODE
   // below. We previously "recovered" by becoming room.createdBy, which
   // silently impersonated the host for any unknown visitor.
-  const [self, _setSelf] = useState<SelfIdentity | null>(() => readStoredSelf(code));
+  const [self, setSelf] = useState<SelfIdentity | null>(() => readStoredSelf(code));
   useEffect(() => {
-    if (!self) navigate(`/j/${code}`, { replace: true });
+    if (self) return;
+    let cancelled = false;
+    roomApi.whoami(code).then(actor => {
+      if (cancelled) return;
+      const next = { name: actor.name, role: '' };
+      sessionStorage.setItem(`room:${code}:self`, JSON.stringify(next));
+      setSelf(next);
+    }).catch(() => {
+      if (!cancelled) navigate(`/j/${code}`, { replace: true });
+    });
+    return () => { cancelled = true; };
   }, [self, code, navigate]);
   const { room, messages, error, sendMessage, refreshRoom, forceRefresh } = useRoom(code, self?.name ?? '');
   useDocumentTitle(t('page.roomTitle', { topic: room?.topic ?? t('common.loading') }));
@@ -82,8 +93,13 @@ export function Room() {
     return () => clearInterval(interval);
   }, []);
 
-  // --- Share ---
-  const joinUrl = `${window.location.origin}/j/${code}`;
+  useEffect(() => {
+    if (!self) return;
+    const handle = setTimeout(() => {
+      void roomApi.typing({ code, active: text.trim().length > 0 }).catch(() => {});
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [text, code, self]);
 
   // --- Voice playback for AI (cc) messages ---
   // Robin's product ask: "I want voice auto-play in the meeting room."
@@ -393,8 +409,7 @@ export function Room() {
     if (!room || !self || room.createdBy !== self.name) return;
     const wantMuted = p.canSpeak !== false; // currently can speak → going to mute
     try {
-      const client = createClient(ENV.upstash);
-      await setMuted(client, code, self.name, p.name, p.client, wantMuted);
+      await roomApi.host({ code, op: 'mute', name: p.name, client: p.client, muted: wantMuted });
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
@@ -411,8 +426,7 @@ export function Room() {
     const clientLabel = t(p.client === 'web' ? 'room.browser' : 'room.cli');
     if (!confirm(t('room.removeParticipantConfirm', { name: p.name, client: clientLabel }))) return;
     try {
-      const client = createClient(ENV.upstash);
-      await removeParticipant(client, code, self.name, p.name, p.client);
+      await roomApi.host({ code, op: 'remove', name: p.name, client: p.client });
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
@@ -422,8 +436,7 @@ export function Room() {
 
   async function handleEndMeeting() {
     try {
-      const client = createClient(ENV.upstash);
-      await endRoomApi(client, code);
+      await roomApi.host({ code, op: 'end' });
       setEnded(true);
       setShowIdlePrompt(false);
       if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
@@ -465,8 +478,7 @@ export function Room() {
     if (!room) return;
     setReportBusy(true);
     try {
-      const client = createClient(ENV.upstash);
-      await createRoomReport(client, room, messages);
+      await roomApi.host({ code, op: 'report' });
       // A1: copy the share link to clipboard alongside navigating.
       // The report key has a seven-day TTL measured from export (see
       // packages/upstash-client/src/reports.ts), so it can outlive the room's
@@ -498,8 +510,7 @@ export function Room() {
     : null;
   useEffect(() => {
     if (!deliverSweepRoom) return;
-    const client = createClient(ENV.upstash);
-    const tick = () => { void runDeliverSweep(client, code, deliverSweepRoom).catch(() => { /* best-effort */ }); };
+    const tick = () => { void roomApi.deliver({ code, op: 'sweep' }).catch(() => { /* best-effort */ }); };
     tick();
     const timer = setInterval(tick, 30_000);
     return () => clearInterval(timer);
@@ -508,7 +519,7 @@ export function Room() {
   async function startDeliverPlan() {
     if (!room) return;
     try {
-      await startDeliverPlanAndWake(createClient(ENV.upstash), code, room.createdBy);
+      await roomApi.deliver({ code, op: 'start' });
       await taskBoard.reload();
       await forceRefresh();
     } catch (e) {
@@ -549,8 +560,8 @@ export function Room() {
   const me = self;
   const activeRoom = room;
 
-  // Speaking gate: everyone joins able to speak. The host can mute via
-  // setMuted() to suspend a specific participant. canSpeak === undefined
+  // Speaking gate: everyone joins able to speak. The host can mute a
+  // specific participant. canSpeak === undefined
   // (legacy rooms before this field existed) is treated as approved so
   // already-running meetings don't break. The rule itself is in
   // @agent-room/shared/speakPermission — the same function the server's own
@@ -615,8 +626,7 @@ export function Room() {
     }
     setModeBusy(true);
     try {
-      const client = createClient(ENV.upstash);
-      await setReplyMode(client, code, me.name, mode, nextConfig);
+      await roomApi.host({ code, op: 'set-mode', mode, config: nextConfig });
       await refreshRoom();
       const { showToast } = await import('../components/Toast.js');
       showToast(t('room.replyModeSet', { mode: modeLabel(mode) }));
@@ -638,33 +648,19 @@ export function Room() {
     await forceRefresh();
   }
 
-  async function emitTurnSystemMessage(
-    textValue: string,
-    eventType: SystemEventType,
-    target: { name: string; client: 'web' | 'cc' },
-    extra: Partial<NonNullable<Message['metadata']>> = {},
-  ) {
-    const client = createClient(ENV.upstash);
-    const nowMs = Date.now();
-    const msg: Message = {
-      id: nowMs,
-      type: 'sys',
-      name: 'system',
-      role: '',
-      initials: 'AR',
-      color: '#5B6AFF',
-      client: 'cc',
-      text: textValue,
-      time: nowMs,
-      metadata: {
-        eventType,
-        modeAtSend: replyMode,
-        targetAgentName: target.name,
-        targetAgentClient: target.client,
-        ...extra,
-      },
-    };
-    await appendSystemMessage(client, code, msg);
+  async function copyHumanInvite() {
+    if (!isHost) {
+      const { showToast } = await import('../components/Toast.js');
+      showToast(t('room.ownerInviteOnly'), 'info');
+      return;
+    }
+    try {
+      const invite = await roomApi.createInvite({ code });
+      await copyText(`${window.location.origin}/i/${invite.token}`, t('room.inviteLinkCopied'));
+    } catch (e) {
+      const { showToast } = await import('../components/Toast.js');
+      showToast(e instanceof Error ? e.message : t('common.unknownError'), 'error');
+    }
   }
 
   async function handleAskAgent(p: Participant) {
@@ -680,19 +676,12 @@ export function Room() {
     }
     setModeBusy(true);
     try {
-      const client = createClient(ENV.upstash);
-      const added = await directInvoke(client, code, { name: p.name, client: p.client }, 'host');
-      if (!added) {
+      const added = await roomApi.host({ code, op: 'direct-invoke', name: p.name, client: p.client });
+      if (!added.added) {
         const { showToast } = await import('../components/Toast.js');
         showToast(t('room.agentQueued', { name: p.name }), 'info');
         return;
       }
-      await emitTurnSystemMessage(
-        `Host directly invoked @${p.name}.`,
-        'host_invoked',
-        { name: p.name, client: p.client },
-        { invocationType: 'host_directed' },
-      );
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
@@ -706,19 +695,12 @@ export function Room() {
     if (!canConfigureReplyMode || !currentSpeaker) return;
     setModeBusy(true);
     try {
-      const client = createClient(ENV.upstash);
-      const skipped = await hostSkipCurrent(client, code, activeRoom);
-      if (!skipped) {
+      const skipped = await roomApi.host({ code, op: 'skip' });
+      if (!skipped.skipped) {
         const { showToast } = await import('../components/Toast.js');
         showToast(t('room.noActiveAgent'), 'info');
         return;
       }
-      await emitTurnSystemMessage(
-        `Host skipped @${skipped.name}'s ${skipped.role} slot.`,
-        'skipped_by_host',
-        { name: skipped.name, client: skipped.client },
-        { roleAtSend: skipped.role, skippedBy: 'host' },
-      );
       await refreshTurnAndMessages();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
@@ -786,7 +768,7 @@ export function Room() {
             <MemoryReviewPanel roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
             <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="header" />
             <button
-              onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
+              onClick={() => { void copyHumanInvite(); }}
               className="text-[11px] sm:text-[10px] font-semibold text-accent bg-accent-tint px-2.5 py-1.5 sm:px-2 sm:py-1 rounded-md hover:bg-accent/20 active:scale-95 transition"
             >
               {t('room.share')}
@@ -847,7 +829,7 @@ export function Room() {
                 <MeetingCodePill code={code} />
               </div>
               <button
-                onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
+                onClick={() => { void copyHumanInvite(); }}
                 className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20"
               >
                 {t('room.copyInviteLink')}
@@ -1113,7 +1095,7 @@ export function Room() {
                   {roomAgents.length === 0 && (
                     <button
                       type="button"
-                      onClick={() => copyText(joinUrl, t('room.inviteLinkCopied'))}
+                      onClick={() => { void copyHumanInvite(); }}
                       className="mt-4 min-h-10 rounded-lg bg-accent px-4 text-[13px] font-semibold text-white shadow-sm transition active:scale-[0.98] hover:opacity-90"
                     >
                       {t('room.copyInviteLink')}
@@ -1162,8 +1144,7 @@ export function Room() {
                   <button
                     onClick={async () => {
                       try {
-                        const client = createClient(ENV.upstash);
-                        await reactivateRoomApi(client, code);
+                        await roomApi.host({ code, op: 'reactivate' });
                         // Reset the full idle pipeline. Without these the idle timer
                         // would immediately re-fire (lastMsgTimeRef is still hours
                         // old, showIdlePrompt may still be true) and the room would

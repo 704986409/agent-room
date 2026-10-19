@@ -10,6 +10,7 @@ import { Lobby } from './screens/Lobby.js';
 import { Room } from './screens/Room.js';
 import { Report } from './screens/Report.js';
 import { Join } from './screens/Join.js';
+import { Invite } from './screens/Invite.js';
 import { TemplatesIndex } from './screens/TemplatesIndex.js';
 import { TemplateDetail } from './screens/TemplateDetail.js';
 import { TemplateInterviewLive } from './screens/TemplateInterviewLive.js';
@@ -60,6 +61,10 @@ function LobbyByParam() {
   const { code = '' } = useParams();
   return <Lobby key={code} />;
 }
+function InviteByParam() {
+  const { token = '' } = useParams();
+  return <Invite key={token} />;
+}
 function ReportByParam() {
   const { code = '' } = useParams();
   return <Report key={code} />;
@@ -78,6 +83,7 @@ export const router = createBrowserRouter([
   { path: '/r/:code/lobby', element: <Layout><LobbyByParam /></Layout> },
   { path: '/r/:code', element: <Layout><RoomByParam /></Layout> },
   { path: '/r/:code/report', element: <Layout><ReportByParam /></Layout> },
+  { path: '/i/:token', element: <Layout><InviteByParam /></Layout> },
   { path: '/j/:code', element: <Layout><Join /></Layout> },
   { path: '/j', element: <Layout><Join /></Layout> },
   // Plan B Phase 1: Live Session Templates pages.

@@ -6,9 +6,9 @@
 //                                 candidate share link + host-note input)
 //
 // Host setup → on Start:
-//   1. createRoom() with a fresh code, host as the creator.
-//   2. joinRoom() the host as a web participant with role='Host'.
-//   3. joinRoom() the AI Interviewer as a cc participant.
+//   1. POST /api/web/room-create with the signed-in user as owner.
+//   2. Seat the AI Interviewer through /api/web/host seat-agent.
+//   3. Persist the brief and open the monitor view.
 //   4. Persist the brief to sessionStorage keyed by room code.
 //   5. Soft-navigate to /templates/interview/:code so a refresh restores
 //      the monitor view.
@@ -34,15 +34,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import {
-  appendMessage,
-  createClient,
-  createRoom,
-  joinRoom,
-} from '@agent-room/upstash-client';
-import { generateCode, type Message } from '@agent-room/shared';
-import { ENV } from '../env.js';
-import { colorForName, initialsFor } from '../lib/colors.js';
+import type { Message } from '@agent-room/shared';
+import { roomApi } from '../lib/roomWrites.js';
 import { useRoom } from '../hooks/useRoom.js';
 import { TopNav } from '../components/TopNav.js';
 import { AudioReplyBar } from '../components/AudioReplyBar.js';
@@ -130,6 +123,7 @@ export function TemplateInterviewLive() {
   const navigate = useNavigate();
 
   const [code, setCode] = useState<string | null>(urlCode ?? null);
+  const [inviteUrl, setInviteUrl] = useState('');
   const [setupError, setSetupError] = useState<string | null>(null);
   // brief === null means the host hasn't submitted the setup form yet;
   // brief === '' means submitted with no extra context (use the default
@@ -190,48 +184,17 @@ export function TemplateInterviewLive() {
 
     (async () => {
       try {
-        const newCode = generateCode();
-        const client = createClient(ENV.upstash);
-        await createRoom(client, {
-          code: newCode,
+        const created = await roomApi.createRoom({
           topic: 'AI Interview',
-          createdBy: HOST_NAME,
+          displayName: HOST_NAME,
+          role: 'Host',
         });
-        // Join self as Host (web). createRoom already adds the creator
-        // as the first participant, but we joinRoom again with
-        // priorIdentity so refreshes don't add a "(2)". The candidate
-        // doesn't join here — they land on /r/:code via the share link
-        // and pick their own display name there.
-        await joinRoom(
-          client,
-          newCode,
-          {
-            name: HOST_NAME,
-            role: 'Host',
-            color: colorForName(HOST_NAME),
-            initials: initialsFor(HOST_NAME),
-            client: 'web',
-            joinedAt: Date.now(),
-            lastSeenAt: Date.now(),
-          },
-          { priorIdentity: { name: HOST_NAME, client: 'web' } },
-        );
-        // Add the AI Interviewer as a cc participant — same machinery
-        // any MCP-driven agent uses, just driven from the browser.
-        await joinRoom(
-          client,
-          newCode,
-          {
-            name: INTERVIEWER_NAME,
-            role: 'Interviewer',
-            color: colorForName(INTERVIEWER_NAME),
-            initials: initialsFor(INTERVIEWER_NAME),
-            client: 'cc',
-            joinedAt: Date.now(),
-            lastSeenAt: Date.now(),
-          },
-          { priorIdentity: { name: INTERVIEWER_NAME, client: 'cc' } },
-        );
+        const newCode = created.code;
+        await roomApi.host({ code: newCode, op: 'seat-agent', name: INTERVIEWER_NAME, role: 'Interviewer' });
+        const invite = await roomApi.createInvite({ code: newCode });
+        setInviteUrl(`${window.location.origin}/i/${invite.token}`);
+        sessionStorage.setItem(`room:${newCode}:self`, JSON.stringify({ name: created.name, role: 'Host' }));
+        localStorage.setItem(`room:${newCode}:hostKey`, created.hostKey);
         // Persist brief so a host refresh on /templates/interview/:code
         // restores the same context without re-prompting.
         if (typeof sessionStorage !== 'undefined') {
@@ -247,6 +210,15 @@ export function TemplateInterviewLive() {
       }
     })();
   }, [urlCode, brief, navigate]);
+
+  useEffect(() => {
+    if (!code || inviteUrl) return;
+    let cancelled = false;
+    roomApi.createInvite({ code }).then(invite => {
+      if (!cancelled) setInviteUrl(`${window.location.origin}/i/${invite.token}`);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [code, inviteUrl]);
 
   const { room, messages, error: roomError } = useRoom(code ?? '', candidateName);
 
@@ -330,19 +302,13 @@ export function TemplateInterviewLive() {
           body = { text: clientLadderLine(stage, transcriptForLLM), ai: false, stage };
         }
         setUsingLiveLLM(body.ai);
-        const client = createClient(ENV.upstash);
-        const msg: Message = {
-          id: Date.now(),
-          type: 'msg',
+        await roomApi.host({
+          code,
+          op: 'scripted-send',
           name: INTERVIEWER_NAME,
-          role: 'Interviewer',
-          color: colorForName(INTERVIEWER_NAME),
-          initials: initialsFor(INTERVIEWER_NAME),
-          client: 'cc',
           text: body.text,
-          time: Date.now(),
-        };
-        await appendMessage(client, code, msg);
+          id: Date.now(),
+        });
       } catch (e) {
         // Surfacing through console — the room itself stays usable, the
         // UI just won't post the line. The candidate can retry by
@@ -487,20 +453,8 @@ export function TemplateInterviewLive() {
     const text = draft.trim();
     if (!code || !text) return;
     setDraft('');
-    const client = createClient(ENV.upstash);
-    const msg: Message = {
-      id: Date.now(),
-      type: 'msg',
-      name: HOST_NAME,
-      role: 'Host',
-      color: colorForName(HOST_NAME),
-      initials: initialsFor(HOST_NAME),
-      client: 'web',
-      text,
-      time: Date.now(),
-    };
     try {
-      await appendMessage(client, code, msg);
+      await roomApi.sendChat({ code, text, role: 'Host', id: Date.now() });
     } catch (e) {
       console.error('[host note send] failed', e);
     }
@@ -725,12 +679,12 @@ export function TemplateInterviewLive() {
                   <div className="flex items-stretch gap-2">
                     <input
                       readOnly
-                      value={`${typeof window === 'undefined' ? '' : window.location.origin}/r/${code}`}
+                      value={inviteUrl}
                       onFocus={(e) => e.currentTarget.select()}
                       className="flex-1 min-w-0 font-mono text-[12px] px-2.5 py-1.5 bg-white border border-accent-tint-border rounded-md text-ink-soft outline-none focus:border-accent"
                     />
                     <button
-                      onClick={() => copyText(`${window.location.origin}/r/${code}`, 'Link copied')}
+                      onClick={() => { if (inviteUrl) void copyText(inviteUrl, 'Link copied'); }}
                       className="shrink-0 bg-accent text-white px-3 py-1.5 rounded-md text-[11px] font-semibold hover:opacity-90 transition"
                     >
                       Copy

@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
@@ -9,6 +9,7 @@ export function Login() {
   const { t } = useLocale();
   useDocumentTitle(t('account.loginTitle'));
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +21,8 @@ export function Login() {
     setError(null);
     try {
       await accountApi.login(username.trim(), password);
-      navigate('/account');
+      const next = params.get('next') ?? '';
+      navigate(next.startsWith('/') && !next.startsWith('//') ? next : '/account');
     } catch (err) {
       setError(err instanceof AccountApiError ? err.message : t('common.unknownError'));
     } finally {

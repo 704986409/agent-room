@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Task } from '@agent-room/shared';
 import { TaskBoard } from './TaskBoard.js';
 
-const mocked = vi.hoisted(() => ({ verifyTask: vi.fn() }));
+const mocked = vi.hoisted(() => ({ submitTask: vi.fn() }));
 
 vi.mock('../i18n/LocaleProvider.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../i18n/LocaleProvider.js')>();
@@ -22,10 +22,7 @@ vi.mock('../i18n/LocaleProvider.js', async (importOriginal) => {
   };
 });
 
-vi.mock('@agent-room/upstash-client', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@agent-room/upstash-client')>();
-  return { ...actual, verifyTask: mocked.verifyTask };
-});
+vi.mock('../lib/roomWrites.js', () => ({ submitTask: mocked.submitTask }));
 
 const reviewTask: Task = {
   id: 'T-01',
@@ -41,8 +38,8 @@ const reviewTask: Task = {
 };
 
 function renderBoard(): ReactTestRenderer {
-  const run = async (operation: (client: never) => Promise<unknown>) => {
-    await operation({} as never);
+  const run = async (operation: () => Promise<unknown>) => {
+    await operation();
     return true;
   };
   return create(React.createElement(TaskBoard, {
@@ -81,7 +78,7 @@ async function fillFollowUp(renderer: ReactTestRenderer, target: string, request
 }
 
 describe('TaskBoard follow-up verification form', () => {
-  beforeEach(() => mocked.verifyTask.mockReset().mockResolvedValue({ board: {}, task: reviewTask }));
+  beforeEach(() => mocked.submitTask.mockReset().mockResolvedValue({ board: {}, task: reviewTask }));
 
   it('keeps one-click approve and passes optional follow-up through verifyTask', async () => {
     const renderer = renderBoard();
@@ -92,10 +89,12 @@ describe('TaskBoard follow-up verification form', () => {
     });
     await act(async () => { await button(renderer, 'Approve').props.onClick(); });
 
-    expect(mocked.verifyTask).toHaveBeenCalledOnce();
-    const call = mocked.verifyTask.mock.calls[0] as unknown[];
-    expect(call[4]).toBe('done');
-    expect(call[7]).toEqual({ target: 'Release Owner', request: 'Confirm the rollout window.', targetClient: 'cc' });
+    expect(mocked.submitTask).toHaveBeenCalledOnce();
+    expect(mocked.submitTask.mock.calls[0]?.[0]).toMatchObject({
+      op: 'verify',
+      verdict: 'done',
+      followUp: { target: 'Release Owner', request: 'Confirm the rollout window.', targetClient: 'cc' },
+    });
     await act(async () => renderer.unmount());
   });
 
@@ -109,11 +108,13 @@ describe('TaskBoard follow-up verification form', () => {
     await fillFollowUp(renderer, 'Producer', 'Fix reconnect idempotency and resubmit evidence.');
     await act(async () => { await button(renderer, 'Reject task').props.onClick(); });
 
-    expect(mocked.verifyTask).toHaveBeenCalledOnce();
-    const call = mocked.verifyTask.mock.calls[0] as unknown[];
-    expect(call[4]).toBe('rejected');
-    expect(call[5]).toBe('Reconnect repeats a message.');
-    expect(call[7]).toEqual({ target: 'Producer', request: 'Fix reconnect idempotency and resubmit evidence.' });
+    expect(mocked.submitTask).toHaveBeenCalledOnce();
+    expect(mocked.submitTask.mock.calls[0]?.[0]).toMatchObject({
+      op: 'verify',
+      verdict: 'rejected',
+      note: 'Reconnect repeats a message.',
+      followUp: { target: 'Producer', request: 'Fix reconnect idempotency and resubmit evidence.' },
+    });
     await act(async () => renderer.unmount());
   });
 
@@ -129,7 +130,7 @@ describe('TaskBoard follow-up verification form', () => {
     expect(button(renderer, 'Reject task').props.disabled).toBe(true);
 
     await act(async () => { await button(renderer, 'Reject task').props.onClick(); });
-    expect(mocked.verifyTask).not.toHaveBeenCalled();
+    expect(mocked.submitTask).not.toHaveBeenCalled();
     expect(renderer.root.findByProps({ role: 'alert' }).children.join('')).toContain('600 characters');
     await act(async () => renderer.unmount());
   });
@@ -140,7 +141,7 @@ describe('TaskBoard follow-up verification form', () => {
     await fillFollowUp(renderer, 'Release Owner', '');
     await act(async () => { await button(renderer, 'Approve').props.onClick(); });
 
-    expect(mocked.verifyTask).not.toHaveBeenCalled();
+    expect(mocked.submitTask).not.toHaveBeenCalled();
     expect(renderer.root.findByProps({ role: 'alert' }).children.join('')).toContain('Fill in both');
     await act(async () => renderer.unmount());
   });

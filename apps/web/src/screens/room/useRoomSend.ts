@@ -1,7 +1,5 @@
 import { useCallback, useState } from 'react';
 import { webSpeakGate, type Message, type MessageAttachment, type Room } from '@agent-room/shared';
-import { createClient, onDeliverHostMessage } from '@agent-room/upstash-client';
-import { ENV } from '../../env.js';
 import { colorForName, initialsFor } from '../../lib/colors.js';
 
 /**
@@ -38,7 +36,6 @@ export interface UseRoomSend {
 }
 
 export function useRoomSend({
-  code,
   room,
   self,
   sendMessage,
@@ -77,14 +74,11 @@ export function useRoomSend({
       }
       throw e;
     }
-    // Deliver: the host's message is either the go for a waiting plan
-    // ("Start" / 开工) or a goal the lead should plan for.
+    // Deliver side effects run inside chat-send. Refresh the board once they land.
     if (webSpeakGate(room, self.name).isHost && (room.replyMode ?? 'open') === 'deliver') {
-      void onDeliverHostMessage(createClient(ENV.upstash), code, room, body)
-        .then(() => reloadTaskBoard())
-        .catch(() => { /* best-effort */ });
+      await reloadTaskBoard().catch(() => { /* best-effort */ });
     }
-  }, [code, room, self, sendMessage, forceRefresh, reloadTaskBoard]);
+  }, [room, self, sendMessage, forceRefresh, reloadTaskBoard]);
 
   return { submitMessage, rejectedBySend };
 }

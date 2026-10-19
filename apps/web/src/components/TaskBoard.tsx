@@ -1,16 +1,8 @@
 import { useState } from 'react';
 import type { ClientKind, Participant, Room, RoomArtifact, Task, TaskState, TaskVerifyFollowUp } from '@agent-room/shared';
 import { artifactLabel } from '@agent-room/shared';
-import {
-  blockTask,
-  cancelTask,
-  createRoomTask,
-  createTask,
-  reassignRoomTaskRoles,
-  updateTask,
-  verifyTask,
-} from '@agent-room/upstash-client';
 import type { useTaskBoard } from '../hooks/useTaskBoard.js';
+import { submitTask } from '../lib/roomWrites.js';
 import { useLocale } from '../i18n/LocaleProvider.js';
 import type { MessageKey } from '../i18n/messages.js';
 
@@ -89,7 +81,7 @@ export function canRuleOn(task: Task, viewer: { name: string; client: ClientKind
 const CTRL = 'min-h-10 sm:min-h-8 rounded-lg px-2.5 text-[13px] sm:text-xs font-semibold transition active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed';
 const FIELD = 'w-full min-h-10 rounded-lg border border-border bg-white px-3 text-[15px] sm:text-[13px] text-ink outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-60';
 
-export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, canExport, reportBusy, onExportReport, onMention, taskBoard }: Props) {
+export function TaskBoard({ code, me, isHost, ended, agents, artifacts, canExport, reportBusy, onExportReport, onMention, taskBoard }: Props) {
   const { t } = useLocale();
   const { board, loaded, busy, run } = taskBoard;
   const [composing, setComposing] = useState(false);
@@ -135,9 +127,7 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
             onCancel={() => setComposing(false)}
             onSubmit={async (input) => {
               const ok = await run(
-                c => (room
-                  ? createRoomTask(c, code, room, { ...input, createdBy: me.name })
-                  : createTask(c, code, { ...input, createdBy: me.name })),
+                () => submitTask({ op: 'create', code, ...input }),
                 t('task.createFailed'),
               );
               if (ok) setComposing(false);
@@ -157,7 +147,6 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
               <TaskCard
                 key={task.id}
                 task={task}
-                room={room}
                 me={me}
                 isHost={isHost}
                 ended={ended}
@@ -183,7 +172,6 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
                   <TaskCard
                     key={task.id}
                     task={task}
-                    room={room}
                     me={me}
                     isHost={isHost}
                     ended={ended}
@@ -210,9 +198,8 @@ export function TaskBoard({ code, room, me, isHost, ended, agents, artifacts, ca
   );
 }
 
-function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMention }: {
+function TaskCard({ task, me, isHost, ended, agents, busy, run, code, onMention }: {
   task: Task;
-  room?: Room;
   me: { name: string };
   isHost: boolean;
   ended: boolean;
@@ -270,10 +257,14 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
       }
       : undefined;
     const ok = await run(
-      c => verifyTask(
-        c, code, task.id, { name: me.name, client: 'web' }, verdict,
-        trimmedNote || undefined, undefined, followUp,
-      ),
+      () => submitTask({
+        op: 'verify',
+        code,
+        id: task.id,
+        verdict,
+        ...(trimmedNote ? { note: trimmedNote } : {}),
+        ...(followUp ? { followUp } : {}),
+      }),
       verdict === 'done' ? t('task.approveFailed') : t('task.rejectFailed'),
     );
     if (ok) closePanel();
@@ -345,7 +336,7 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
                     type="button"
                     disabled={busy}
                     onClick={() => void run(
-                      c => verifyTask(c, code, task.id, { name: me.name, client: 'web' }, 'done', undefined),
+                      () => submitTask({ op: 'verify', code, id: task.id, verdict: 'done' }),
                       t('task.approveFailed'),
                     )}
                     className={`${CTRL} bg-emerald-600 text-white hover:bg-emerald-700`}
@@ -374,7 +365,7 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void run(c => updateTask(c, code, task.id, { state: 'todo' }), t('task.reopenFailed'))}
+                  onClick={() => void run(() => submitTask({ op: 'reopen', code, id: task.id }), t('task.reopenFailed'))}
                   className={`${CTRL} border border-border bg-surface-softer text-ink-muted hover:border-accent/40 hover:text-accent`}
                 >
                   {t('task.reopen')}
@@ -414,7 +405,7 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
                   type="button"
                   disabled={busy}
                   onClick={() => void run(
-                    c => cancelTask(c, code, task.id, { name: me.name, client: 'web' }, 'Cancelled by host'),
+                    () => submitTask({ op: 'cancel', code, id: task.id, reason: 'Cancelled by host' }),
                     t('task.cancelFailed'),
                   )}
                   className={`${CTRL} ml-auto text-ink-faint hover:text-rose-600`}
@@ -431,9 +422,7 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
               onCancel={closePanel}
               onSubmit={async (patch) => {
                 const ok = await run(
-                  async (c) => {
-                    await reassignRoomTaskRoles(c, code, room ?? {}, task.id, patch, { name: me.name, client: 'web' });
-                  },
+                  () => submitTask({ op: 'reassign', code, id: task.id, patch }),
                   t('task.reassignFailed'),
                 );
                 if (ok) closePanel();
@@ -451,7 +440,7 @@ function TaskCard({ task, room, me, isHost, ended, agents, busy, run, code, onMe
               onCancel={closePanel}
               onSubmit={async () => {
                 const ok = await run(
-                  c => blockTask(c, code, task.id, { name: me.name, client: 'web' }, note.trim()),
+                  () => submitTask({ op: 'block', code, id: task.id, reason: note.trim() }),
                   t('task.blockFailed'),
                 );
                 if (ok) closePanel();

@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
-import { createClient, getRoom, joinRoom, verifyHostKey, HostNameTakenError, RoomNotFoundError } from '@agent-room/upstash-client';
+import { createClient, getRoom, RoomNotFoundError } from '@agent-room/upstash-client';
 import type { Room } from '@agent-room/shared';
 import { ROOM_POLL_MS } from '@agent-room/shared';
 import { ENV } from '../env.js';
 import { Avatar } from '../components/Avatar.js';
 import { AgentRoomLogo } from '../components/AgentRoomLogo.js';
-import { colorForName, initialsFor } from '../lib/colors.js';
+import { roomApi } from '../lib/roomWrites.js';
 import { copyText } from '../lib/copy.js';
 import { templateById, localizedRoleLabel, localizedTemplate } from '../lib/templates.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
@@ -30,44 +30,11 @@ export function Lobby() {
     async function ensureJoined() {
       try {
         if (self && !cancelled) {
-          // Pre-flight: if we're claiming the host's display name, prove
-          // we own the host key. Without this, anyone with the code could
-          // pretend to be the host.
-          const room = await getRoom(client, code);
-          if (self.name === room.createdBy) {
-            // Read from localStorage (room-scoped, survives tab close) with
-            // a sessionStorage fallback for hosts who created the room before
-            // we moved the key — keeps their existing tab working.
-            const hostKey = localStorage.getItem(`room:${code}:hostKey`)
-              ?? sessionStorage.getItem(`room:${code}:hostKey`)
-              ?? undefined;
-            await verifyHostKey(client, code, hostKey);
-          }
-          // priorIdentity tells joinRoom this is the same logical session
-          // updating its own row, so a refresh doesn't get auto-suffixed.
-          await joinRoom(client, code, {
-            name: self.name,
-            role: self.role,
-            color: colorForName(self.name),
-            initials: initialsFor(self.name),
-            client: 'web',
-            joinedAt: Date.now(),
-            lastSeenAt: Date.now(),
-          }, {
-            priorIdentity: { name: self.name, client: 'web' },
-          });
+          await roomApi.join({ code, role: self.role });
         }
         await refresh();
       } catch (e) {
         if (cancelled) return;
-        if (e instanceof HostNameTakenError) {
-          // Wipe the bogus self entry and bounce to the Join page so they
-          // can pick a different name.
-          sessionStorage.removeItem(`room:${code}:self`);
-          setErr(`host-name-reserved:${self?.name ?? '?'}`);
-          setTimeout(() => navigate(`/j/${code}`, { replace: true }), 1500);
-          return;
-        }
         setErr(e instanceof RoomNotFoundError ? 'Room not found' : String(e));
       }
     }
@@ -115,9 +82,17 @@ export function Lobby() {
     </div></>;
   }
   if (!room) return <>{header}<div className="p-10 text-ink-soft">{t('common.loading')}</div></>;
+  const current = room;
 
-  const joinUrl = `${window.location.origin}/j/${code}`;
-  const inviteText = t('room.inviteText', { topic: room.topic, code, url: joinUrl });
+  async function copyHumanInvite() {
+    try {
+      const invite = await roomApi.createInvite({ code });
+      const url = `${window.location.origin}/i/${invite.token}`;
+      await copyText(t('room.inviteText', { topic: current.topic, code, url }), t('lobby.inviteCopied'));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  }
   const rawTemplate = templateById(sessionStorage.getItem(`room:pending-template:${code}`));
   const template = rawTemplate ? localizedTemplate(rawTemplate, locale) : undefined;
 
@@ -135,13 +110,7 @@ export function Lobby() {
           className="absolute top-2.5 right-2.5 bg-surface border border-border w-7 h-7 rounded-md text-ink-soft text-xs">⎘</button>
       </div>
 
-      <div className="bg-surface-softer border border-dashed border-border rounded-lg p-3 text-[10px] text-ink-soft leading-relaxed mb-4 relative whitespace-pre-line">
-        <button onClick={() => copyText(inviteText, t('lobby.inviteCopied'))}
-          className="absolute top-2 right-2 bg-surface border border-border px-2 py-0.5 rounded text-[9px] font-semibold text-ink-muted">{t('lobby.copyInvite')}</button>
-        {inviteText}
-      </div>
-
-      <button onClick={() => copyText(joinUrl, t('lobby.linkCopied'))}
+      <button onClick={() => { void copyHumanInvite(); }}
         className="w-full mb-4 bg-accent-tint text-accent border border-accent/20 py-2 rounded-lg text-xs font-semibold">
         {t('lobby.copyInviteLink')}
       </button>
