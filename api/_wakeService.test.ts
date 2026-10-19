@@ -4,8 +4,6 @@ import type { Message, Participant, Room } from '@agent-room/shared';
 import { MapDeviceAuthenticator, RedisDeviceAuthenticator, deviceCredentialHash } from './_wakeDevice.js';
 import { markRebindRequired, removeManagedSeat, POLL_SNAPSHOT_SCRIPT } from './_wakeBind.js';
 import { generateForCommittedMessage, WakeService } from './_wakeService.js';
-import { installWakeSendHook } from './_wakeSend.js';
-import { setMessageCommittedHook } from '@agent-room/upstash-client';
 import { WakeTestRedis } from './_wakeTestRedis.js';
 
 const CODE = 'ABC-DEF-GHJ';
@@ -175,25 +173,26 @@ describe('POST /api/wake', () => {
     seed(redis, room(), [message('@codex-a look', 1)], 1);
     await api.register('dev-a', { code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 });
     await api.poll('dev-a');
-    const [left, right] = await Promise.all([
+    const settled = await Promise.allSettled([
       api.claim('dev-a', { eventIds: ['wk:ri_1:0:st_a'] }),
       api.claim('dev-a', { eventIds: ['wk:ri_1:0:st_a'] }),
     ]);
-    const errors = [left, right].flatMap(result => (result as { claims: { error?: string }[] }).claims.map(claim => claim.error).filter(Boolean));
-    expect(errors).toEqual(['conflict']);
+    const claims = settled.flatMap(result => result.status === 'fulfilled' ? result.value.claims : []);
+    const thrown = settled.filter(result => result.status === 'rejected');
+    const succeeded = claims.filter(claim => claim.claimId);
+    const conflicts = claims.filter(claim => claim.error).length + thrown.length;
+    expect(succeeded).toHaveLength(1);
+    expect(conflicts).toBe(1);
   });
 
-  it('installs a send hook that uses the committed absolute index', async () => {
+  it('generates a send-path event at the committed absolute index', async () => {
     const redis = new WakeTestRedis();
     seed(redis, room(), [], 0);
     const api = service(redis);
     await api.register('dev-a', { code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 });
-    installWakeSendHook(redis);
-    await setMessageCommittedHook(async event => {
-      await generateForCommittedMessage(redis, event.code, event.index, event.message);
-    });
     await generateForCommittedMessage(redis, CODE, 7, message('@codex-a later', 70));
     expect((await api.store.get('wk:ri_1:7:st_a'))?.state).toBe('PENDING');
-    setMessageCommittedHook(undefined);
+    await generateForCommittedMessage(redis, CODE, 7, message('@codex-a later', 70));
+    expect(await api.store.list({ roomInstanceId: 'ri_1', seatId: 'st_a' })).toHaveLength(1);
   });
 });

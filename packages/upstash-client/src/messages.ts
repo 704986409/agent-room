@@ -378,7 +378,11 @@ async function rpushMessage(
   ]);
   const total = Number(results[1]);
   if (messageCommittedHook && Number.isSafeInteger(total) && total > 0) {
-    await Promise.resolve(messageCommittedHook({ code, index: total - 1, message: safe })).catch(() => {});
+    try {
+      await messageCommittedHook({ code, index: total - 1, message: safe });
+    } catch {
+      // The write is already committed. Scan fallback covers a failed wake hook.
+    }
   }
 }
 

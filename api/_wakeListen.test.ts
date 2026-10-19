@@ -106,7 +106,7 @@ describe('managed room_listen and room_sleep', () => {
     const tools = readFileSync(new URL('./_mcpTools.ts', import.meta.url), 'utf8');
     const send = readFileSync(new URL('./_mcpSendTool.ts', import.meta.url), 'utf8');
     const room = readFileSync(new URL('./_mcpRoomClient.ts', import.meta.url), 'utf8');
-    expect(tools.match(/settleManagedRead/g)).toHaveLength(2);
+    expect(tools.match(/await settleManagedRead/g)).toHaveLength(2);
     expect(send).not.toContain('settleManagedRead');
     expect(room).not.toContain('confirmRead');
   });

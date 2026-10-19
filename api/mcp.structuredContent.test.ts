@@ -200,6 +200,7 @@ describe('room lifecycle tools return structuredContent', () => {
       'room_join',
       'room_send',
       'room_listen',
+      'room_sleep',
       'room_minutes',
       'room_leave',
       'room_end',

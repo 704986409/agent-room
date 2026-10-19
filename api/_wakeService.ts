@@ -106,7 +106,8 @@ export class WakeService {
     const requested = body.cursor === undefined ? undefined : Number(body.cursor);
     const room = await this.readRoom(code);
     if (!room || room.status !== 'active' || !room.roomInstanceId) fail('seat_unauthorized');
-    const seat = await this.ensureSeatId(code, room, name, seatKey);
+    const issued = await this.ensureSeatId(code, room, name, seatKey);
+    const seat = { roomInstanceId: issued.roomInstanceId, seatId: issued.seatId };
     const totalRaw = await this.client.command<string | number | null>(['GET', `room-msg-count:${code}`]);
     if (totalRaw === null || totalRaw === undefined) fail('absolute_count_required');
     const total = Number(totalRaw);
@@ -120,11 +121,11 @@ export class WakeService {
       }
     }
     const binding: WakeBinding = {
-      deviceId, roomInstanceId: room.roomInstanceId, code, name, seatId: seat.seatId,
-      seatKeyHash: seat.seatKeyHash, status: 'active', expiresAt: roomExpiresAt(room),
+      deviceId, roomInstanceId: issued.roomInstanceId, code, name, seatId: issued.seatId,
+      seatKeyHash: issued.seatKeyHash, status: 'active', expiresAt: roomExpiresAt(room),
     };
     await writeBinding(this.client, binding, binding.expiresAt);
-    return { roomInstanceId: room.roomInstanceId, seatId: seat.seatId, scanFrom };
+    return { roomInstanceId: issued.roomInstanceId, seatId: issued.seatId, scanFrom };
   }
 
   async unregister(deviceId: string, body: Record<string, unknown>): Promise<unknown> {
@@ -287,7 +288,7 @@ export class WakeService {
     return raw ? JSON.parse(raw) as Room : null;
   }
 
-  private async ensureSeatId(code: string, room: Room, name: string, seatKey: string): Promise<{ seatId: string; seatKeyHash: string }> {
+  private async ensureSeatId(code: string, room: Room, name: string, seatKey: string): Promise<{ roomInstanceId: string; seatId: string; seatKeyHash: string }> {
     for (let attempt = 0; attempt < 8; attempt++) {
       const current = attempt === 0 ? room : await this.readRoom(code);
       if (!current?.roomInstanceId) fail('seat_unauthorized');
@@ -298,10 +299,11 @@ export class WakeService {
       if (!participant?.seatKeyHash || !verifySeat({
         roomInstanceId: parsed.roomInstanceId!, seatId: participant.seatId ?? 'pending', name, seatKeyHash: participant.seatKeyHash,
       }, name, seatKey)) fail('seat_unauthorized');
-      if (participant.seatId) return { seatId: participant.seatId, seatKeyHash: participant.seatKeyHash };
+      if (!parsed.roomInstanceId) fail('seat_unauthorized');
+      if (participant.seatId) return { roomInstanceId: parsed.roomInstanceId, seatId: participant.seatId, seatKeyHash: participant.seatKeyHash };
       participant.seatId = newSeatId();
       const ok = await this.client.command(['EVAL', ROOM_REPLACE_SCRIPT, 1, `room:${code}`, raw, JSON.stringify(parsed)]);
-      if (Number(ok) === 1) return { seatId: participant.seatId, seatKeyHash: participant.seatKeyHash };
+      if (Number(ok) === 1) return { roomInstanceId: parsed.roomInstanceId, seatId: participant.seatId, seatKeyHash: participant.seatKeyHash };
     }
     fail('wake_cas_contention');
   }

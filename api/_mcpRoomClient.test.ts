@@ -30,6 +30,7 @@ vi.mock('@agent-room/upstash-client', async (importOriginal) => {
     addHostDirected: storeMocks.addHostDirected,
     appendSystemMessage: storeMocks.appendSystemMessage,
     createClient: storeMocks.createClient,
+    setMessageCommittedHook: vi.fn(),
     endRoom: storeMocks.endRoom,
     getMessageTotalCount: storeMocks.getMessageTotalCount,
     getRoom: storeMocks.getRoom,
