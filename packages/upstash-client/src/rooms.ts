@@ -110,6 +110,7 @@ export async function getRoom(client: UpstashClient, code: string): Promise<Room
 }
 
 const CAS_MAX_ATTEMPTS = 3;
+const ROOM_CAS_MAX_ATTEMPTS = 25;
 
 // Presence must use an atomic compare-and-swap: overlapping listeners or a
 // delayed stamp racing a release/removal must not overwrite a newer Room.
@@ -142,9 +143,15 @@ export async function casRoom(
   code: string,
   mutator: (current: Room) => Room
 ): Promise<Room> {
+  // Atomic compare-and-swap on the exact stored JSON. The previous
+  // read-then-SET lost concurrent updates (e2e: 20 parallel joins kept 7
+  // seats), and with server-side writes + wake seatIds that is no longer
+  // acceptable. Retries back off with jitter under contention.
   let lastError: unknown;
-  for (let attempt = 0; attempt < CAS_MAX_ATTEMPTS; attempt++) {
-    const current = await getRoom(client, code);
+  for (let attempt = 0; attempt < ROOM_CAS_MAX_ATTEMPTS; attempt++) {
+    const raw = await client.command<string | null>(['GET', roomKey(code)]);
+    if (raw === null || raw === undefined) throw new RoomNotFoundError(code);
+    const current = JSON.parse(raw) as Room;
     let next: Room;
     try {
       next = mutator(current);
@@ -155,15 +162,14 @@ export async function casRoom(
       }
       throw e;
     }
-    // Optimistic write: bump version. Full atomic CAS is deferred — a stale-read-then-overwrite
-    // window is acceptable here because the only mutable field is `participants`, and messages
-    // (the hot path) use atomic RPUSH. Version bumps make drift visible if it ever matters.
     next.version = current.version + 1;
-    // KEEPTTL preserves the 7-day deadline createRoom set, so a room is a hard
-    // cap from creation — activity (joins, presence heartbeats) no longer
-    // slides the expiry forward, which is what kept rooms alive past 7 days.
-    await client.command(['SET', roomKey(code), JSON.stringify(next), 'KEEPTTL']);
-    return next;
+    // KEEPTTL preserves the 7-day deadline createRoom set.
+    const swapped = await client.command<number>([
+      'EVAL', CAS_LISTEN_PRESENCE_SCRIPT, '1', roomKey(code), raw, JSON.stringify(next),
+    ]);
+    if (Number(swapped) === 1) return next;
+    lastError = new ConcurrencyError();
+    await new Promise(resolve => setTimeout(resolve, Math.floor(Math.random() * 10 * (attempt + 1))));
   }
   throw lastError instanceof ConcurrencyError ? lastError : new ConcurrencyError();
 }

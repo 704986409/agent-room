@@ -21,6 +21,15 @@ function installFakeRedis(seed: Record<string, string> = {}): Map<string, string
     const [op, key, val] = args;
     let result: unknown = null;
     if (op === 'GET') result = store.has(key) ? store.get(key) : null;
+    else if (op === 'EVAL') {
+      // Room CAS: EVAL script 1 key expectedRaw nextJson. 1 swaps, 0 loses the race.
+      const casKey = args[3];
+      const expected = args[4];
+      const next = args[5];
+      const current = store.has(casKey) ? store.get(casKey) : null;
+      if (current !== expected) result = 0;
+      else { store.set(casKey, next as string); result = 1; }
+    }
     else if (op === 'SET') {
       // Honor SET ... NX so the dedupe claim (the only NX writer) round-trips:
       // a second SET NX on an existing key returns null (lost the race).
@@ -103,6 +112,23 @@ describe('sweepTimeouts moderator handoff', () => {
     const room = await getRoom(client, CODE);
     expect(room.replyMode).toBe('moderator');
     expect(room.modeConfig?.moderatorAgentName).toBe('Deputy');
+    const evalCmd = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .map(([, init]) => JSON.parse((init as { body: string }).body) as string[])
+      .find(command => command[0] === 'EVAL');
+    expect(evalCmd).toEqual([
+      'EVAL',
+      expect.stringContaining('AR11 listen-presence CAS'),
+      '1',
+      `room:${CODE}`,
+      JSON.stringify(r),
+      expect.any(String),
+    ]);
+    expect(evalCmd![1]).toContain("'KEEPTTL'");
+    expect(JSON.parse(evalCmd![5]!)).toMatchObject({
+      version: 2,
+      replyMode: 'moderator',
+      modeConfig: { moderatorAgentName: 'Deputy', moderatorAgentClient: 'cc' },
+    });
   });
 
   it('falls back to open when there is no deputy to take over', async () => {

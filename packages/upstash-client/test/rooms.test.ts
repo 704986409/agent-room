@@ -282,7 +282,7 @@ describe('casRoom', () => {
     const base: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'x', status: 'active', version: 3, participants: [] };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(base) }))             // GET
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));                            // SET
+      .mockResolvedValueOnce(mockResp({ result: 1 }));                               // EVAL swap
 
     vi.stubGlobal('fetch', fetchMock);
     const client = createClient(ENV);
@@ -291,9 +291,17 @@ describe('casRoom', () => {
     expect(updated.topic).toBe('changed');
     expect(updated.version).toBe(4);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string)).toEqual([
-      'SET', 'room:A', expect.any(String), 'KEEPTTL',
+    const evalCmd = JSON.parse((fetchMock.mock.calls[1]![1] as RequestInit).body as string) as string[];
+    expect(evalCmd).toEqual([
+      'EVAL',
+      expect.stringContaining('AR11 listen-presence CAS'),
+      '1',
+      'room:A',
+      JSON.stringify(base),
+      expect.any(String),
     ]);
+    expect(evalCmd[1]).toContain("'KEEPTTL'");
+    expect(JSON.parse(evalCmd[5]!)).toMatchObject({ topic: 'changed', version: 4 });
   });
 
   it('retries when mutator throws ConcurrencyError and succeeds on a later attempt', async () => {
@@ -302,7 +310,7 @@ describe('casRoom', () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(v3) }))    // GET #1
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(v4) }))    // GET #2
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));                 // SET
+      .mockResolvedValueOnce(mockResp({ result: 1 }));                     // EVAL swap
     vi.stubGlobal('fetch', fetchMock);
     const client = createClient(ENV);
 
@@ -317,7 +325,7 @@ describe('casRoom', () => {
     expect(attempts).toBe(2);
   });
 
-  it('throws ConcurrencyError after 3 failed attempts', async () => {
+  it('throws ConcurrencyError when the mutator keeps failing for the full attempt budget', async () => {
     const v3: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'x', status: 'active', version: 3, participants: [] };
     const fetchMock = vi.fn().mockResolvedValue(mockResp({ result: JSON.stringify(v3) }));
     vi.stubGlobal('fetch', fetchMock);
@@ -328,7 +336,85 @@ describe('casRoom', () => {
       calls++;
       throw new ConcurrencyError();
     })).rejects.toBeInstanceOf(ConcurrencyError);
-    expect(calls).toBe(3);
+    // Mutator ConcurrencyError retries without a write. Budget is ROOM_CAS_MAX_ATTEMPTS.
+    expect(calls).toBe(25);
+    expect(fetchMock).toHaveBeenCalledTimes(25);
+  });
+
+  it('re-reads and retries when EVAL returns 0 for a lost race', async () => {
+    const v3: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'x', status: 'active', version: 3, participants: [] };
+    const raced: Room = { ...v3, topic: 'other-writer', version: 4 };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(v3) }))    // GET stale
+      .mockResolvedValueOnce(mockResp({ result: 0 }))                      // EVAL lost
+      .mockResolvedValueOnce(mockResp({ result: JSON.stringify(raced) }))  // GET fresh
+      .mockResolvedValueOnce(mockResp({ result: 1 }));                     // EVAL swapped
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient(ENV);
+    // Backoff is floor(random * 10 * attempt); 0 keeps the single retry on a 0ms timer.
+    vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    const updated = await casRoom(client, 'A', current => ({ ...current, topic: 'ours' }));
+
+    expect(updated).toMatchObject({ topic: 'ours', version: 5 });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    const commands = fetchMock.mock.calls.map(([, init]) => JSON.parse((init as RequestInit).body as string) as string[]);
+    expect(commands.map(command => command[0])).toEqual(['GET', 'EVAL', 'GET', 'EVAL']);
+    expect(commands[1]).toEqual([
+      'EVAL',
+      expect.stringContaining('AR11 listen-presence CAS'),
+      '1',
+      'room:A',
+      JSON.stringify(v3),
+      expect.any(String),
+    ]);
+    expect(commands[1]![1]).toContain("'KEEPTTL'");
+    expect(JSON.parse(commands[1]![5]!)).toMatchObject({ topic: 'ours', version: 4 });
+    expect(commands[3]).toEqual([
+      'EVAL',
+      expect.stringContaining('AR11 listen-presence CAS'),
+      '1',
+      'room:A',
+      JSON.stringify(raced),
+      expect.any(String),
+    ]);
+    expect(JSON.parse(commands[3]![5]!)).toMatchObject({ topic: 'ours', version: 5 });
+  });
+
+  it('throws ConcurrencyError after a lost race exhausts every attempt', async () => {
+    const v3: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'x', status: 'active', version: 3, participants: [] };
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const command = JSON.parse(String(init?.body)) as string[];
+      if (command[0] === 'GET') return mockResp({ result: JSON.stringify(v3) });
+      if (command[0] === 'EVAL') return mockResp({ result: 0 });
+      throw new Error(`Unexpected Redis command: ${command[0]}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = createClient(ENV);
+
+    vi.useFakeTimers();
+    try {
+      const pending = casRoom(client, 'A', current => ({ ...current, topic: 'lost' }));
+      const assertion = expect(pending).rejects.toBeInstanceOf(ConcurrencyError);
+      await vi.runAllTimersAsync();
+      await assertion;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const commands = fetchMock.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)) as string[]);
+    expect(commands.filter(command => command[0] === 'GET')).toHaveLength(25);
+    expect(commands.filter(command => command[0] === 'EVAL')).toHaveLength(25);
+    expect(commands[1]).toEqual([
+      'EVAL',
+      expect.stringContaining('AR11 listen-presence CAS'),
+      '1',
+      'room:A',
+      JSON.stringify(v3),
+      expect.any(String),
+    ]);
+    expect(commands[1]![1]).toContain("'KEEPTTL'");
+    expect(JSON.parse(commands[1]![5]!)).toMatchObject({ topic: 'lost', version: 4 });
   });
 });
 
@@ -339,7 +425,7 @@ describe('joinRoom', () => {
     const before: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'x', status: 'active', version: 1, participants: [] };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -366,7 +452,7 @@ describe('joinRoom', () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -388,7 +474,7 @@ describe('joinRoom', () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -414,7 +500,7 @@ describe('joinRoom', () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -442,7 +528,7 @@ describe('joinRoom', () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -464,7 +550,7 @@ describe('joinRoom', () => {
     };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -480,7 +566,7 @@ describe('joinRoom', () => {
     const before: Room = { code: 'A', topic: 't', createdAt: 0, createdBy: 'host', status: 'active', version: 1, participants: [] };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-      .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+      .mockResolvedValueOnce(mockResp({ result: 1 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const client = createClient(ENV);
@@ -510,7 +596,7 @@ describe('joinRoom', () => {
       };
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-        .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+        .mockResolvedValueOnce(mockResp({ result: 1 }));
       vi.stubGlobal('fetch', fetchMock);
 
       const client = createClient(ENV);
@@ -557,7 +643,7 @@ describe('joinRoom', () => {
       };
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-        .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+        .mockResolvedValueOnce(mockResp({ result: 1 }));
       vi.stubGlobal('fetch', fetchMock);
 
       const client = createClient(ENV);
@@ -583,7 +669,7 @@ describe('joinRoom', () => {
       };
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-        .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+        .mockResolvedValueOnce(mockResp({ result: 1 }));
       vi.stubGlobal('fetch', fetchMock);
 
       const client = createClient(ENV);
@@ -608,7 +694,7 @@ describe('joinRoom', () => {
       };
       const fetchMock = vi.fn()
         .mockResolvedValueOnce(mockResp({ result: JSON.stringify(before) }))
-        .mockResolvedValueOnce(mockResp({ result: 'OK' }));
+        .mockResolvedValueOnce(mockResp({ result: 1 }));
       vi.stubGlobal('fetch', fetchMock);
 
       const client = createClient(ENV);
