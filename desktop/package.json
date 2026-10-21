@@ -7,7 +7,10 @@
     "bundle-daemon": "node scripts/bundle-daemon.mjs",
     "tauri": "tauri",
     "dev": "npm run bundle-daemon && tauri dev",
-    "package": "npm run bundle-daemon && tauri build --bundles appimage,deb && node scripts/tarball.mjs"
+    "package": "npm run bundle-daemon && tauri build --bundles appimage,deb && node scripts/tarball.mjs",
+    "package:linux": "node scripts/bundle-daemon.mjs && tauri build --bundles appimage,deb",
+    "package:windows": "node scripts/bundle-daemon.mjs && tauri build --bundles nsis,msi",
+    "package:all": "node scripts/bundle-daemon.mjs && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"

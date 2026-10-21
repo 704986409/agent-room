@@ -24,10 +24,22 @@ struct DaemonInner {
 struct Daemon(Arc<Mutex<DaemonInner>>);
 
 fn config_dir() -> PathBuf {
-    let base = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
-    });
-    base.join("agent-room")
+    #[cfg(windows)]
+    {
+        let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
+                .join("AppData")
+                .join("Roaming")
+        });
+        return base.join("agent-room");
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
+        });
+        base.join("agent-room")
+    }
 }
 
 /// Server URL: $AGENT_ROOM_SERVER > ~/.config/agent-room/desktop.json {"serverUrl"} > production.

@@ -21,7 +21,7 @@
 |---|---|
 | D1 | 做**薄壳桌面端**：窗口内嵌远端 Agent Room 网页；本地只做 MCP 一键配置、启动/恢复本机 CLI Agent、@唤醒、状态回报、设备配对。房间、记忆、任务、审批、唤醒判断全部留在服务器。 |
 | D2 | **设备凭据由服务器签发**，本地只保存、使用，不在本地生成。配对在桌面端设置页完成（§2.3）。 |
-| D3 | 先做 **Linux**，Linux 跑通后再做 Windows。 |
+| D3 | 先做 **Linux**，再做 Windows。**2026-10-21**：Windows 交互式终端（`wt` / `cmd start`）、Credential Manager、NSIS/MSI 打包与 CI Release 已接入；成品安装包由 GitHub Actions `windows-latest` 产出。 |
 | D4 | 本地后台程序（daemon）用 **Node + TypeScript** 实现并配测试；Tauri 只允许当外壳。 |
 | D5 | **2026-10-21 修订**：托管 Agent 用**交互式 CLI**（可见终端/TUI），方便用户在界面里批准工具权限；不再用无头 `exec` / `-p`。V1 保证支持的 CLI 都能首次启动和恢复（Codex / Cursor / agy；Claude 适配器保留但模型列表为空）；**桌面端 App 调起仍放 V2**（§2.4）。 |
 | D6 | 唤醒走 **B+ 方案**：一台设备只开一个轮询循环，不管上面睡着几个 Agent。服务器**持久化每一个唤醒事件**，只在服务器确认成功后清除。 |
@@ -619,7 +619,7 @@ poll 响应示例：
 | **M5 agent-room-mcp + 一键配置** | `room_join` 后写交接文件（seatKey / 绝对 cursor / 会话 id）；`room_listen` 自动带 `managed`；`room_sleep` 客户端；Stop Hook 改为"监听一轮、无 @ 就交接并结束"；删除前必须建任务的工具说明/规则；会话心跳文件。桌面端一键配置界面：检测本机 Agent、配置状态、一键安装、备份、失败回滚、连接验证、Hooks 授权提示（§2.5）。 | 在 `agent-room-mcp` 仓库提交；**游标交接通过后**做 Linux 实机端到端唤醒联调（§8 端到端）。 |
 | **M6 外壳 + 设备配对 + 状态** | Tauri 壳：WebView 加载远端网页、托盘、本地设置页；设备配对（pair-start / pair-complete）、个人中心"我的设备"与吊销；网页 `sleeping` 状态和 FAILED 提示。 | Linux 包（AppImage / deb 二选一）。 |
 | **M7 删除风险审核** | §6 全部：三要素格式检查、`needs_clarification`、Jev 三档、自动放行日志、待审核状态、批准绑定目标清单、扩大目标重审、claim 拦截、高风险拒绝、Jev 调用失败转人工。 | 单测 + 一次真实房间测试。 |
-| **M8 Windows** | Windows 钥匙串、路径、进程启动差异、各 CLI 适配器在 Windows 上的参数；用户本机测试。 | Windows 安装包。 |
+| **M8 Windows** | Windows 钥匙串（Credential Manager）、`wt`/`cmd start` 交互式终端、Tauri NSIS/MSI、CI Release。用户本机装 Node≥20 + 至少一个 CLI，并配置 `AGENT_ROOM_SERVER`。 | Windows 安装包（`.exe` / `.msi`）+ Linux AppImage/deb，挂到 GitHub Release `desktop-v*`。 |
 
 M7 只依赖 M1b（任务创建走服务器），可与 M2–M6 并行。桌面端 App 调起（Codex / Cursor / Claude / Antigravity 桌面端）放 V2。
 
@@ -805,3 +805,10 @@ M7 只依赖 M1b（任务创建走服务器），可与 M2–M6 并行。桌面�
 - 配对码的获取（复用 WebView 登录）：在 WebView 里打开 个人中心 → "生成配对码"，复制后粘贴到本机设置页；也可以在设置页用账号密码直接绑定（密码与 cookie 只留在内存里）。
 - 钥匙串：有 `secret-tool` 且 Secret Service 能正常存取时用它；否则退回 `~/.config/agent-room/credentials.json`（0600），并提示一次。
 - seatKey 交给 Agent：V1 由 daemon 自己 `room_join` 拿到 seatKey，存进钥匙串，启动或恢复 CLI 时通过环境变量 `AGENT_ROOM_SEAT_KEY` 交给子进程（不进提示词、不进状态文件）。等 `agent-room-mcp` 支持后，改为由它直接从环境变量读取。
+
+### B.3 Windows 打包（2026-10-21）
+
+- 交互式启动：`wt.exe`（Windows Terminal）优先，否则 `cmd /c start "<title>" cmd /k <cli…>` 开新控制台。
+- 凭据：`tools/wake-agent/scripts/win-cred.ps1` → Windows Credential Manager；失败则 `%APPDATA%\agent-room\credentials.json`。
+- 构建：本 Linux 环境**不**交叉编译 Windows 安装包；用 `.github/workflows/desktop-release.yml` 在 `windows-latest` 打 NSIS/MSI，在 Ubuntu 打 AppImage/deb，并发布到 GitHub Release。
+- 用户仍需自备可访问的服务器地址（`AGENT_ROOM_SERVER`）；桌面端不含业务后端。

@@ -13,6 +13,7 @@ import {
   probeVersion,
   resolveCommand,
   wrapInTerminal,
+  windowsCmdEscape,
   type ProcessSpawner,
   type SpawnedProcess,
 } from './src/adapter.js';
@@ -125,6 +126,12 @@ describe('interactive launcher adapters', () => {
     const cid = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
     await writeFile(join(conv, `${cid}.db`), '');
     expect(newestAgyConversationId(conv, Date.now() - 60_000)).toBe(cid);
+  });
+
+  it('escapes cmd.exe arguments for Windows console spawn', () => {
+    expect(windowsCmdEscape('plain')).toBe('plain');
+    expect(windowsCmdEscape('a b')).toBe('"a b"');
+    expect(windowsCmdEscape('say "hi"')).toBe('"say ""hi"""');
   });
 
   it('wraps the CLI in a terminal emulator when DISPLAY is set', () => {

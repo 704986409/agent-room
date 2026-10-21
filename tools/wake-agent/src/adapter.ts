@@ -123,8 +123,29 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Prefer a visible terminal when DISPLAY is set so the user can approve tools in the TUI. */
+/** Escape for cmd.exe when building a single command line after `cmd /k`. */
+export function windowsCmdEscape(value: string): string {
+  if (/^[A-Za-z0-9_./:@%+=,\\-]+$/.test(value)) return value;
+  return `"${value.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Open the CLI in a visible terminal so the user can approve tools.
+ * - Linux: xfce4-terminal / x-terminal-emulator when DISPLAY is set
+ * - Windows: Windows Terminal (`wt`) if on PATH, otherwise `cmd /c start … cmd /k`
+ * - Otherwise: spawn the CLI directly (tests / no display)
+ */
 export function wrapInTerminal(command: string, args: readonly string[], title: string): { command: string; args: string[] } {
+  if (process.platform === 'win32') {
+    const wt = resolveCommand('wt.exe') ?? resolveCommand('wt');
+    if (wt) {
+      return { command: wt, args: ['-d', '.', '--title', title, command, ...args] };
+    }
+    const line = [command, ...args.map(windowsCmdEscape)].join(' ');
+    // `start "title" cmd /k …` opens a new console and keeps it open.
+    return { command: 'cmd.exe', args: ['/c', 'start', title, 'cmd.exe', '/k', line] };
+  }
+
   const line = [command, ...args.map(shellEscape)].join(' ');
   const xfce = resolveCommand('xfce4-terminal');
   if (xfce && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
@@ -134,7 +155,6 @@ export function wrapInTerminal(command: string, args: readonly string[], title: 
   if (xterm && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
     return { command: xterm, args: ['-T', title, '-e', 'bash', '-lc', line] };
   }
-  // No display / tests: spawn the CLI directly (still interactive argv; may need a TTY).
   return { command, args: [...args] };
 }
 

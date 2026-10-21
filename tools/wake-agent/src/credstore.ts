@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto';
+import { accessSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveCommand } from './adapter.js';
 
 export interface CredentialStore {
@@ -107,12 +109,12 @@ export class FileStore implements CredentialStore {
   private async write(values: Record<string, string>): Promise<void> {
     const directory = dirname(this.path);
     await mkdir(directory, { recursive: true, mode: 0o700 });
-    await chmod(directory, 0o700);
+    try { await chmod(directory, 0o700); } catch { /* Windows may ignore mode */ }
     const tmp = `${this.path}.${process.pid}.tmp`;
     await writeFile(tmp, JSON.stringify(values, null, 2), { mode: 0o600 });
-    await chmod(tmp, 0o600);
+    try { await chmod(tmp, 0o600); } catch { /* Windows may ignore mode */ }
     await rename(tmp, this.path);
-    await chmod(this.path, 0o600);
+    try { await chmod(this.path, 0o600); } catch { /* Windows may ignore mode */ }
   }
 
   async get(key: string): Promise<string | undefined> {
@@ -129,6 +131,52 @@ export class FileStore implements CredentialStore {
     const values = await this.read();
     delete values[key];
     await this.write(values);
+  }
+}
+
+
+/** Windows Credential Manager via PowerShell helper (GENERIC credentials). */
+function resolveWinCredScript(): string {
+  const candidates = [
+    join(dirname(fileURLToPath(import.meta.url)), '../scripts/win-cred.ps1'),
+    join(dirname(fileURLToPath(import.meta.url)), 'win-cred.ps1'),
+    join(dirname(process.argv[1] ?? ''), 'win-cred.ps1'),
+    join(dirname(process.argv[1] ?? ''), 'scripts', 'win-cred.ps1'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      accessSync(candidate);
+      return candidate;
+    } catch { /* try next */ }
+  }
+  return candidates[0]!;
+}
+
+export class WindowsCredentialStore implements CredentialStore {
+  constructor(
+    private readonly run: CommandRunner = processRunner(),
+    private readonly scriptPath = resolveWinCredScript(),
+  ) {}
+
+  private async invoke(action: 'get' | 'set' | 'delete', key: string, value?: string): Promise<CommandResult> {
+    const args = ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', this.scriptPath, action, key];
+    if (action === 'set') args.push(value ?? '');
+    return this.run('powershell.exe', args, undefined, 15_000);
+  }
+
+  async get(key: string): Promise<string | undefined> {
+    const result = await this.invoke('get', key);
+    if (result.code !== 0) return undefined;
+    return result.stdout.replace(/\r?\n$/, '') || undefined;
+  }
+
+  async set(key: string, value: string): Promise<void> {
+    const result = await this.invoke('set', key, value);
+    if (result.code !== 0) throw new Error('secret_store_failed');
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.invoke('delete', key);
   }
 }
 
@@ -157,7 +205,7 @@ async function secretServiceWorks(run: CommandRunner): Promise<boolean> {
 
 export async function openCredentialStore(options: {
   dir: string;
-  prefer?: 'file' | 'secret-tool';
+  prefer?: 'file' | 'secret-tool' | 'windows';
   run?: CommandRunner;
   log?: (line: string) => void;
   commandExists?: (command: string) => boolean;
@@ -167,8 +215,27 @@ export async function openCredentialStore(options: {
   if (options.prefer === 'file') return file;
   const exists = options.commandExists ?? (command => resolveCommand(command) !== undefined);
   const run = options.run ?? processRunner();
-  const available = exists('secret-tool') && await secretServiceWorks(run);
-  if (available) return new LinuxSecretStore(run);
+
+  if (options.prefer === 'windows' || (options.prefer !== 'secret-tool' && process.platform === 'win32')) {
+    if (exists('powershell.exe') || exists('powershell')) {
+      try {
+        const store = new WindowsCredentialStore(run);
+        const probe = `probe:${randomBytes(4).toString('hex')}`;
+        await store.set(probe, 'ok');
+        const got = await store.get(probe);
+        await store.delete(probe);
+        if (got === 'ok') return store;
+      } catch {
+        // fall through to file store
+      }
+    }
+  }
+
+  if (options.prefer !== 'windows') {
+    const available = exists('secret-tool') && await secretServiceWorks(run);
+    if (available) return new LinuxSecretStore(run);
+  }
+
   if (!warnedFallback) {
     warnedFallback = true;
     options.log?.(`secret service unavailable; credentials stored in 0600 file ${path}`);

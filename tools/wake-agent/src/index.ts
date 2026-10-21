@@ -42,13 +42,23 @@ function hasFlag(name: string): boolean {
 }
 
 function defaultStatePath(): string {
-  return process.env.AGENT_ROOM_STATE_DIR
-    ? join(process.env.AGENT_ROOM_STATE_DIR, 'daemon.json')
-    : join(homedir(), '.local/state/agent-room/daemon.json');
+  if (process.env.AGENT_ROOM_STATE_DIR) {
+    return join(process.env.AGENT_ROOM_STATE_DIR, 'daemon.json');
+  }
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA || process.env.APPDATA || join(homedir(), 'AppData', 'Local');
+    return join(base, 'agent-room', 'daemon.json');
+  }
+  return join(homedir(), '.local/state/agent-room/daemon.json');
 }
 
 function defaultConfigDir(): string {
-  return process.env.AGENT_ROOM_CONFIG_DIR || join(homedir(), '.config/agent-room');
+  if (process.env.AGENT_ROOM_CONFIG_DIR) return process.env.AGENT_ROOM_CONFIG_DIR;
+  if (process.platform === 'win32') {
+    const base = process.env.APPDATA || join(homedir(), 'AppData', 'Roaming');
+    return join(base, 'agent-room');
+  }
+  return join(homedir(), '.config/agent-room');
 }
 
 async function readPassword(): Promise<string> {
