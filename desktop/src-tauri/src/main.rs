@@ -396,6 +396,42 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Paths handed to Node (argv and `current_dir`).
+///
+/// Tauri `resource_dir()` can yield Win32 extended paths (`\\?\D:\Agent Room\...`).
+/// Node's `realpathSync` then walks up to `lstat('D:')` and exits EISDIR when the
+/// install directory contains spaces. Strip `\\?\` (and map `\\?\UNC\foo` → `\\foo`)
+/// on Windows so the logged path and the spawned path are the same. No-op elsewhere.
+fn for_node_argv(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(text) = path.to_str() {
+            if let Some(stripped) = strip_win32_verbatim_prefix(text) {
+                return PathBuf::from(stripped);
+            }
+        }
+    }
+    path
+}
+
+/// `\\?\D:\rest` → `D:\rest`; `\\?\UNC\server\share\rest` → `\\server\share\rest`.
+/// `None` when `path` has no verbatim prefix, or the prefix would strip to empty.
+#[cfg(any(windows, test))]
+fn strip_win32_verbatim_prefix(path: &str) -> Option<String> {
+    let rest = path.strip_prefix(r"\\?\")?;
+    if rest.is_empty() {
+        return None;
+    }
+    // `\\?\` is already gone. `UNC\server\...` must become `\\server\...`.
+    if let Some(unc) = rest.strip_prefix(r"UNC\") {
+        if unc.is_empty() {
+            return None;
+        }
+        return Some(format!(r"\\{unc}"));
+    }
+    Some(rest.to_string())
+}
+
 impl Daemon {
     fn running(&self) -> bool {
         let mut g = self.0.lock().unwrap();
@@ -409,14 +445,15 @@ impl Daemon {
         if self.running() {
             return Ok(());
         }
-        let script = daemon_script(app).ok_or_else(|| {
+        // Strip before log and spawn so daemon.log matches the argv Node receives.
+        let script = for_node_argv(daemon_script(app).ok_or_else(|| {
             "找不到本机后台脚本 daemon/agent-room-daemon.mjs（安装包不完整？）".to_string()
-        })?;
-        let node = find_node(app)?;
+        })?);
+        let node = for_node_argv(find_node(app)?);
         let cwd = script
             .parent()
             .filter(|dir| dir.is_dir())
-            .map(|dir| dir.to_path_buf());
+            .map(|dir| for_node_argv(dir.to_path_buf()));
         let mut log = open_daemon_log()?;
         let _ = writeln!(
             log,
@@ -711,4 +748,64 @@ fn main() {
                 daemon_for_exit.stop();
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_verbatim_disk_prefix() {
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\D:\Agent Room\node\node.exe").as_deref(),
+            Some(r"D:\Agent Room\node\node.exe")
+        );
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\D:\Agent Room\daemon\agent-room-daemon.mjs")
+                .as_deref(),
+            Some(r"D:\Agent Room\daemon\agent-room-daemon.mjs")
+        );
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\D:\Agent Room\daemon").as_deref(),
+            Some(r"D:\Agent Room\daemon")
+        );
+    }
+
+    #[test]
+    fn maps_verbatim_unc_to_unc() {
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\?\UNC\server\share\node.exe").as_deref(),
+            Some(r"\\server\share\node.exe")
+        );
+    }
+
+    #[test]
+    fn leaves_ordinary_paths_alone() {
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"D:\Agent Room\node\node.exe"),
+            None
+        );
+        assert_eq!(
+            strip_win32_verbatim_prefix(r"\\server\share\node.exe"),
+            None
+        );
+        assert_eq!(strip_win32_verbatim_prefix(r"\\?\"), None);
+        assert_eq!(strip_win32_verbatim_prefix(r"\\?\UNC\"), None);
+    }
+
+    #[test]
+    fn for_node_argv_strips_only_on_windows() {
+        let verbatim = PathBuf::from(r"\\?\D:\Agent Room\daemon");
+        let plain = PathBuf::from(r"D:\Agent Room\daemon");
+        #[cfg(windows)]
+        {
+            assert_eq!(for_node_argv(verbatim), plain);
+            assert_eq!(for_node_argv(plain.clone()), plain);
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(for_node_argv(verbatim.clone()), verbatim);
+            assert_eq!(for_node_argv(plain.clone()), plain);
+        }
+    }
 }
