@@ -67,16 +67,16 @@ export function resolveCommand(command: string, pathEnv: string = process.env.PA
 }
 
 export function rejectUnsafe(args: readonly string[]): void {
-  for (const arg of args) {
-    // Standalone managed flag added by our adapter — keep interactive TUI, auto-approve tools.
-    if (arg === '--dangerously-skip-permissions') continue;
+  args.forEach((arg, index) => {
+    const isPromptArg = index === args.length - 1;
+    // Adapter may insert this before the prompt (interactive TUI + auto-approve). Never as the prompt.
+    if (arg === '--dangerously-skip-permissions' && !isPromptArg) return;
     if (arg === '--force' || arg === '--yolo' || arg === '--full-auto') throw new Error('launcher_unavailable');
     if (arg.startsWith('--dangerously')) throw new Error('launcher_unavailable');
-    // Prompt / free-text args must not smuggle unsafe flags.
     if (/(?:^|\s)(--yolo|--force|--full-auto|--dangerously[\w-]*)(?:\s|$)/i.test(arg)) {
       throw new Error('launcher_unavailable');
     }
-  }
+  });
 }
 
 export function sessionIdFromLines(buffer: string, pick: (value: unknown) => string | undefined): string | undefined {
