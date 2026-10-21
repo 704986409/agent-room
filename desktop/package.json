@@ -5,12 +5,13 @@
   "description": "Agent Room Desktop shell (Tauri v2): WebView of the web app, tray, local settings page; spawns the Node daemon.",
   "scripts": {
     "bundle-daemon": "node scripts/bundle-daemon.mjs",
+    "bundle-node": "node scripts/bundle-node.mjs",
     "tauri": "tauri",
     "dev": "npm run bundle-daemon && tauri dev",
-    "package": "npm run bundle-daemon && tauri build --bundles appimage,deb && node scripts/tarball.mjs",
-    "package:linux": "node scripts/bundle-daemon.mjs && tauri build --bundles appimage,deb",
-    "package:windows": "node scripts/bundle-daemon.mjs && tauri build --bundles nsis,msi",
-    "package:all": "node scripts/bundle-daemon.mjs && tauri build"
+    "package": "npm run bundle-daemon && node scripts/bundle-node.mjs --platform linux && tauri build --bundles appimage,deb && node scripts/tarball.mjs",
+    "package:linux": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs --platform linux && tauri build --bundles appimage,deb",
+    "package:windows": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs --platform win && tauri build --bundles nsis,msi",
+    "package:all": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

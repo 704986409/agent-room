@@ -4,11 +4,12 @@
 // settings page (token-protected, no IPC either).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::{BufRead, BufReader};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
@@ -94,8 +95,41 @@ fn path_has_node(dir: &Path) -> Option<PathBuf> {
     }
 }
 
+fn node_file_name() -> &'static str {
+    if cfg!(windows) {
+        "node.exe"
+    } else {
+        "node"
+    }
+}
+
+/// Bundled runtime next to the installed app, before PATH / nvm.
+/// Windows: `node/node.exe`. Linux: `node/node` (also `node/bin/node`).
+fn bundled_node_candidates(app: &AppHandle) -> Vec<PathBuf> {
+    let name = node_file_name();
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(dir) = app.path().resource_dir() {
+        roots.push(dir);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            roots.push(exe_dir.to_path_buf());
+            roots.push(exe_dir.join("resources"));
+        }
+    }
+    let mut out = Vec::new();
+    for root in roots {
+        out.push(root.join("node").join(name));
+        if !cfg!(windows) {
+            out.push(root.join("node").join("bin").join("node"));
+        }
+    }
+    out
+}
+
 /// Resolve Node for GUI apps (nvm PATH often missing). Prefer absolute path.
-fn find_node() -> Result<PathBuf, String> {
+/// Order: `AGENT_ROOM_NODE`, bundled runtime, then PATH / nvm / Program Files.
+fn find_node(app: &AppHandle) -> Result<PathBuf, String> {
     if let Ok(v) = std::env::var("AGENT_ROOM_NODE") {
         if !v.is_empty() {
             let p = PathBuf::from(&v);
@@ -111,6 +145,12 @@ fn find_node() -> Result<PathBuf, String> {
             return Err(format!(
                 "AGENT_ROOM_NODE 指向的路径不存在: {v}\n请改成 node.exe 的完整路径，例如 C:\\nvm4w\\nodejs\\node.exe"
             ));
+        }
+    }
+
+    for candidate in bundled_node_candidates(app) {
+        if candidate.is_file() {
+            return Ok(candidate);
         }
     }
 
@@ -154,14 +194,96 @@ fn find_node() -> Result<PathBuf, String> {
     }
 
     Err(
-        "未找到 Node.js（桌面端需要 Node ≥ 20 才能启动本机后台）。\n\
-         PowerShell 里能跑 node 并不代表托盘程序找得到——nvm 常只改了终端 PATH。\n\
-         请任选其一：\n\
-         1) 设置用户环境变量 AGENT_ROOM_NODE=C:\\nvm4w\\nodejs\\node.exe（按你的实际路径）\n\
-         2) 安装系统级 Node.js LTS 并确保 Machine PATH 含 node.exe\n\
-         然后重新打开 Agent Room；也可以从主窗口菜单或托盘菜单选择「启动后台程序」。"
+        "未找到 Node.js。安装包应在 resources/node 中自带运行时；该文件不存在，PATH / nvm 中也没有可用的 node。\n\
+         请重新安装 Agent Room，或设置用户环境变量 AGENT_ROOM_NODE 为 node 可执行文件的完整路径后重新打开。"
             .into(),
     )
+}
+
+/// `%USERPROFILE%\.agent-room` on Windows, `~/.agent-room` elsewhere.
+fn daemon_log_dir() -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
+            .join(".agent-room")
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".agent-room")
+    }
+}
+
+fn daemon_log_path() -> PathBuf {
+    daemon_log_dir().join("daemon.log")
+}
+
+fn open_daemon_log() -> Result<std::fs::File, String> {
+    let dir = daemon_log_dir();
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("无法创建日志目录 {}: {e}", dir.display()))?;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(daemon_log_path())
+        .map_err(|e| format!("无法打开日志 {}: {e}", daemon_log_path().display()))
+}
+
+fn log_stamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86400) as i64;
+    let tod = secs % 86400;
+    let hour = tod / 3600;
+    let min = (tod % 3600) / 60;
+    let sec = tod % 60;
+    // Howard Hinnant civil_from_days, for dates after 1970-01-01.
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let mut y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    if m <= 2 {
+        y += 1;
+    }
+    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}Z")
+}
+
+fn tail_lines(path: &Path, max_lines: usize) -> String {
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return String::new(),
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(64 * 1024);
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return String::new();
+    }
+    let mut buf = Vec::new();
+    if file.read_to_end(&mut buf).is_err() {
+        return String::new();
+    }
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        if let Some(i) = text.find('\n') {
+            text.drain(..=i);
+        }
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let from = lines.len().saturating_sub(max_lines);
+    let mut out = lines[from..].join("\n");
+    const MAX_CHARS: usize = 3500;
+    if out.chars().count() > MAX_CHARS {
+        let skip = out.chars().count() - MAX_CHARS;
+        out = out.chars().skip(skip).collect();
+        out.insert_str(0, "…\n");
+    }
+    out
 }
 
 fn which_on_path(cmd: &str) -> Option<PathBuf> {
@@ -287,43 +409,105 @@ impl Daemon {
         if self.running() {
             return Ok(());
         }
-        let script =
-            daemon_script(app).ok_or_else(|| {
-                "找不到本机后台脚本 daemon/agent-room-daemon.mjs（安装包不完整？）".to_string()
-            })?;
-        let node = find_node()?;
+        let script = daemon_script(app).ok_or_else(|| {
+            "找不到本机后台脚本 daemon/agent-room-daemon.mjs（安装包不完整？）".to_string()
+        })?;
+        let node = find_node(app)?;
+        let cwd = script
+            .parent()
+            .filter(|dir| dir.is_dir())
+            .map(|dir| dir.to_path_buf());
+        let mut log = open_daemon_log()?;
+        let _ = writeln!(
+            log,
+            "----- {} daemon start -----\nnode: {}\nscript: {}\ncwd: {}",
+            log_stamp(),
+            node.display(),
+            script.display(),
+            cwd.as_ref()
+                .map(|dir| dir.display().to_string())
+                .unwrap_or_else(|| "(unchanged)".into())
+        );
+        let _ = log.flush();
+        let stderr = log
+            .try_clone()
+            .map_err(|e| format!("无法复制日志句柄: {e}"))?;
+        let mut stdout_log = log
+            .try_clone()
+            .map_err(|e| format!("无法复制日志句柄: {e}"))?;
+        drop(log);
+
+        // argv, not a shell: paths with spaces stay a single argument.
         let mut cmd = Command::new(&node);
         cmd.arg(&script)
             .args(["serve", "--server", &server_url()])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::from(stderr));
+        if let Some(dir) = &cwd {
+            cmd.current_dir(dir);
+        }
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
         let mut child = cmd.spawn().map_err(|e| {
             format!(
-                "无法启动本机后台（Node: {}）: {e}\n若使用 nvm，请设置 AGENT_ROOM_NODE 指向 node.exe。",
-                node.display()
+                "无法启动本机后台（Node: {}）: {e}\n日志: {}",
+                node.display(),
+                daemon_log_path().display()
             )
         })?;
         let stdout = child.stdout.take().ok_or("daemon stdout missing")?;
         {
             let mut g = self.0.lock().unwrap();
+            if let Some(mut old) = g.child.take() {
+                let _ = old.kill();
+                let _ = old.wait();
+            }
             g.child = Some(child);
             g.control_url = None;
         }
         let me = self.clone();
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = writeln!(stdout_log, "{line}");
+                let _ = stdout_log.flush();
                 if let Some(url) = line.strip_prefix("control: ") {
                     me.0.lock().unwrap().control_url = Some(url.trim().to_string());
-                } else {
-                    println!("[daemon] {line}");
                 }
             }
+            let _ = stdout_log.flush();
         });
         Ok(())
+    }
+
+    /// `Some(Some(code))` exited, `Some(None)` signal, `None` still running or absent.
+    fn exited_code(&self) -> Option<Option<i32>> {
+        let mut g = self.0.lock().unwrap();
+        let child = g.child.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => Some(status.code()),
+            _ => None,
+        }
+    }
+
+    fn early_exit_detail(&self) -> String {
+        let code = match self.exited_code() {
+            Some(Some(code)) => code.to_string(),
+            Some(None) => "signal".into(),
+            None => "unknown".into(),
+        };
+        let log_path = daemon_log_path();
+        let tail = tail_lines(&log_path, 40);
+        let tail = if tail.is_empty() {
+            "(日志为空)".to_string()
+        } else {
+            tail
+        };
+        format!(
+            "本机后台进程启动后退出（退出码: {code}）。\n日志: {}\n最近输出:\n{tail}",
+            log_path.display()
+        )
     }
 
     fn stop(&self) {
@@ -413,10 +597,11 @@ fn report_autostart_readiness(daemon: Daemon) {
     }
     let detail = if daemon.running() {
         "本机后台进程已启动，但 8 秒内没有报告控制页地址。请确认安装包中的 daemon 文件完整，然后从主窗口菜单「本机设置」重试。"
+            .to_string()
     } else {
-        "本机后台进程启动后退出。请确认 Node.js ≥ 20 可用，并检查安装包中的 daemon 文件；修复后重新打开 Agent Room。"
+        daemon.early_exit_detail()
     };
-    alert("本机后台自动启动失败", detail);
+    alert("本机后台自动启动失败", &detail);
 }
 
 fn show_settings(app: AppHandle, daemon: Daemon) {
@@ -427,10 +612,14 @@ fn show_settings(app: AppHandle, daemon: Daemon) {
     let Some(url) = daemon.wait_control_url(Duration::from_secs(8)) else {
         let hint = if daemon.running() {
             "本机后台已启动，但 8 秒内未报到控制页地址（control: URL）。\n请查看安装目录下 daemon 是否完整，或重新打开主窗口菜单「本机设置」重试。"
+                .to_string()
         } else {
-            "本机后台未能保持运行，因此打不开「本机设置」。\n请确认 Node ≥ 20 可用；修复后可从主窗口菜单或托盘菜单选择「启动后台程序」。\n也可手动：node daemon\\agent-room-daemon.mjs serve --server https://ai-room.pupgo.top\n然后在浏览器打开它打印的 control: 链接完成绑定。"
+            format!(
+                "{}\n\n可从主窗口菜单或托盘菜单选择「启动后台程序」重试。",
+                daemon.early_exit_detail()
+            )
         };
-        alert("本机设置", hint);
+        alert("本机设置", &hint);
         return;
     };
 

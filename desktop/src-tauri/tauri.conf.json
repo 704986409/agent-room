@@ -27,17 +27,11 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../daemon-dist/": "daemon/"
+      "../daemon-dist/": "daemon/",
+      "../node-runtime/": "node/"
     },
     "category": "Productivity",
     "shortDescription": "Agent Room desktop client",
-    "linux": {
-      "deb": {
-        "depends": [
-          "nodejs (>= 20)"
-        ]
-      }
-    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"

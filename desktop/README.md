@@ -4,7 +4,7 @@ Tauri v2 shell + Node wake daemon. The shell opens the web app and a local setti
 
 ## Requirements
 
-- **Node.js ≥ 20** on PATH (daemon runs as `agent-room-daemon.mjs`)
+- **Node.js ≥ 20** to build. Installers bundle a portable Node runtime for the daemon (`resources/node`). Set `AGENT_ROOM_NODE` to override it.
 - One supported agent CLI: `agy`, `cursor-agent`, or `codex` (interactive TUI)
 - A reachable Agent Room **server** (set `AGENT_ROOM_SERVER` or `desktop.json`; defaults to `https://ai-room.pupgo.top`). The desktop app alone is not enough.
 
@@ -58,7 +58,7 @@ npm run package:windows
 #   src-tauri/target/release/bundle/msi/*.msi
 ```
 
-The NSIS/MSI packages embed `daemon-dist/` (bundled Node daemon). Users still need Node ≥ 20 installed system-wide so the shell can `node agent-room-daemon.mjs`.
+The NSIS/MSI packages embed `daemon-dist/` and a portable Node runtime under `resources/node`. The shell starts the daemon with that runtime; a system-wide Node install is not required.
 
 ### GitHub Actions
 

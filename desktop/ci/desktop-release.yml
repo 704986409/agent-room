@@ -15,7 +15,9 @@ permissions:
   contents: write
 
 env:
+  # Toolchain for npm / esbuild. The installer bundles NODE_DIST_VERSION itself.
   NODE_VERSION: '20'
+  NODE_DIST_VERSION: '22.23.4'
 
 jobs:
   linux:
@@ -28,7 +30,7 @@ jobs:
       - name: Install Linux Tauri deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev xz-utils
       - uses: dtolnay/rust-toolchain@stable
       - name: Build packages
         working-directory: desktop
@@ -112,7 +114,7 @@ jobs:
             - **Windows:** NSIS `.exe` 和/或 `.msi`
 
             ### 使用前准备
-            1. 安装 **Node.js ≥ 20**（daemon 用系统 Node 运行打包后的 `agent-room-daemon.mjs`）。
+            1. 安装包已内置 **Node.js** 运行时，本机 daemon 默认使用它，不需要再单独安装系统 Node。如需覆盖，可设置环境变量 `AGENT_ROOM_NODE` 指向其他 `node` / `node.exe`。
             2. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。
             3. 准备可访问的 **Agent Room 服务器**（仅装桌面端不够）。设置：
                - 环境变量 `AGENT_ROOM_SERVER=https://你的服务器`

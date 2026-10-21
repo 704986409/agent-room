@@ -3,3 +3,6 @@ daemon-dist/
 dist-pkg/
 src-tauri/target/
 src-tauri/gen/
+# Portable Node downloaded at package time (do not commit the runtime).
+node-runtime/
+.cache/
