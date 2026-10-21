@@ -1,7 +1,7 @@
 // Desktop client e2e against local env (:3300 / Redis 6390). Mock agent CLI only.
 import fs from 'node:fs'; import { spawn, execSync } from 'node:child_process';
 const B = 'http://127.0.0.1:3300'; const L = '/home/box/MERYANG/localtest';
-const DAEMON = '/home/box/MERYANG/agent-room-desktop/desktop/daemon-dist/agent-room-daemon.mjs';
+const DAEMON = '/home/box/MERYANG/agent-room-integration/desktop/daemon-dist/agent-room-daemon.mjs';
 const HOME = `${L}/dhome`; fs.rmSync(HOME, { recursive: true, force: true }); fs.mkdirSync(HOME, { recursive: true });
 fs.rmSync(`${L}/mock-codex2.log`, { force: true });
 const adm = Object.fromEntries(fs.readFileSync(`${L}/admin.txt`, 'utf8').trim().split('\n').map(l => l.split('=')));
@@ -42,6 +42,7 @@ const room = await web('/api/web/room-create', { topic: 'desktop e2e', displayNa
 const ic = (await web('/api/room', { action: 'createAgentInvite', code, hostKey: room.hostKey, role: 'coder' })).invite.inviteCode;
 const st = await ctl(url, '/api/agents', { code, inviteCode: ic, name: 'Desk', adapterId: 'codex', model: 'gpt-6-luna', cwd: '/tmp' });
 const seat = st.seat;
+if (!seat?.seatId) { console.log('abort after first-launch failure'); d.kill('SIGTERM'); console.log(`${results.filter(Boolean).length}/${results.length} passed`); await sleep(500); process.exit(1); }
 check('4.first-launch-session-pid-cwd', !!seat?.sessionId && !!seat?.pid && seat.cwd === '/tmp', JSON.stringify(seat ?? st));
 check('4b.model-allowlist-enforced', (await ctl(url, '/api/agents', { code, inviteCode: ic, name: 'Bad', adapterId: 'cursor-agent', model: 'claude-opus-5', cwd: '/tmp' })).status >= 400);
 await sleep(2500);
@@ -52,8 +53,11 @@ check('4d.state-file-has-seat-no-seatKey', (() => { const s = JSON.parse(fs.read
 const t0 = Date.now();
 await web('/api/web/chat-send', { code, text: `@Desk please reply` });
 check('5.mention-wakes-daemon-resume', await waitEvent(seat.seatId, 1), `${Date.now() - t0}ms`);
-const msgs = rc('LRANGE', `room-msgs:${code}`, '0', '-1');
-check('5b.agent-replied-same-session', msgs.includes(`mock agent: done (${seat.sessionId})`));
+let msgs = '';
+for (let i = 0; i < 20; i++) { await sleep(200); msgs = rc('LRANGE', `room-msgs:${code}`, '0', '-1'); if (msgs.includes(`mock agent: done (${seat.sessionId})`)) break; }
+check('5b.agent-replied-same-session', msgs.includes(`mock agent: done (${seat.sessionId})`), msgs.slice(0, 200));
+// Snapshot state before restart so we can see if seats were lost.
+fs.writeFileSync(`${L}/e2e-pre-restart-state.json`, fs.readFileSync(`${HOME}/.local/state/agent-room/daemon.json`));
 
 d.kill('SIGTERM'); await sleep(1500); dlog = '';
 ({ d, url } = await serve());

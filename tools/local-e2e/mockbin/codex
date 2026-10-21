@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { createRequire } = require('module');
 const { randomUUID } = require('crypto');
-const r = createRequire(path.resolve(__dirname, '../../../package.json'));
+const r = createRequire('/home/box/MERYANG/agent-room-integration/package.json');
 const logPath = process.env.AGENT_ROOM_MOCK_LOG || path.join(process.env.HOME || '/tmp', 'mock-codex-interactive.log');
 const log = m => fs.appendFileSync(logPath, `${new Date().toISOString()} ${m}\n`);
 if (process.argv.includes('--version')) { console.log('codex-cli 0.0.0-mock-interactive'); process.exit(0); }
@@ -27,16 +27,15 @@ function writeSession(id) {
 (async () => {
   const args = process.argv.slice(2);
   const resumeAt = args.indexOf('resume');
-  const thread = resumeAt >= 0 ? args[resumeAt + 1] : `01a1mock-${randomUUID().slice(0, 8)}`;
-  // Interactive path: no --json / no exec. Still write a session file for the waiter.
+  // Must look like a real UUID so the adapter's rollout filename regex matches.
+  const thread = resumeAt >= 0 ? args[resumeAt + 1] : randomUUID();
   if (!args.includes('exec') && !args.includes('--json')) writeSession(thread);
   else console.log(JSON.stringify({ type: 'thread.started', thread_id: thread }));
   const key = process.env.AGENT_ROOM_SEAT_KEY || '';
   const prompt = args[args.length - 1] || '';
-  log(`argv=${JSON.stringify(args.slice(0, -1))} managed=${process.env.AGENT_ROOM_MANAGED} seatKeyEnv=${key ? 'yes' : 'no'} promptHasKey=${key && prompt.includes(key)} interactive=${!args.includes('exec')}`);
+  log(`argv=${JSON.stringify(args.slice(0, -1))} managed=${process.env.AGENT_ROOM_MANAGED} seatKeyEnv=${key ? 'yes' : 'no'} promptHasKey=${!!(key && prompt.includes(key))} interactive=${!args.includes('exec')}`);
   const m = /room_listen\(\{ code: "([^"]+)", name: "([^"]+)", since: (\d+)/.exec(prompt);
   if (!m) {
-    // Keep the "terminal" open briefly so the daemon sees a live pid, then exit idle.
     await new Promise(r => setTimeout(r, 800));
     return;
   }
