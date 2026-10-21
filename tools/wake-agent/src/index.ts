@@ -1,3 +1,4 @@
+import { writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -225,7 +226,7 @@ async function runDaemon(statePath: string, mode: {
       },
     });
     control = started;
-    process.stdout.write(`control: http://127.0.0.1:${started.port}/?t=${started.token}\n`);
+    writeSync(1, `control: http://127.0.0.1:${started.port}/?t=${started.token}\n`);
   }
   const shutdown = () => {
     daemon.stop();

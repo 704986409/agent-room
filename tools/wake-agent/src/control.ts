@@ -96,10 +96,10 @@ export async function startControlServer(options: ControlServerOptions): Promise
   const origin = `http://127.0.0.1:${port}`;
 
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
-  await chmod(options.stateDir, 0o700);
+  try { await chmod(options.stateDir, 0o700); } catch { /* Windows may ignore mode */ }
   const controlPath = join(options.stateDir, 'control.json');
   await writeFile(controlPath, JSON.stringify({ port, token }, null, 2), { mode: 0o600 });
-  await chmod(controlPath, 0o600);
+  try { await chmod(controlPath, 0o600); } catch { /* Windows may ignore mode */ }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', origin);
