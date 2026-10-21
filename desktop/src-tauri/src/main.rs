@@ -247,7 +247,7 @@ fn persistent_webview_data_directory(app: &AppHandle) -> Result<Option<PathBuf>,
     }
 }
 
-fn main_window_menu(app: &AppHandle) -> Result<Menu, String> {
+fn main_window_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
     let settings = MenuItem::with_id(app, "window-settings", "本机设置", true, None::<&str>)
         .map_err(|e| e.to_string())?;
     let app_menu = Submenu::with_items(app, "Agent Room", true, &[&settings])
