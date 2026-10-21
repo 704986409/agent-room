@@ -12,6 +12,7 @@ await build({
   outfile: join(out, 'agent-room-daemon.mjs'),
   bundle: true, platform: 'node', format: 'esm', target: 'node20',
   banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
+  nodePaths: [join(root, 'node_modules')],
   logLevel: 'info',
 });
 const html = join(root, 'tools/wake-agent/src/settings.html');
