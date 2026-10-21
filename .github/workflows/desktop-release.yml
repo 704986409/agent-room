@@ -1,0 +1,131 @@
+name: Desktop release (Linux + Windows)
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create/update (e.g. desktop-v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install Linux Tauri deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build packages
+        working-directory: desktop
+        run: |
+          npm ci
+          npm run package:linux
+      - name: Collect assets
+        run: |
+          mkdir -p dist-release
+          cp desktop/src-tauri/target/release/bundle/appimage/*.AppImage dist-release/ || true
+          cp desktop/src-tauri/target/release/bundle/deb/*.deb dist-release/ || true
+          cp desktop/dist-pkg/*.tar.gz dist-release/ || true
+          ls -la dist-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          path: dist-release/*
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Windows packages
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          npm ci
+          npm run package:windows
+      - name: Collect assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          Copy-Item desktop/src-tauri/target/release/bundle/nsis/*.exe dist-release/ -ErrorAction SilentlyContinue
+          Copy-Item desktop/src-tauri/target/release/bundle/msi/*.msi dist-release/ -ErrorAction SilentlyContinue
+          Get-ChildItem dist-release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          path: dist-release/*
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: assets
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: assets
+      - name: List assets
+        run: ls -la assets
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Agent Room Desktop ${{ steps.tag.outputs.name }}
+          generate_release_notes: false
+          body: |
+            ## Agent Room Desktop ${{ steps.tag.outputs.name }}
+
+            本机桌面客户端（Tauri 壳 + Node 唤醒 daemon）：用 WebView 打开 Agent Room 网页，在本机设置页完成设备配对，并以**交互式终端**启动/恢复托管 Agent CLI。
+
+            ### 资源
+            - **Linux:** AppImage / deb（及可选 tarball）
+            - **Windows:** NSIS `.exe` 和/或 `.msi`
+
+            ### 使用前准备
+            1. 安装 **Node.js ≥ 20**（daemon 用系统 Node 运行打包后的 `agent-room-daemon.mjs`）。
+            2. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。
+            3. 准备可访问的 **Agent Room 服务器**（仅装桌面端不够）。设置：
+               - 环境变量 `AGENT_ROOM_SERVER=https://你的服务器`
+               - 或配置文件：Linux `~/.config/agent-room/desktop.json`，Windows `%APPDATA%\agent-room\desktop.json` → `{"serverUrl":"https://..."}`
+
+            ### 配对步骤
+            1. 打开桌面端 → 托盘「本机设置」。
+            2. 网页登录 → 个人中心 →「生成配对码」→ 粘贴到本机设置「绑定本机」。
+            3. 新建托管 Agent，被 @ 时会弹出交互式终端以便批准工具权限。
+
+            ### 说明
+            - Windows 安装包由 `windows-latest` CI 构建；Linux 包由 Ubuntu CI 构建。
+            - 不要把生产 Redis / 密钥打进客户端。
+          files: assets/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
