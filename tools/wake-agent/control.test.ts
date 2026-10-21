@@ -7,7 +7,7 @@ import { startControlServer } from './src/control.js';
 import { MemoryCredentialStore } from './src/credstore.js';
 import { MemoryRunLock, WakeDaemon } from './src/daemon.js';
 import { DaemonLog } from './src/log.js';
-import { installMcp, mcpStatus } from './src/mcpconfig.js';
+import { forNodeArgv, installMcp, mcpStatus } from './src/mcpconfig.js';
 import { SecretRegistry } from './src/redact.js';
 
 function quietSpawner(): ProcessSpawner {
@@ -139,10 +139,19 @@ describe('mcp config', () => {
     const file = join(home, '.codex/config.toml');
     await mkdir(dirname(file), { recursive: true });
     await writeFile(file, 'original\n');
-    const missing = await installMcp('codex', { home, commandExists: () => false, run: async () => { throw new Error('ran'); } });
-    expect(missing).toEqual({ error: 'agent_room_mcp_not_installed', hint: 'npm i -g agent-room-mcp' });
+    const missing = await installMcp('codex', {
+      home,
+      env: {},
+      commandExists: () => false,
+      run: async () => { throw new Error('ran'); },
+    });
+    expect(missing).toEqual({
+      error: 'agent_room_mcp_not_installed',
+      hint: '未找到安装包内的 MCP 运行时。请重新安装 Agent Room 桌面端。',
+    });
     const failed = await installMcp('codex', {
       home,
+      env: {},
       commandExists: () => true,
       now: 123,
       run: async (command, args) => {
@@ -154,5 +163,39 @@ describe('mcp config', () => {
     expect(failed).toMatchObject({ error: 'mcp_init_failed' });
     expect(await readFile(file, 'utf8')).toBe('original\n');
     expect(await readFile(`${file}.bak-123`, 'utf8')).toBe('original\n');
+  });
+
+  it('runs bundled node + mcp entry without a global agent-room-mcp', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-mcp-bundled-'));
+    const nodePath = join(home, 'node');
+    const mcpEntry = join(home, 'mcp', 'dist', 'index.js');
+    await mkdir(dirname(mcpEntry), { recursive: true });
+    await writeFile(nodePath, '');
+    await writeFile(mcpEntry, '');
+    const calls: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
+    const result = await installMcp('cursor-agent', {
+      home,
+      nodePath,
+      mcpEntry,
+      commandExists: () => { throw new Error('global lookup'); },
+      run: async (command, args, _input, _timeout, env) => {
+        calls.push({ command, args: [...args], env });
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(result).toEqual({ ok: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe(nodePath);
+    expect(calls[0]?.args).toEqual([mcpEntry, 'init', 'cursor']);
+    expect(calls[0]?.args.join(' ')).not.toContain('agent-room-mcp');
+    expect(calls[0]?.env?.AGENT_ROOM_MCP_COMMAND).toBe(nodePath);
+    expect(JSON.parse(calls[0]?.env?.AGENT_ROOM_MCP_ARGS ?? 'null')).toEqual([mcpEntry]);
+    expect(calls[0]?.env?.HOME).toBe(home);
+  });
+
+  it('strips Win32 verbatim prefixes before they reach Node', () => {
+    expect(forNodeArgv('\\\\?\\D:\\Agent Room\\node.exe')).toBe('D:\\Agent Room\\node.exe');
+    expect(forNodeArgv('\\\\?\\UNC\\server\\share\\node.exe')).toBe('\\\\server\\share\\node.exe');
+    expect(forNodeArgv('/usr/bin/node')).toBe('/usr/bin/node');
   });
 });

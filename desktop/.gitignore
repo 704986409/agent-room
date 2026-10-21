@@ -5,4 +5,6 @@ src-tauri/target/
 src-tauri/gen/
 # Portable Node downloaded at package time (do not commit the runtime).
 node-runtime/
+# Forked agent-room-mcp staged at package time (do not commit the runtime).
+mcp-runtime/
 .cache/

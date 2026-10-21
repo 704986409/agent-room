@@ -68,6 +68,7 @@
     </section>
     <section>
       <h2>MCP 一键配置</h2>
+      <p class="muted">使用安装包内的 MCP 运行时。</p>
       <div id="mcp" class="muted">尚未检测</div>
     </section>
     <section>
@@ -92,7 +93,7 @@
         body: options && options.body ? JSON.stringify(options.body) : undefined,
       });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || response.statusText);
+      if (!response.ok) throw new Error(payload.hint || payload.error || response.statusText);
       return payload;
     }
 

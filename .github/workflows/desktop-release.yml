@@ -24,6 +24,13 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout forked MCP
+        uses: actions/checkout@v4
+        with:
+          repository: 704986409/agent-room-mcp
+          ref: feat/stop-hook-one-round
+          path: agent-room-mcp
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -37,12 +44,20 @@ jobs:
         with:
           path: desktop/.cache/node-runtime
           key: node-runtime-${{ env.NODE_DIST_VERSION }}-${{ runner.os }}-x64
+      - name: Cache MCP npm
+        uses: actions/cache@v4
+        with:
+          path: agent-room-mcp/node_modules
+          key: mcp-npm-${{ hashFiles('agent-room-mcp/package-lock.json') }}
       - name: Build packages
+        env:
+          AGENT_ROOM_MCP_SRC: ${{ github.workspace }}/agent-room-mcp
         run: |
           npm ci
           cd desktop
           npm ci
           npm run package:linux
+          test -f mcp-runtime/dist/index.js
       - name: Collect assets
         run: |
           mkdir -p dist-release
@@ -59,6 +74,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout forked MCP
+        uses: actions/checkout@v4
+        with:
+          repository: 704986409/agent-room-mcp
+          ref: feat/stop-hook-one-round
+          path: agent-room-mcp
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -68,13 +90,21 @@ jobs:
         with:
           path: desktop/.cache/node-runtime
           key: node-runtime-${{ env.NODE_DIST_VERSION }}-${{ runner.os }}-x64
+      - name: Cache MCP npm
+        uses: actions/cache@v4
+        with:
+          path: agent-room-mcp/node_modules
+          key: mcp-npm-${{ hashFiles('agent-room-mcp/package-lock.json') }}
       - name: Build Windows packages
         shell: pwsh
+        env:
+          AGENT_ROOM_MCP_SRC: ${{ github.workspace }}/agent-room-mcp
         run: |
           npm ci
           Set-Location desktop
           npm ci
           npm run package:windows
+          if (-not (Test-Path mcp-runtime/dist/index.js)) { throw "mcp-runtime/dist/index.js missing" }
       - name: Collect assets
         shell: pwsh
         run: |
@@ -127,8 +157,9 @@ jobs:
 
             ### 使用前准备
             1. 安装包已内置 **Node.js** 运行时，本机 daemon 默认使用它，不需要再单独安装系统 Node。如需覆盖，可设置环境变量 `AGENT_ROOM_NODE` 指向其他 `node` / `node.exe`。
-            2. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。
-            3. 准备可访问的 **Agent Room 服务器**（仅装桌面端不够）。设置：
+            2. 安装包已内置 **改版 MCP**（one-round listen、cursor handoff、`AGENT_ROOM_MANAGED`）。本机设置 → MCP 一键配置会写入该内置运行时，不需要执行 `npm i -g agent-room-mcp`。
+            3. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。
+            4. 准备可访问的 **Agent Room 服务器**（仅装桌面端不够）。设置：
                - 环境变量 `AGENT_ROOM_SERVER=https://你的服务器`
                - 或配置文件：Linux `~/.config/agent-room/desktop.json`，Windows `%APPDATA%\agent-room\desktop.json` → `{"serverUrl":"https://..."}`
 

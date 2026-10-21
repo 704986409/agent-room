@@ -28,7 +28,8 @@
     ],
     "resources": {
       "../daemon-dist/": "daemon/",
-      "../node-runtime/": "node/"
+      "../node-runtime/": "node/",
+      "../mcp-runtime/": "mcp/"
     },
     "category": "Productivity",
     "shortDescription": "Agent Room desktop client",

@@ -1,6 +1,7 @@
 import { copyFile, readFile, rm, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { resolveCommand } from './adapter.js';
 import type { CommandResult, CommandRunner } from './credstore.js';
 
@@ -103,17 +104,129 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+const REINSTALL_HINT = '未找到安装包内的 MCP 运行时。请重新安装 Agent Room 桌面端。';
+
+/**
+ * Tauri `resource_dir()` can be a Win32 extended path (`\\?\D:\Agent Room\...`).
+ * Node then fails `realpath` when the directory contains spaces. Strip `\\?\`
+ * (and map `\\?\UNC\server\share` → `\\server\share`) before argv or client config.
+ */
+export function forNodeArgv(path: string): string {
+  if (!path.startsWith('\\\\?\\')) return path;
+  const rest = path.slice(4);
+  if (!rest) return path;
+  if (rest.toUpperCase().startsWith('UNC\\')) {
+    const unc = rest.slice(4);
+    return unc ? `\\\\${unc}` : path;
+  }
+  return rest;
+}
+
+function scriptDir(): string {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+/** Packaged: `resources/daemon` → `resources/mcp`. Dev bundle: `daemon-dist` → `mcp-runtime`. */
+export function bundledMcpEntryCandidates(dir = scriptDir()): string[] {
+  return [
+    join(dir, '..', 'mcp', 'dist', 'index.js'),
+    join(dir, '..', 'mcp-runtime', 'dist', 'index.js'),
+  ];
+}
+
+function nodeFileNames(): string[] {
+  return process.platform === 'win32' ? ['node.exe', 'node'] : ['node'];
+}
+
+export function bundledNodeCandidates(dir = scriptDir()): string[] {
+  const names = nodeFileNames();
+  const roots = [
+    join(dir, '..', 'node'),
+    join(dir, '..', 'node-runtime'),
+    join(dir, '..', 'node', 'bin'),
+  ];
+  return roots.flatMap((root) => names.map((name) => join(root, name)));
+}
+
+function looksLikeNode(path: string): boolean {
+  const base = path.split(/[\\/]/).pop()?.toLowerCase() ?? '';
+  return base === 'node' || base === 'node.exe';
+}
+
+async function firstExisting(paths: string[]): Promise<string | undefined> {
+  for (const candidate of paths) {
+    const path = forNodeArgv(candidate);
+    if (await exists(path)) return path;
+  }
+  return undefined;
+}
+
+export async function resolveBundledMcpEntry(options: {
+  mcpEntry?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<string | undefined> {
+  const env = options.env ?? process.env;
+  if (options.mcpEntry) return firstExisting([options.mcpEntry]);
+  const fromEnv = env.AGENT_ROOM_MCP_ENTRY?.trim();
+  if (fromEnv) {
+    const found = await firstExisting([fromEnv]);
+    if (found) return found;
+  }
+  const dir = env.AGENT_ROOM_MCP_DIR?.trim();
+  if (dir) {
+    const found = await firstExisting([join(dir, 'dist', 'index.js')]);
+    if (found) return found;
+  }
+  return firstExisting(bundledMcpEntryCandidates());
+}
+
+export async function resolveNodeBinary(options: {
+  nodePath?: string;
+  env?: NodeJS.ProcessEnv;
+} = {}): Promise<string | undefined> {
+  const env = options.env ?? process.env;
+  if (options.nodePath) return firstExisting([options.nodePath]);
+  const fromEnv = env.AGENT_ROOM_NODE?.trim();
+  if (fromEnv) {
+    if (!fromEnv.includes('/') && !fromEnv.includes('\\')) {
+      const found = resolveCommand(fromEnv);
+      if (found) return forNodeArgv(found);
+    } else {
+      const found = await firstExisting([fromEnv]);
+      if (found) return found;
+    }
+  }
+  const bundled = await firstExisting(bundledNodeCandidates());
+  if (bundled) return bundled;
+  if (looksLikeNode(process.execPath) && await exists(process.execPath)) {
+    return forNodeArgv(process.execPath);
+  }
+  const onPath = resolveCommand(process.platform === 'win32' ? 'node.exe' : 'node')
+    ?? (process.platform === 'win32' ? resolveCommand('node') : undefined);
+  return onPath ? forNodeArgv(onPath) : undefined;
+}
+
 export async function installMcp(target: string, options: {
   home?: string;
   run?: CommandRunner;
   commandExists?: (command: string) => boolean;
   now?: number;
+  mcpEntry?: string;
+  nodePath?: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<{ ok: true; backup?: string } | { error: string; hint?: string }> {
   const initTarget = INIT_TARGET[target];
   if (!initTarget) return { error: 'unknown_target' };
-  const existsCommand = options.commandExists ?? (command => resolveCommand(command) !== undefined);
-  if (!existsCommand('agent-room-mcp')) {
-    return { error: 'agent_room_mcp_not_installed', hint: 'npm i -g agent-room-mcp' };
+  const mcpEntry = await resolveBundledMcpEntry(options);
+  const nodePath = mcpEntry ? await resolveNodeBinary(options) : undefined;
+  if (mcpEntry && !nodePath) {
+    return { error: 'agent_room_node_not_found', hint: '未找到可用于启动内置 MCP 的 Node.js。请重新安装 Agent Room 桌面端。' };
+  }
+  if (!mcpEntry) {
+    const existsCommand = options.commandExists ?? (command => resolveCommand(command) !== undefined);
+    if (!existsCommand('agent-room-mcp')) {
+      return { error: 'agent_room_mcp_not_installed', hint: REINSTALL_HINT };
+    }
   }
   const home = options.home ?? homedir();
   const run = options.run;
@@ -130,9 +243,16 @@ export async function installMcp(target: string, options: {
     await copyFile(file, backup);
     backups.push({ file, backup });
   }
+  const childEnv: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home };
   let result: CommandResult;
   try {
-    result = await run('agent-room-mcp', ['init', initTarget], undefined, 60_000);
+    if (mcpEntry && nodePath) {
+      childEnv.AGENT_ROOM_MCP_COMMAND = nodePath;
+      childEnv.AGENT_ROOM_MCP_ARGS = JSON.stringify([mcpEntry]);
+      result = await run(nodePath, [mcpEntry, 'init', initTarget], undefined, 60_000, childEnv);
+    } else {
+      result = await run('agent-room-mcp', ['init', initTarget], undefined, 60_000, childEnv);
+    }
   } catch {
     result = { code: 1, stdout: '', stderr: 'spawn_failed' };
   }

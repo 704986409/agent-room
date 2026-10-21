@@ -30,11 +30,15 @@ export type CommandRunner = (
   args: readonly string[],
   input?: string,
   timeoutMs?: number,
+  env?: NodeJS.ProcessEnv,
 ) => Promise<CommandResult>;
 
 export function processRunner(): CommandRunner {
-  return (command, args, input, timeoutMs = 5_000) => new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], { stdio: ['pipe', 'pipe', 'pipe'] });
+  return (command, args, input, timeoutMs = 5_000, env) => new Promise((resolve, reject) => {
+    const child = spawn(command, [...args], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: env ? { ...process.env, ...env } : undefined,
+    });
     let stdout = '';
     let stderr = '';
     let settled = false;
