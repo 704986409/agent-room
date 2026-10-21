@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -159,7 +159,7 @@ fn find_node() -> Result<PathBuf, String> {
          请任选其一：\n\
          1) 设置用户环境变量 AGENT_ROOM_NODE=C:\\nvm4w\\nodejs\\node.exe（按你的实际路径）\n\
          2) 安装系统级 Node.js LTS 并确保 Machine PATH 含 node.exe\n\
-         然后托盘再点「启动后台程序」。"
+         然后重新打开 Agent Room；也可以从主窗口菜单或托盘菜单选择「启动后台程序」。"
             .into(),
     )
 }
@@ -230,6 +230,31 @@ fn alert(title: &str, message: &str) {
     }
 }
 
+fn persistent_webview_data_directory(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    {
+        app.path()
+            .app_local_data_dir()
+            .map(Some)
+            .map_err(|e| format!("无法确定 WebView 持久化目录: {e}"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        // WKWebView uses its persistent default website data store on macOS;
+        // Tauri's data_directory setting is unavailable there.
+        let _ = app;
+        Ok(None)
+    }
+}
+
+fn main_window_menu(app: &AppHandle) -> Result<Menu, String> {
+    let settings = MenuItem::with_id(app, "window-settings", "本机设置", true, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    let app_menu = Submenu::with_items(app, "Agent Room", true, &[&settings])
+        .map_err(|e| e.to_string())?;
+    Menu::with_items(app, &[&app_menu]).map_err(|e| e.to_string())
+}
+
 fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
     let parsed = url
         .parse()
@@ -237,7 +262,11 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("settings") {
         let _ = w.close();
     }
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(parsed))
+    let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(parsed));
+    if let Some(data_dir) = persistent_webview_data_directory(app)? {
+        builder = builder.data_directory(data_dir);
+    }
+    builder
         .title("Agent Room · 本机设置")
         .inner_size(900.0, 720.0)
         .build()
@@ -347,10 +376,47 @@ fn show_main(app: &AppHandle) {
             return;
         }
     };
-    let _ = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+    let menu = match main_window_menu(app) {
+        Ok(menu) => menu,
+        Err(e) => {
+            alert("Agent Room", &format!("无法创建主窗口菜单: {e}"));
+            return;
+        }
+    };
+    let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url));
+    match persistent_webview_data_directory(app) {
+        Ok(Some(data_dir)) => builder = builder.data_directory(data_dir),
+        Ok(None) => {}
+        Err(e) => {
+            alert("Agent Room", &e);
+            return;
+        }
+    }
+    if let Err(e) = builder
         .title("Agent Room")
         .inner_size(1200.0, 800.0)
-        .build();
+        .menu(menu)
+        .build()
+    {
+        alert("Agent Room", &format!("无法打开主窗口: {e}"));
+    }
+}
+
+fn spawn_show_settings(app: &AppHandle, daemon: &Daemon) {
+    let (app, daemon) = (app.clone(), daemon.clone());
+    std::thread::spawn(move || show_settings(app, daemon));
+}
+
+fn report_autostart_readiness(daemon: Daemon) {
+    if daemon.wait_control_url(Duration::from_secs(8)).is_some() {
+        return;
+    }
+    let detail = if daemon.running() {
+        "本机后台进程已启动，但 8 秒内没有报告控制页地址。请确认安装包中的 daemon 文件完整，然后从主窗口菜单「本机设置」重试。"
+    } else {
+        "本机后台进程启动后退出。请确认 Node.js ≥ 20 可用，并检查安装包中的 daemon 文件；修复后重新打开 Agent Room。"
+    };
+    alert("本机后台自动启动失败", detail);
 }
 
 fn show_settings(app: AppHandle, daemon: Daemon) {
@@ -360,9 +426,9 @@ fn show_settings(app: AppHandle, daemon: Daemon) {
     }
     let Some(url) = daemon.wait_control_url(Duration::from_secs(8)) else {
         let hint = if daemon.running() {
-            "本机后台已启动，但 8 秒内未报到控制页地址（control: URL）。\n请查看安装目录下 daemon 是否完整，或手动运行：\nnode daemon\\agent-room-daemon.mjs serve --server https://ai-room.pupgo.top"
+            "本机后台已启动，但 8 秒内未报到控制页地址（control: URL）。\n请查看安装目录下 daemon 是否完整，或重新打开主窗口菜单「本机设置」重试。"
         } else {
-            "本机后台未能保持运行，因此打不开「本机设置」。\n请确认 Node ≥ 20 可用，托盘点「启动后台程序」后再试。\n也可手动：node daemon\\agent-room-daemon.mjs serve --server https://ai-room.pupgo.top\n然后在浏览器打开它打印的 control: 链接完成绑定。"
+            "本机后台未能保持运行，因此打不开「本机设置」。\n请确认 Node ≥ 20 可用；修复后可从主窗口菜单或托盘菜单选择「启动后台程序」。\n也可手动：node daemon\\agent-room-daemon.mjs serve --server https://ai-room.pupgo.top\n然后在浏览器打开它打印的 control: 链接完成绑定。"
         };
         alert("本机设置", hint);
         return;
@@ -387,12 +453,22 @@ fn main() {
     let daemon_for_exit = daemon.clone();
     tauri::Builder::default()
         .manage(daemon.clone())
+        .on_menu_event({
+            let menu_daemon = daemon.clone();
+            move |app, event| {
+                if event.id.as_ref() == "window-settings" {
+                    spawn_show_settings(app, &menu_daemon);
+                }
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             if std::env::var("AGENT_ROOM_NO_DAEMON").is_err() {
                 if let Err(e) = daemon.start(&handle) {
-                    // Don't block first launch with a modal; tray start/settings will surface it.
-                    eprintln!("{e}");
+                    alert("本机后台自动启动失败", &e);
+                } else {
+                    let d = daemon.clone();
+                    std::thread::spawn(move || report_autostart_readiness(d));
                 }
             }
             let open = MenuItem::with_id(app, "open", "打开 Agent Room", true, None::<&str>)?;
@@ -401,7 +477,8 @@ fn main() {
             let stop = MenuItem::with_id(app, "stop", "停止后台程序", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&open, &settings, &sep, &start, &stop, &sep, &quit])?;
+            let menu =
+                Menu::with_items(app, &[&open, &settings, &sep, &start, &stop, &sep, &quit])?;
             let d = daemon.clone();
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().expect("icon"))
@@ -409,10 +486,7 @@ fn main() {
                 .menu(&menu)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "open" => show_main(app),
-                    "settings" => {
-                        let (a, d) = (app.clone(), d.clone());
-                        std::thread::spawn(move || show_settings(a, d));
-                    }
+                    "settings" => spawn_show_settings(app, &d),
                     "start" => {
                         if let Err(e) = d.start(app) {
                             alert("启动后台程序", &e);
@@ -428,8 +502,7 @@ fn main() {
                 .build(app)?;
             show_main(&handle);
             if std::env::var("AGENT_ROOM_OPEN_SETTINGS").is_ok() {
-                let (a, d) = (handle.clone(), daemon.clone());
-                std::thread::spawn(move || show_settings(a, d));
+                spawn_show_settings(&handle, &daemon);
             }
             Ok(())
         })
