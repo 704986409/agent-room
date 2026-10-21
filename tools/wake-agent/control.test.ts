@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CodexCliAdapter, type ProcessSpawner } from './src/adapter.js';
-import { startControlServer } from './src/control.js';
-import { MemoryCredentialStore } from './src/credstore.js';
+import { CodexCliAdapter, createAgyAdapter, createClaudeAdapter, createCursorAdapter, type LauncherAdapter, type ProcessSpawner, type VersionProbe } from './src/adapter.js';
+import { adapterIdForMcp, installAdapterCli, officialInstallScript, resolveNpmInvocation } from './src/cliinstall.js';
+import { startControlServer, type RunningControl } from './src/control.js';
+import { MemoryCredentialStore, type CommandRunner } from './src/credstore.js';
 import { MemoryRunLock, WakeDaemon } from './src/daemon.js';
 import { DaemonLog } from './src/log.js';
 import { forNodeArgv, installMcp, mcpStatus } from './src/mcpconfig.js';
@@ -83,6 +84,8 @@ describe('local control server', () => {
       expect(html).toContain('绑定本机');
       expect(html).toContain('托管座位');
       expect(html).toContain('MCP 一键配置');
+      expect(html).toContain('data-adapter-install');
+      expect(html).toContain('需先安装 CLI');
 
       const pair = await fetch(`http://127.0.0.1:${control.port}/api/pair`, {
         method: 'POST',
@@ -197,5 +200,319 @@ describe('mcp config', () => {
     expect(forNodeArgv('\\\\?\\D:\\Agent Room\\node.exe')).toBe('D:\\Agent Room\\node.exe');
     expect(forNodeArgv('\\\\?\\UNC\\server\\share\\node.exe')).toBe('\\\\server\\share\\node.exe');
     expect(forNodeArgv('/usr/bin/node')).toBe('/usr/bin/node');
+  });
+});
+
+function adapterMap(probe: VersionProbe, ids: string[]): Map<string, LauncherAdapter> {
+  const spawner = quietSpawner();
+  const options = { probe };
+  const factories: Record<string, () => LauncherAdapter> = {
+    codex: () => new CodexCliAdapter(spawner, options),
+    'cursor-agent': () => createCursorAdapter(spawner, options),
+    agy: () => createAgyAdapter(spawner, options),
+    claude: () => createClaudeAdapter(spawner, options),
+  };
+  return new Map(ids.map(id => [id, factories[id]!()]));
+}
+
+async function bootControl(input: {
+  adapters: Map<string, LauncherAdapter>;
+  run: CommandRunner;
+  home?: string;
+  env?: NodeJS.ProcessEnv;
+  mcpEntry?: string;
+  nodePath?: string;
+}): Promise<{ control: RunningControl; directory: string }> {
+  const directory = input.home ?? await mkdtemp(join(tmpdir(), 'wake-control-'));
+  const secrets = new SecretRegistry();
+  const log = new DaemonLog(secrets);
+  const daemon = new WakeDaemon({
+    api: {
+      async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+      async poll() { return { seats: [] }; },
+      async claim() { return { wakeRunId: 'wr', claims: [] }; },
+      async renew() { return {}; },
+      async progress() { return {}; },
+    },
+    adapters: input.adapters,
+    state: { seats: [] },
+    lock: new MemoryRunLock(),
+    inspect: () => ({ alive: false, cmdline: '' }),
+  });
+  const control = await startControlServer({
+    daemon,
+    credentials: new MemoryCredentialStore(),
+    statePath: join(directory, 'daemon.json'),
+    stateDir: directory,
+    server: 'http://127.0.0.1:9',
+    adapters: input.adapters,
+    secrets,
+    log,
+    home: directory,
+    run: input.run,
+    env: input.env,
+    mcpEntry: input.mcpEntry,
+    nodePath: input.nodePath,
+    getToken: async () => '',
+    setToken: () => undefined,
+  });
+  return { control, directory };
+}
+
+function post(control: RunningControl, path: string, body: unknown): Promise<Response> {
+  return fetch(`http://127.0.0.1:${control.port}${path}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-agent-room-control': control.token,
+      origin: `http://127.0.0.1:${control.port}`,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+describe('cli install gate', () => {
+  it('refuses MCP install when the matching CLI is not installed and does not run init', async () => {
+    let ran = false;
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => ({ installed: false }), ['codex']),
+      run: async () => { ran = true; return { code: 0, stdout: '', stderr: '' }; },
+    });
+    try {
+      const response = await post(control, '/api/mcp/install', { target: 'codex' });
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string; hint: string };
+      expect(body.error).toBe('cli_not_installed');
+      expect(body.hint).toContain('请先在上方「本机 Agent」安装 codex CLI');
+      expect(ran).toBe(false);
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('installs MCP after the matching CLI is detected', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-mcp-gate-'));
+    const nodePath = join(home, 'node');
+    const mcpEntry = join(home, 'mcp.js');
+    await writeFile(nodePath, '');
+    await writeFile(mcpEntry, '');
+    const calls: string[][] = [];
+    const { control } = await bootControl({
+      home,
+      adapters: adapterMap(async () => ({ installed: true, version: 'codex 1', path: '/bin/codex' }), ['codex']),
+      mcpEntry,
+      nodePath,
+      run: async (command, args) => {
+        calls.push([command, ...args]);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    try {
+      const response = await post(control, '/api/mcp/install', { target: 'codex' });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ ok: true });
+      expect(calls).toEqual([[nodePath, mcpEntry, 'init', 'codex']]);
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('installs a known CLI, logs the recipe, and reports the new detect result', async () => {
+    let installed = false;
+    const calls: string[][] = [];
+    const adapters = adapterMap(async () => (
+      installed
+        ? { installed: true, version: 'cursor-agent 1', path: '/home/me/.local/bin/agent' }
+        : { installed: false }
+    ), ['cursor-agent']);
+    const { control } = await bootControl({
+      adapters,
+      run: async (command, args) => {
+        calls.push([command, ...args]);
+        installed = true;
+        return { code: 0, stdout: 'install-stdout', stderr: '' };
+      },
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'cursor-agent' });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        ok: true,
+        installed: true,
+        version: 'cursor-agent 1',
+        path: '/home/me/.local/bin/agent',
+      });
+      expect(calls).toEqual([['bash', '-lc', 'set -o pipefail; curl https://cursor.com/install -fsS | bash']]);
+      const logs = await fetch(`http://127.0.0.1:${control.port}/api/logs`, {
+        headers: { 'x-agent-room-control': control.token },
+      });
+      const text = await logs.text();
+      expect(text).toContain('curl https://cursor.com/install -fsS | bash');
+      expect(text).toContain('install-stdout');
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('installs codex with npm i -g @openai/codex', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-npm-'));
+    const npm = join(directory, 'npm');
+    await writeFile(npm, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await chmod(npm, 0o755);
+    let installed = false;
+    const calls: string[][] = [];
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => (
+        installed ? { installed: true, version: 'codex 1', path: '/bin/codex' } : { installed: false }
+      ), ['codex']),
+      env: { PATH: directory },
+      run: async (command, args) => {
+        calls.push([command, ...args]);
+        installed = true;
+        return { code: 0, stdout: 'added', stderr: '' };
+      },
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'codex' });
+      expect(response.status).toBe(200);
+      expect(calls).toEqual([[npm, 'i', '-g', '@openai/codex']]);
+      expect(await response.json()).toMatchObject({ ok: true, installed: true, version: 'codex 1' });
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('rejects an unknown adapter id', async () => {
+    let ran = false;
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => ({ installed: false }), ['codex']),
+      run: async () => { ran = true; return { code: 0, stdout: '', stderr: '' }; },
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'gemini' });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: 'unknown_adapter' });
+      expect(ran).toBe(false);
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('returns the install command when the agy script fails', async () => {
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => ({ installed: false }), ['agy']),
+      run: async () => ({ code: 1, stdout: '', stderr: 'network blocked' }),
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'agy' });
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string; hint: string; ok?: boolean };
+      expect(body.error).toBe('cli_install_failed');
+      expect(body.ok).toBeUndefined();
+      expect(body.hint).toContain('network blocked');
+      expect(body.hint).toContain('curl -fsSL https://antigravity.google/cli/install.sh | bash');
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('reports a failed version probe instead of claiming the CLI installed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-probe-'));
+    const npm = join(directory, 'npm');
+    await writeFile(npm, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await chmod(npm, 0o755);
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => ({ installed: false, path: 'C:\\nvm4w\\nodejs\\codex', detail: 'probe-broke' }), ['codex']),
+      env: { PATH: directory },
+      run: async (_command, args) => ({ code: 0, stdout: args.includes('prefix') ? '' : 'added', stderr: '' }),
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'codex' });
+      expect(response.status).toBe(400);
+      const body = await response.json() as { error: string; hint: string };
+      expect(body.error).toBe('cli_probe_failed');
+      expect(body.hint).toContain('probe-broke');
+      expect(body.hint).toContain('C:\\nvm4w\\nodejs\\codex');
+      expect(body.hint).toContain('重启 Agent Room');
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('falls back to npm for claude when the official script fails', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-claude-'));
+    const npm = join(directory, 'npm');
+    await writeFile(npm, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    await chmod(npm, 0o755);
+    const calls: string[][] = [];
+    let installed = false;
+    const { control } = await bootControl({
+      adapters: adapterMap(async () => (
+        installed ? { installed: true, version: 'claude 1', path: '/bin/claude' } : { installed: false }
+      ), ['claude']),
+      env: { PATH: directory },
+      run: async (command, args) => {
+        calls.push([command, ...args]);
+        if (command === 'bash') return { code: 1, stdout: '', stderr: 'script failed' };
+        installed = true;
+        return { code: 0, stdout: 'npm ok', stderr: '' };
+      },
+    });
+    try {
+      const response = await post(control, '/api/adapters/install', { id: 'claude' });
+      expect(response.status).toBe(200);
+      expect(calls[0]).toEqual(['bash', '-lc', 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash']);
+      expect(calls[1]).toEqual([npm, 'i', '-g', '@anthropic-ai/claude-code']);
+      expect(await response.json()).toMatchObject({ ok: true, installed: true });
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('documents official install scripts and maps MCP ids onto adapters', () => {
+    expect(adapterIdForMcp('codex')).toBe('codex');
+    expect(adapterIdForMcp('cursor-agent')).toBe('cursor-agent');
+    expect(adapterIdForMcp('agy')).toBe('agy');
+    expect(adapterIdForMcp('claude')).toBe('claude');
+    expect(adapterIdForMcp('cursor')).toBeUndefined();
+    expect(officialInstallScript('cursor-agent', 'linux')).toBe('curl https://cursor.com/install -fsS | bash');
+    expect(officialInstallScript('cursor-agent', 'darwin')).toBe('curl https://cursor.com/install -fsS | bash');
+    expect(officialInstallScript('cursor-agent', 'win32')).toBe("irm 'https://cursor.com/install?win32=true' | iex");
+    expect(officialInstallScript('claude', 'win32')).toBe('irm https://claude.ai/install.ps1 | iex');
+    expect(officialInstallScript('agy', 'win32')).toBe('irm https://antigravity.google/cli/install.ps1 | iex');
+    expect(officialInstallScript('codex', 'linux')).toBeUndefined();
+  });
+
+  it('uses powershell for the Windows cursor-agent recipe', async () => {
+    const calls: string[][] = [];
+    const result = await installAdapterCli('cursor-agent', {
+      platform: 'win32',
+      adapters: adapterMap(async () => ({ installed: true, version: 'agent 2', path: 'C:\\agent.cmd' }), ['cursor-agent']),
+      run: async (command, args) => {
+        calls.push([command, ...args]);
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      log: { write() {} },
+    });
+    expect(result).toEqual({ ok: true, installed: true, version: 'agent 2', path: 'C:\\agent.cmd' });
+    expect(calls).toEqual([[
+      'powershell.exe',
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      "$ErrorActionPreference='Stop'; irm 'https://cursor.com/install?win32=true' | iex",
+    ]]);
+  });
+
+  it('resolves npm-cli.js next to a bundled node when npm is not on PATH', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-npm-cli-'));
+    const nodePath = join(home, 'node');
+    const cli = join(home, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    await mkdir(dirname(cli), { recursive: true });
+    await writeFile(nodePath, '');
+    await writeFile(cli, '');
+    const found = await resolveNpmInvocation({ env: { PATH: '' }, nodePath, platform: 'linux' });
+    expect(found).toEqual({ command: nodePath, prefix: [cli] });
   });
 });

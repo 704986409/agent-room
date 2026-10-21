@@ -7,6 +7,7 @@ import type { LauncherAdapter } from './adapter.js';
 import type { CredentialStore, CommandRunner } from './credstore.js';
 import type { WakeDaemon } from './daemon.js';
 import type { DaemonLog } from './log.js';
+import { adapterIdForMcp, cliRequiredHint, installAdapterCli } from './cliinstall.js';
 import { installMcp, mcpStatus } from './mcpconfig.js';
 import { deviceCredentialKey, pairComplete, pairWithLogin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
@@ -25,6 +26,11 @@ export interface ControlServerOptions {
   log: DaemonLog;
   home?: string;
   run?: CommandRunner;
+  /** Overrides process env for install recipes (tests). */
+  env?: NodeJS.ProcessEnv;
+  /** Forwarded to installMcp so tests can point at a fake bundle. */
+  mcpEntry?: string;
+  nodePath?: string;
   port?: number;
   token?: string;
   getToken: () => Promise<string | undefined>;
@@ -191,7 +197,33 @@ export async function startControlServer(options: ControlServerOptions): Promise
     }
     if (url.pathname === '/api/mcp/install') {
       const target = typeof body.target === 'string' ? body.target : '';
-      const result = await installMcp(target, { home: options.home, run: options.run });
+      const adapterId = adapterIdForMcp(target);
+      if (adapterId) {
+        const detected = await options.adapters.get(adapterId)?.detect() ?? { installed: false };
+        if (!detected.installed) {
+          send(res, 400, { error: 'cli_not_installed', hint: cliRequiredHint(adapterId) });
+          return;
+        }
+      }
+      const result = await installMcp(target, {
+        home: options.home,
+        run: options.run,
+        mcpEntry: options.mcpEntry,
+        nodePath: options.nodePath,
+        env: options.env,
+      });
+      send(res, 'error' in result ? 400 : 200, result);
+      return;
+    }
+    if (url.pathname === '/api/adapters/install') {
+      const id = typeof body.id === 'string' ? body.id : '';
+      const result = await installAdapterCli(id, {
+        adapters: options.adapters,
+        run: options.run,
+        log: options.log,
+        env: options.env,
+        nodePath: options.nodePath,
+      });
       send(res, 'error' in result ? 400 : 200, result);
       return;
     }

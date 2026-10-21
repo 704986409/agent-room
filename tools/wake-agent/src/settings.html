@@ -16,6 +16,7 @@
     label { display: grid; gap: 4px; font-size: 13px; }
     input, select, button { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #c5c8ce; }
     button { background: #1f4b99; color: #fff; border-color: #1f4b99; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: wait; }
     button.quiet { background: #fff; color: #1c1d1f; }
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
     th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
@@ -85,6 +86,7 @@
     const adapterSelect = document.getElementById('adapter');
     const modelSelect = document.getElementById('model');
     let adapterModels = {};
+    let adapterInstallBusy = false;
 
     async function api(path, options) {
       const response = await fetch(path, {
@@ -128,10 +130,15 @@
         pair.textContent = '尚未绑定（' + status.auth + '）';
       }
       adapterModels = {};
+      const cliInstalled = {};
       document.getElementById('agents').innerHTML = (status.adapters || []).map(adapter => {
         adapterModels[adapter.id] = adapter.models || [];
+        cliInstalled[adapter.id] = !!adapter.installed;
         const version = adapter.installed ? (adapter.version || '已安装') : '未安装';
-        return '<div>' + esc(adapter.id) + ' · ' + esc(version) + (adapter.path ? ' · ' + esc(adapter.path) : '') + '</div>';
+        const install = adapter.installed
+          ? ''
+          : ' <button type="button" data-adapter-install="' + esc(adapter.id) + '">安装</button>';
+        return '<div>' + esc(adapter.id) + ' · ' + esc(version) + (adapter.path ? ' · ' + esc(adapter.path) : '') + install + '</div>';
       }).join('') || '没有适配器';
       adapterSelect.innerHTML = (status.adapters || []).map(adapter => '<option value="' + esc(adapter.id) + '">' + esc(adapter.id) + '</option>').join('');
       fillModels(adapterSelect.value);
@@ -141,10 +148,12 @@
         '</td><td>' + esc(seat.pid) + '</td></tr>'
       ).join('');
       const mcp = await api('/api/mcp');
-      document.getElementById('mcp').innerHTML = (mcp.tools || []).map(tool =>
-        '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') +
-        ' <button type="button" data-target="' + esc(tool.id) + '">安装</button></div>'
-      ).join('');
+      document.getElementById('mcp').innerHTML = (mcp.tools || []).map(tool => {
+        const action = cliInstalled[tool.id]
+          ? ' <button type="button" data-target="' + esc(tool.id) + '">安装</button>'
+          : ' <span class="muted">需先安装 CLI</span>';
+        return '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') + action + '</div>';
+      }).join('');
       const logs = await api('/api/logs');
       document.getElementById('logs').textContent = (logs.lines || []).join('\n');
     }
@@ -180,6 +189,24 @@
         } });
         await refresh();
       } catch (error) { showError(error); }
+    });
+    document.getElementById('agents').addEventListener('click', async event => {
+      const button = event.target && event.target.closest ? event.target.closest('[data-adapter-install]') : null;
+      if (!button || button.disabled || adapterInstallBusy) return;
+      const id = button.getAttribute('data-adapter-install');
+      if (!id) return;
+      adapterInstallBusy = true;
+      button.disabled = true;
+      button.textContent = '安装中…';
+      try {
+        await api('/api/adapters/install', { method: 'POST', body: { id } });
+        await refresh();
+      } catch (error) {
+        try { await refresh(); } catch { /* keep the install error */ }
+        showError(error);
+      } finally {
+        adapterInstallBusy = false;
+      }
     });
     document.getElementById('mcp').addEventListener('click', async event => {
       const target = event.target && event.target.dataset && event.target.dataset.target;

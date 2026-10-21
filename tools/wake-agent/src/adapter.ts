@@ -19,6 +19,8 @@ export interface DetectResult {
   installed: boolean;
   version?: string;
   path?: string;
+  /** stderr/stdout when the binary exists but `--version` failed. */
+  detail?: string;
 }
 
 export interface LauncherAdapter {
@@ -52,9 +54,13 @@ export interface ProcessSpawner {
 
 export type VersionProbe = (command: string) => Promise<DetectResult>;
 
+function isCommandPath(command: string): boolean {
+  return command.includes('/') || command.includes('\\') || /^[A-Za-z]:/.test(command);
+}
+
 /** Resolve a command via PATH. Absolute paths are returned when they are executable. */
 export function resolveCommand(command: string, pathEnv: string = process.env.PATH ?? ''): string | undefined {
-  const candidates = command.includes('/')
+  const candidates = isCommandPath(command)
     ? [command]
     : pathEnv.split(delimiter).filter(Boolean).map(dir => join(dir, command));
   for (const candidate of candidates) {
@@ -313,6 +319,8 @@ export class CliAdapter implements LauncherAdapter {
   private readonly waitCodexSession: SessionWaiter;
   private readonly waitAgyConversation: SessionWaiter;
   private readonly directSpawn: boolean;
+  /** Absolute path from the last successful detect (installers often land outside PATH). */
+  private resolvedCommand?: string;
 
   constructor(
     private readonly spawner: ProcessSpawner,
@@ -344,14 +352,24 @@ export class CliAdapter implements LauncherAdapter {
 
   async detect(): Promise<DetectResult> {
     if (this.probe) return this.probe(this.command);
-    return probeVersion(this.command, this.detectTimeoutMs);
+    const result = await detectCli({
+      id: this.id,
+      command: this.definition.command,
+      timeoutMs: this.detectTimeoutMs,
+    });
+    this.resolvedCommand = result.installed && result.path ? result.path : undefined;
+    return result;
+  }
+
+  private executable(): string {
+    return this.resolvedCommand ?? this.command;
   }
 
   async launch(opts: LaunchOptions): Promise<{ pid: number; sessionId: string; exited: Promise<number> }> {
     this.assertModel(opts.model);
     let sessionId: string | undefined;
     if (this.id === 'cursor-agent') {
-      sessionId = await (this.createChat ?? (() => cursorCreateChat(this.command)))();
+      sessionId = await (this.createChat ?? (() => cursorCreateChat(this.executable())))();
     }
     const args = this.launchArgv(opts.model, opts.prompt, sessionId);
     rejectUnsafe(args);
@@ -378,10 +396,11 @@ export class CliAdapter implements LauncherAdapter {
 
   private spawnInteractive(args: readonly string[], opts: LaunchOptions): SpawnedProcess {
     const title = opts.title ?? `Agent Room · ${this.id}`;
+    const command = this.executable();
     if (this.directSpawn) {
-      return this.spawner.spawn(this.command, args, { ...opts, terminalTitle: undefined });
+      return this.spawner.spawn(command, args, { ...opts, terminalTitle: undefined });
     }
-    return this.spawner.spawn(this.command, args, { ...opts, terminalTitle: title });
+    return this.spawner.spawn(command, args, { ...opts, terminalTitle: title });
   }
 
   private assertModel(model: string): void {
@@ -484,13 +503,102 @@ export function createDefaultAdapters(spawner: ProcessSpawner = nodeSpawner(), o
   ]);
 }
 
+/** Directories installers use when they do not update the daemon PATH. */
+export function extraCliBinDirs(home = homedir(), platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
+  const dirs = [join(home, '.local', 'bin')];
+  if (platform === 'win32') {
+    const local = env.LOCALAPPDATA || join(home, 'AppData', 'Local');
+    const roaming = env.APPDATA || join(home, 'AppData', 'Roaming');
+    dirs.push(join(local, 'cursor-agent'), join(roaming, 'npm'));
+  }
+  return dirs;
+}
+
+/** PATH names first, then absolute install locations. `cursor-agent` also tries `agent`. */
+export function commandCandidates(
+  id: string,
+  command: string,
+  home = homedir(),
+  platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const bases = [command];
+  if (id === 'cursor-agent' && command !== 'agent') bases.push('agent');
+  const names: string[] = [];
+  for (const name of bases) {
+    names.push(name);
+    if (platform === 'win32' && !/\.(cmd|exe|bat)$/i.test(name)) {
+      names.push(`${name}.cmd`, `${name}.exe`);
+    }
+  }
+  const absolute: string[] = [];
+  for (const name of names) {
+    if (isCommandPath(name)) continue;
+    for (const dir of extraCliBinDirs(home, platform, env)) absolute.push(join(dir, name));
+  }
+  return [...names, ...absolute];
+}
+
+/**
+ * `--version` probe that also sees installer paths (`~/.local/bin`, Windows cursor-agent / npm).
+ * A broken binary on PATH does not hide a working copy in those directories.
+ */
+export async function detectCli(options: {
+  id: string;
+  command: string;
+  timeoutMs?: number;
+  home?: string;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  pathEnv?: string;
+}): Promise<DetectResult> {
+  const home = options.home ?? homedir();
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const timeoutMs = options.timeoutMs ?? 5_000;
+  const basePath = options.pathEnv ?? env.PATH ?? '';
+  const extra = extraCliBinDirs(home, platform, env).filter(Boolean).join(delimiter);
+  const pathEnv = [extra, basePath].filter(Boolean).join(delimiter);
+  let broken: DetectResult | undefined;
+  const seen = new Set<string>();
+  for (const candidate of commandCandidates(options.id, options.command, home, platform, env)) {
+    const result = await probeVersion(candidate, timeoutMs, isCommandPath(candidate) ? undefined : pathEnv);
+    if (result.path) {
+      if (seen.has(result.path)) continue;
+      seen.add(result.path);
+    }
+    if (result.installed) return result;
+    if (result.path && !broken) broken = result;
+  }
+  return broken ?? { installed: false };
+}
+
+function clipProbe(text: string): string {
+  const clean = text.trim();
+  if (clean.length <= 500) return clean;
+  return `${clean.slice(0, 500)}…`;
+}
+
+/** Windows `.cmd` shims need cmd.exe; `spawn` without a shell returns EINVAL. */
+function spawnVersionProbe(resolved: string) {
+  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved)) {
+    const quoted = `"${resolved.replace(/"/g, '""')}" --version`;
+    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', quoted], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+  return spawn(resolved, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+}
+
 /** `<cmd> --version` with a timeout. No model flag is passed. */
 export function probeVersion(command: string, timeoutMs = 5_000, pathEnv?: string): Promise<DetectResult> {
   const resolved = resolveCommand(command, pathEnv);
   if (!resolved) return Promise.resolve({ installed: false });
   return new Promise(resolve => {
-    const child = spawn(resolved, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '';
+    const child = spawnVersionProbe(resolved);
+    let stdout = '';
+    let stderr = '';
     let settled = false;
     const finish = (result: DetectResult) => {
       if (settled) return;
@@ -500,17 +608,20 @@ export function probeVersion(command: string, timeoutMs = 5_000, pathEnv?: strin
     };
     const timer = setTimeout(() => {
       child.kill();
-      finish({ installed: false, path: resolved });
+      finish({ installed: false, path: resolved, detail: 'timeout' });
     }, timeoutMs);
-    child.stdout?.on('data', chunk => { output += String(chunk); });
-    child.stderr?.on('data', chunk => { output += String(chunk); });
-    child.on('error', () => finish({ installed: false, path: resolved }));
+    child.stdout?.on('data', chunk => { stdout += String(chunk); });
+    child.stderr?.on('data', chunk => { stderr += String(chunk); });
+    child.on('error', error => {
+      finish({ installed: false, path: resolved, detail: clipProbe(error instanceof Error ? error.message : 'spawn_failed') });
+    });
     child.on('exit', code => {
+      const combined = stdout.trim() || stderr.trim();
       if (code === 0) {
-        const version = output.trim().split('\n')[0]?.trim();
+        const version = combined.split('\n')[0]?.trim();
         finish({ installed: true, version: version || undefined, path: resolved });
       } else {
-        finish({ installed: false, path: resolved });
+        finish({ installed: false, path: resolved, detail: clipProbe(stderr.trim() || stdout.trim() || `exit ${code ?? 1}`) });
       }
     });
   });

@@ -7,6 +7,8 @@ import {
   createAgyAdapter,
   createClaudeAdapter,
   createCursorAdapter,
+  commandCandidates,
+  detectCli,
   newestAgyConversationId,
   newestCodexSessionId,
   nodeSpawner,
@@ -110,6 +112,38 @@ describe('interactive launcher adapters', () => {
     await chmod(slow, 0o755);
     const timed = await probeVersion(slow, 200);
     expect(timed.installed).toBe(false);
+    expect(timed.detail).toBe('timeout');
+
+    const broken = join(directory, 'brokencodex');
+    await writeFile(broken, '#!/bin/sh\necho probe-broke >&2\nexit 3\n', { mode: 0o755 });
+    await chmod(broken, 0o755);
+    const failed = await probeVersion(broken, 2_000);
+    expect(failed.installed).toBe(false);
+    expect(failed.path).toBe(broken);
+    expect(failed.detail).toContain('probe-broke');
+  });
+
+  it('treats ~/.local/bin/agent as an installed cursor-agent', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-agent-home-'));
+    const binDir = join(home, '.local', 'bin');
+    await mkdir(binDir, { recursive: true });
+    const agent = join(binDir, 'agent');
+    await writeFile(agent, '#!/bin/sh\necho agent 9\n', { mode: 0o755 });
+    await chmod(agent, 0o755);
+    const detected = await detectCli({
+      id: 'cursor-agent',
+      command: 'cursor-agent',
+      home,
+      platform: 'linux',
+      pathEnv: '',
+      timeoutMs: 2_000,
+    });
+    expect(detected).toMatchObject({ installed: true, version: 'agent 9', path: agent });
+    const windows = commandCandidates('cursor-agent', 'cursor-agent', home, 'win32', {
+      LOCALAPPDATA: join(home, 'AppData', 'Local'),
+      APPDATA: join(home, 'AppData', 'Roaming'),
+    });
+    expect(windows).toContain(join(home, 'AppData', 'Local', 'cursor-agent', 'agent.cmd'));
   });
 
   it('finds session ids from Codex rollout files and agy conversation dbs', async () => {

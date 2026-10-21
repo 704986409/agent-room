@@ -158,7 +158,7 @@ jobs:
             ### 使用前准备
             1. 安装包已内置 **Node.js** 运行时，本机 daemon 默认使用它，不需要再单独安装系统 Node。如需覆盖，可设置环境变量 `AGENT_ROOM_NODE` 指向其他 `node` / `node.exe`。
             2. 安装包已内置 **改版 MCP**（one-round listen、cursor handoff、`AGENT_ROOM_MANAGED`）。本机设置 → MCP 一键配置会写入该内置运行时，不需要执行 `npm i -g agent-room-mcp`。
-            3. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。
+            3. 安装至少一个 Agent CLI：`agy` / `cursor-agent` / `codex`。本机设置 →「本机 Agent」可一键安装；未安装对应 CLI 时不能配置 MCP。
             4. 准备可访问的 **Agent Room 服务器**（仅装桌面端不够）。设置：
                - 环境变量 `AGENT_ROOM_SERVER=https://你的服务器`
                - 或配置文件：Linux `~/.config/agent-room/desktop.json`，Windows `%APPDATA%\agent-room\desktop.json` → `{"serverUrl":"https://..."}`
