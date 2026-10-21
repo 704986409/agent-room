@@ -16,6 +16,7 @@ import { TemplateDetail } from './screens/TemplateDetail.js';
 import { TemplateInterviewLive } from './screens/TemplateInterviewLive.js';
 import { ToastHost } from './components/Toast.js';
 import { Analytics } from './components/Analytics.js';
+import { TEMPLATE_PAGES_ENABLED } from './lib/featureFlags.js';
 
 class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
@@ -70,6 +71,14 @@ function ReportByParam() {
   return <Report key={code} />;
 }
 
+const templateRoutes = TEMPLATE_PAGES_ENABLED ? [
+  { path: '/templates', element: <Layout><TemplatesIndex /></Layout> },
+  // Interview gets a live room; other templates render the static preview page.
+  { path: '/templates/interview', element: <Layout><TemplateInterviewLive /></Layout> },
+  { path: '/templates/interview/:code', element: <Layout><TemplateInterviewLive /></Layout> },
+  { path: '/templates/:slug', element: <Layout><TemplateDetail /></Layout> },
+] : [];
+
 export const router = createBrowserRouter([
   // Landing = the open-source MCP tools page; the old create/join home
   // stays reachable at /home ("Open a room" in the nav goes to /new).
@@ -86,19 +95,5 @@ export const router = createBrowserRouter([
   { path: '/i/:token', element: <Layout><InviteByParam /></Layout> },
   { path: '/j/:code', element: <Layout><Join /></Layout> },
   { path: '/j', element: <Layout><Join /></Layout> },
-  // Plan B Phase 1: Live Session Templates pages.
-  { path: '/templates', element: <Layout><TemplatesIndex /></Layout> },
-  // Interview gets a *live* room (real Agent Room + scripted-or-LLM AI
-  // Interviewer) so visitors can chat with it. Other templates render
-  // the static design-preview page until we promote them to live.
-  //
-  // Two-step flow:
-  //   /templates/interview        → host setup (brief textarea), creates
-  //                                 room on submit, then redirects to:
-  //   /templates/interview/:code  → host monitor view (transcript +
-  //                                 share link + host-note input). The
-  //                                 candidate joins via /r/:code.
-  { path: '/templates/interview', element: <Layout><TemplateInterviewLive /></Layout> },
-  { path: '/templates/interview/:code', element: <Layout><TemplateInterviewLive /></Layout> },
-  { path: '/templates/:slug', element: <Layout><TemplateDetail /></Layout> },
+  ...templateRoutes,
 ]);
