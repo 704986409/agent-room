@@ -10,7 +10,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 let cookie = '';
 async function web(p, b, method = 'POST') { const r = await fetch(B + p, { method, headers: { 'content-type': 'application/json', origin: B, cookie }, body: method === 'GET' ? undefined : JSON.stringify(b ?? {}) }); for (const sc of r.headers.getSetCookie()) if (sc.startsWith('ar_session=')) cookie = sc.split(';')[0]; return { status: r.status, ...(await r.json().catch(() => ({}))) }; }
 const results = []; const check = (name, ok, extra = '') => { results.push(ok); console.log(`${ok ? 'PASS' : 'FAIL'} ${name} ${extra}`); };
-const env = { ...process.env, HOME, PATH: `${L}/mockbin2:${process.env.PATH}`, AGENT_ROOM_SERVER: B };
+const env = { ...process.env, HOME, PATH: `${L}/mockbin2:${process.env.PATH}`, AGENT_ROOM_SERVER: B, AGENT_ROOM_MOCK_LOG: `${L}/mock-codex2.log`, DISPLAY: '', WAYLAND_DISPLAY: '' };
 delete env.AGENT_ROOM_DEVICE_TOKEN;
 let dlog = '';
 function serve() {

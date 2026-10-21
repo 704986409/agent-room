@@ -11,6 +11,7 @@ import { wakePrompt } from './src/prompt.js';
 import { readState, reconcileAfterRestart, writeState, type DaemonState, type SeatRecord } from './src/state.js';
 
 const THREAD = '{"type":"thread.started","thread_id":"thr_9"}\n';
+const codexOpts = { directSpawn: true as const, waitCodexSession: async () => 'thr_9' };
 
 function spawner(chunks: string[]): ProcessSpawner & { calls: { command: string; args: string[]; env: Record<string, string> }[] } {
   const calls: { command: string; args: string[]; env: Record<string, string> }[] = [];
@@ -84,7 +85,7 @@ describe('wake daemon', () => {
 
   it('launches Codex, registers, and writes a 0600 state file without the seatKey', async () => {
     const child = spawner(['boot\n', THREAD]);
-    const adapter = new CodexCliAdapter(child);
+    const adapter = new CodexCliAdapter(child, codexOpts);
     const directory = await mkdtemp(join(tmpdir(), 'wake-agent-'));
     const path = join(directory, 'daemon.json');
     const client = api();
@@ -96,7 +97,7 @@ describe('wake daemon', () => {
       adapters: new Map([['codex', adapter]]),
       state: { seats: [] },
       lock: new MemoryRunLock(),
-      inspect: () => ({ alive: true, cmdline: 'codex exec' }),
+      inspect: () => ({ alive: true, cmdline: 'codex -m' }),
       log: line => logs.push(line),
       persist: state => writeState(path, state),
       credentials: creds,
@@ -114,9 +115,7 @@ describe('wake daemon', () => {
     expect(order).toEqual(['join', 'register', 'launch']);
     expect(seat).toMatchObject({ seatId: 'st_a', roomInstanceId: 'ri', sessionId: 'thr_9', pid: 400, status: 'running', model: 'gpt-6.1-sol' });
     expect(seat.startedAt).toEqual(expect.any(String));
-    expect(child.calls[0]!.args).toEqual([
-      'exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-m', 'gpt-6.1-sol', expect.stringContaining('AGENT_ROOM_SEAT_KEY'),
-    ]);
+    expect(child.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.stringContaining('AGENT_ROOM_SEAT_KEY')]);
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
     expect(child.calls[0]!.env).toMatchObject({
       AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9', AGENT_ROOM_CODE: 'ABC-DEF-GHJ',
@@ -135,7 +134,7 @@ describe('wake daemon', () => {
 
   it('keeps one poll loop, merges a running seat, and resumes an idle seat from readFrom', async () => {
     const child = spawner([THREAD]);
-    const adapter = new CodexCliAdapter(child);
+    const adapter = new CodexCliAdapter(child, codexOpts);
     const client = api();
     const logs: string[] = [];
     const daemon = new WakeDaemon({
@@ -143,7 +142,7 @@ describe('wake daemon', () => {
       adapters: new Map([['codex', adapter]]),
       state: { seats: [{ seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6.1-sol', sessionId: 'thr_9', cwd: '/work', status: 'idle' }] },
       lock: new MemoryRunLock(),
-      inspect: pid => ({ alive: pid > 0, cmdline: 'codex exec resume thr_9' }),
+      inspect: pid => ({ alive: pid > 0, cmdline: 'codex resume thr_9' }),
       log: line => logs.push(line),
     });
     const first = daemon.tick();
@@ -151,7 +150,7 @@ describe('wake daemon', () => {
     await Promise.all([first, second]);
     expect(client.polls).toBe(1);
     expect(child.calls).toHaveLength(1);
-    expect(child.calls[0]!.args).toEqual(['exec', 'resume', 'thr_9', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', expect.any(String)]);
+    expect(child.calls[0]!.args).toEqual(['resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.any(String)]);
     expect(logs[0]).toContain('since: 183');
     expect(logs[0]).toContain('第 120–182 条');
     expect(logs[0]).not.toContain('secret body');
@@ -175,7 +174,7 @@ describe('wake daemon', () => {
       { seatId: 'st_b', code: 'ABC', name: 'codex-b', adapterId: 'codex', sessionId: 'thr_2', cwd: '/work', pid: 2, status: 'running' },
     ] };
     const reconciled = reconcileAfterRestart(state, pid => pid === 9
-      ? { alive: true, cmdline: 'codex\0exec' }
+      ? { alive: true, cmdline: 'codex\0-m' }
       : { alive: true, cmdline: 'nginx' }, 'codex');
     expect(reconciled.seats[0]).toMatchObject({ status: 'running', pid: 9 });
     expect(reconciled.seats[1]).toMatchObject({ status: 'idle', pid: undefined });
@@ -199,10 +198,10 @@ describe('wake daemon', () => {
     const client = api();
     const daemon = new WakeDaemon({
       api: client,
-      adapters: new Map([['codex', new CodexCliAdapter(child)]]),
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
       state: { seats: [{ seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', sessionId: 'thr_9', cwd: '/work', status: 'idle' }] },
       lock: new MemoryRunLock(),
-      inspect: () => ({ alive: true, cmdline: 'codex exec' }),
+      inspect: () => ({ alive: true, cmdline: 'codex -m' }),
       heartbeat: { blocks: () => true },
     });
     await daemon.tick();
@@ -237,13 +236,13 @@ describe('wake daemon', () => {
     const daemon = new WakeDaemon({
       api: client,
       adapters: new Map<string, CodexCliAdapter | ReturnType<typeof createCursorAdapter>>([
-        ['codex', new CodexCliAdapter(child)],
+        ['codex', new CodexCliAdapter(child, codexOpts)],
         ['cursor-agent', createCursorAdapter(child)],
       ]),
       state,
       lock: new MemoryRunLock(),
       inspect: pid => {
-        if (pid === 11) return { alive: true, cmdline: '/usr/bin/codex\0exec' };
+        if (pid === 11) return { alive: true, cmdline: '/usr/bin/codex\0-m' };
         if (pid === 22) return { alive: true, cmdline: 'nginx\0worker' };
         return { alive: false, cmdline: '' };
       },
@@ -255,7 +254,7 @@ describe('wake daemon', () => {
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'idle', pid: undefined, sessionId: 'thr_9' });
     await daemon.tick();
     expect(child.calls).toHaveLength(1);
-    expect(child.calls[0]!.args).toEqual(['exec', 'resume', 'thr_9', '--json', '--skip-git-repo-check', '-m', 'gpt-6.1-sol', expect.any(String)]);
+    expect(child.calls[0]!.args).toEqual(['resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.any(String)]);
     expect(child.calls[0]!.env.AGENT_ROOM_SEAT_KEY).toBe('seat-key-secret');
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
   });
@@ -272,10 +271,10 @@ describe('wake daemon', () => {
     };
     const daemon = new WakeDaemon({
       api: revoked,
-      adapters: new Map([['codex', new CodexCliAdapter(spawner([]))]]),
+      adapters: new Map([['codex', new CodexCliAdapter(spawner([]), codexOpts)]]),
       state: { seats: [running] },
       lock: new MemoryRunLock(),
-      inspect: () => ({ alive: true, cmdline: 'codex exec' }),
+      inspect: () => ({ alive: true, cmdline: 'codex -m' }),
       log: line => logs.push(line),
     });
     await daemon.tick();
@@ -292,7 +291,7 @@ describe('wake daemon', () => {
         async renew() { return {}; },
         async progress() { return {}; },
       },
-      adapters: new Map([['codex', new CodexCliAdapter(spawner([]))]]),
+      adapters: new Map([['codex', new CodexCliAdapter(spawner([]), codexOpts)]]),
       state: { seats: [{ ...running, seatId: 'st_b', status: 'idle', pid: undefined }] },
       lock: new MemoryRunLock(),
       inspect: () => ({ alive: false, cmdline: '' }),

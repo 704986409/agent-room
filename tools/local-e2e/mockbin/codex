@@ -1,27 +1,57 @@
 #!/usr/bin/env node
-// MOCK codex CLI (no model). Emits codex --json thread.started, then follows the
-// daemon prompt via hosted MCP using the seatKey from AGENT_ROOM_SEAT_KEY.
-const fs = require('fs'); const { createRequire } = require('module'); const { randomUUID } = require('crypto');
-const r = createRequire('/home/box/MERYANG/agent-room-desktop/package.json');
-const log = m => fs.appendFileSync('/home/box/MERYANG/localtest/mock-codex2.log', `${new Date().toISOString()} ${m}\n`);
-if (process.argv.includes('--version')) { console.log('codex-cli 0.0.0-mock'); process.exit(0); }
+// MOCK interactive codex (no model). Writes a fake ~/.codex session file so the
+// interactive adapter can discover the session id, then follows the wake prompt
+// via hosted MCP using AGENT_ROOM_SEAT_KEY.
+const fs = require('fs');
+const path = require('path');
+const { createRequire } = require('module');
+const { randomUUID } = require('crypto');
+const r = createRequire(path.resolve(__dirname, '../../../package.json'));
+const logPath = process.env.AGENT_ROOM_MOCK_LOG || path.join(process.env.HOME || '/tmp', 'mock-codex-interactive.log');
+const log = m => fs.appendFileSync(logPath, `${new Date().toISOString()} ${m}\n`);
+if (process.argv.includes('--version')) { console.log('codex-cli 0.0.0-mock-interactive'); process.exit(0); }
+
+function writeSession(id) {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(now.getUTCDate()).padStart(2, '0');
+  const dir = path.join(process.env.HOME || '/tmp', '.codex', 'sessions', String(y), m, d);
+  fs.mkdirSync(dir, { recursive: true });
+  const stamp = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const file = path.join(dir, `rollout-${stamp}-${id}.jsonl`);
+  fs.writeFileSync(file, JSON.stringify({ type: 'session_meta', payload: { id, session_id: id } }) + '\n');
+  return file;
+}
+
 (async () => {
-  const args = process.argv.slice(2); const prompt = args[args.length - 1] || '';
-  const resumeAt = args.indexOf('resume'); const thread = resumeAt >= 0 ? args[resumeAt + 1] : '01a1mock-' + randomUUID().slice(0, 8);
-  console.log(JSON.stringify({ type: 'thread.started', thread_id: thread }));
+  const args = process.argv.slice(2);
+  const resumeAt = args.indexOf('resume');
+  const thread = resumeAt >= 0 ? args[resumeAt + 1] : `01a1mock-${randomUUID().slice(0, 8)}`;
+  // Interactive path: no --json / no exec. Still write a session file for the waiter.
+  if (!args.includes('exec') && !args.includes('--json')) writeSession(thread);
+  else console.log(JSON.stringify({ type: 'thread.started', thread_id: thread }));
   const key = process.env.AGENT_ROOM_SEAT_KEY || '';
-  log(`argv=${JSON.stringify(args.slice(0, -1))} managed=${process.env.AGENT_ROOM_MANAGED} seatKeyEnv=${key ? 'yes' : 'no'} promptHasKey=${key && prompt.includes(key)}`);
+  const prompt = args[args.length - 1] || '';
+  log(`argv=${JSON.stringify(args.slice(0, -1))} managed=${process.env.AGENT_ROOM_MANAGED} seatKeyEnv=${key ? 'yes' : 'no'} promptHasKey=${key && prompt.includes(key)} interactive=${!args.includes('exec')}`);
   const m = /room_listen\(\{ code: "([^"]+)", name: "([^"]+)", since: (\d+)/.exec(prompt);
-  if (!m) return;
-  const [, code, name, since] = m; const server = process.env.AGENT_ROOM_SERVER || 'http://127.0.0.1:3300';
+  if (!m) {
+    // Keep the "terminal" open briefly so the daemon sees a live pid, then exit idle.
+    await new Promise(r => setTimeout(r, 800));
+    return;
+  }
+  const [, code, name, since] = m;
+  const server = process.env.AGENT_ROOM_SERVER || 'http://127.0.0.1:3300';
   const { Client } = await import(r.resolve('@modelcontextprotocol/sdk/client/index.js'));
   const { StreamableHTTPClientTransport } = await import(r.resolve('@modelcontextprotocol/sdk/client/streamableHttp.js'));
-  const c = new Client({ name: 'mock-codex', version: '0' }); await c.connect(new StreamableHTTPClientTransport(new URL(server + '/mcp')));
+  const c = new Client({ name: 'mock-codex', version: '0' });
+  await c.connect(new StreamableHTTPClientTransport(new URL(server + '/mcp')));
   const pj = v => JSON.parse(v.content[0].text);
   const read = pj(await c.callTool({ name: 'room_listen', arguments: { code, name, since: Number(since), timeoutMs: 0, managed: { seatKey: key } } }));
   log(`read since=${since} got=${read.messages?.length} cursor=${read.cursor} err=${read.error ?? ''}`);
   const first = resumeAt < 0;
   await c.callTool({ name: 'room_send', arguments: { code, name, seatKey: key, text: first ? `mock agent: online (${thread})` : `mock agent: done (${thread})` } });
   const sl = pj(await c.callTool({ name: 'room_sleep', arguments: { code, name, seatKey: key, cursor: read.cursor + 1 } }));
-  log(`sleep ${JSON.stringify(sl)}`); await c.close();
+  log(`sleep ${JSON.stringify(sl)}`);
+  await c.close();
 })().catch(e => { log('ERR ' + e.stack); process.exit(1); });

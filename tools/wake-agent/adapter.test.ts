@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -7,78 +7,87 @@ import {
   createAgyAdapter,
   createClaudeAdapter,
   createCursorAdapter,
+  newestAgyConversationId,
+  newestCodexSessionId,
   nodeSpawner,
   probeVersion,
   resolveCommand,
+  wrapInTerminal,
   type ProcessSpawner,
   type SpawnedProcess,
 } from './src/adapter.js';
 
-const CODEX_LINE = '{"type":"thread.started","thread_id":"11111111-1111-4111-8111-111111111111"}';
-const CURSOR_LINE = '{"type":"system","subtype":"init","model":"grok-4.7-high","session_id":"22222222-2222-4222-8222-222222222222"}';
-const AGY_LINE = '{"event":"init","conversation_id":"33333333-3333-4333-8333-333333333333","cwd":"/work"}';
-const CLAUDE_LINE = '{"type":"system","subtype":"init","session_id":"44444444-4444-4444-8444-444444444444"}';
-
-function fake(chunks: string[]): ProcessSpawner & { calls: string[][] } {
-  const calls: string[][] = [];
+function fake(): ProcessSpawner & { calls: Array<{ command: string; args: string[] }> } {
+  const calls: Array<{ command: string; args: string[] }> = [];
   return {
     calls,
-    spawn(_command: string, args: readonly string[]): SpawnedProcess {
-      calls.push([...args]);
-      const output = chunks;
+    spawn(command: string, args: readonly string[]): SpawnedProcess {
+      calls.push({ command, args: [...args] });
       return {
         pid: 7,
-        stdout: (async function* () { for (const chunk of output) yield chunk; })(),
+        stdout: (async function* () { /* interactive: no JSON stream */ })(),
         exited: new Promise(() => {}),
       };
     },
   };
 }
 
-const opts = { cwd: '/work', env: { AGENT_ROOM_MANAGED: '1' }, prompt: 'hello room' };
+const opts = { cwd: '/work', env: { AGENT_ROOM_MANAGED: '1' }, prompt: 'hello room', title: 'Agent Room · test' };
 
-describe('launcher adapters', () => {
-  it('builds verified argv, parses session ids across chunks, and enforces allowlists', async () => {
-    const codexChunks = [CODEX_LINE.slice(0, 20), CODEX_LINE.slice(20) + '\n'];
-    const codexSpawn = fake(codexChunks);
-    const codex = new CodexCliAdapter(codexSpawn);
+describe('interactive launcher adapters', () => {
+  it('builds interactive argv, resolves session ids without headless JSON, and enforces allowlists', async () => {
+    const codexSpawn = fake();
+    const codex = new CodexCliAdapter(codexSpawn, {
+      directSpawn: true,
+      waitCodexSession: async () => '11111111-1111-4111-8111-111111111111',
+    });
     const launched = await codex.launch({ ...opts, model: 'gpt-6.1-sol' });
     expect(launched.sessionId).toBe('11111111-1111-4111-8111-111111111111');
-    expect(codexSpawn.calls[0]).toEqual(['exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-m', 'gpt-6.1-sol', 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', 'hello room']);
+    expect(codexSpawn.calls[0]!.args).not.toContain('exec');
+    expect(codexSpawn.calls[0]!.args).not.toContain('--json');
     codexSpawn.calls.length = 0;
     await codex.resume({ ...opts, model: 'gpt-6-luna', sessionId: '11111111-1111-4111-8111-111111111111' });
-    expect(codexSpawn.calls[0]).toEqual(['exec', 'resume', '11111111-1111-4111-8111-111111111111', '--json', '--skip-git-repo-check', '-m', 'gpt-6-luna', 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '--skip-git-repo-check', 'hello room']);
     await expect(codex.launch({ ...opts, model: 'gpt-4' })).rejects.toThrow('model_not_allowed');
-    expect(codexSpawn.calls).toHaveLength(1);
 
-    const cursorSpawn = fake([CURSOR_LINE.slice(0, 15), CURSOR_LINE.slice(15)]);
-    const cursor = createCursorAdapter(cursorSpawn);
+    const cursorSpawn = fake();
+    const cursor = createCursorAdapter(cursorSpawn, {
+      directSpawn: true,
+      createChat: async () => '22222222-2222-4222-8222-222222222222',
+    });
     expect((await cursor.launch({ ...opts, model: 'grok-4.7-high' })).sessionId).toBe('22222222-2222-4222-8222-222222222222');
-    expect(cursorSpawn.calls[0]).toEqual(['-p', '--output-format', 'stream-json', '--trust', '--approve-mcps', '--model', 'grok-4.7-high', 'hello room']);
+    expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', 'hello room']);
+    expect(cursorSpawn.calls[0]!.args).not.toContain('-p');
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--approve-mcps');
     await cursor.resume({ ...opts, model: 'grok-4.7', sessionId: '22222222-2222-4222-8222-222222222222' });
-    expect(cursorSpawn.calls[1]).toContain('--resume');
-    expect(cursorSpawn.calls[1]).toContain('--model');
-    expect(cursorSpawn.calls[1]).toContain('grok-4.7');
+    expect(cursorSpawn.calls[1]!.args).toContain('--resume');
+    expect(cursorSpawn.calls[1]!.args).toContain('grok-4.7');
     await expect(cursor.launch({ ...opts, model: 'gpt-6.1-sol' })).rejects.toThrow('model_not_allowed');
 
-    const agySpawn = fake([AGY_LINE + '\n']);
-    const agy = createAgyAdapter(agySpawn);
+    const agySpawn = fake();
+    const agy = createAgyAdapter(agySpawn, {
+      directSpawn: true,
+      waitAgyConversation: async () => '33333333-3333-4333-8333-333333333333',
+    });
     expect((await agy.launch({ ...opts, model: 'gemini-3.8-flash-high' })).sessionId).toBe('33333333-3333-4333-8333-333333333333');
-    expect(agySpawn.calls[0]).toEqual(['-p', 'hello room', '--model', 'gemini-3.8-flash-high', '--output-format', 'stream-json']);
+    expect(agySpawn.calls[0]!.args).toEqual(['-i', 'hello room', '--model', 'gemini-3.8-flash-high']);
+    expect(agySpawn.calls[0]!.args).not.toContain('-p');
     await agy.resume({ ...opts, model: 'gemini-3.8-flash-high', sessionId: '33333333-3333-4333-8333-333333333333' });
-    expect(agySpawn.calls[1]).toEqual(['-p', 'hello room', '--model', 'gemini-3.8-flash-high', '--output-format', 'stream-json', '--conversation', '33333333-3333-4333-8333-333333333333']);
+    expect(agySpawn.calls[1]!.args).toEqual(['-i', 'hello room', '--model', 'gemini-3.8-flash-high', '--conversation', '33333333-3333-4333-8333-333333333333']);
 
-    const claude = createClaudeAdapter(fake([]));
-    expect(claude.launchArgv('claude-opus', 'hello room')).toEqual(['-p', '--output-format', 'stream-json', '--verbose', '--model', 'claude-opus', 'hello room']);
+    const claude = createClaudeAdapter(fake(), { directSpawn: true });
+    expect(claude.launchArgv('claude-opus', 'hello room')).toEqual(['--model', 'claude-opus', 'hello room']);
     expect(claude.resumeArgv('44444444-4444-4444-8444-444444444444', 'claude-opus', 'hello room')).toContain('--resume');
-    expect(claude.parseSessionId(CLAUDE_LINE)).toBe('44444444-4444-4444-8444-444444444444');
     await expect(claude.launch({ ...opts, model: 'claude-opus' })).rejects.toThrow('model_not_allowed');
-    await expect(claude.resume({ ...opts, model: 'claude-opus', sessionId: 'abc' })).rejects.toThrow('model_not_allowed');
   });
 
   it('rejects unsafe flags before spawn', async () => {
-    const spawn = fake([CODEX_LINE]);
-    const codex = new CodexCliAdapter(spawn);
+    const spawn = fake();
+    const codex = new CodexCliAdapter(spawn, {
+      directSpawn: true,
+      waitCodexSession: async () => 'x',
+    });
     await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--yolo' })).rejects.toThrow('launcher_unavailable');
     await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--force' })).rejects.toThrow('launcher_unavailable');
     await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--dangerously-skip-permissions' })).rejects.toThrow('launcher_unavailable');
@@ -100,13 +109,36 @@ describe('launcher adapters', () => {
     await chmod(slow, 0o755);
     const timed = await probeVersion(slow, 200);
     expect(timed.installed).toBe(false);
+  });
 
-    const seen: string[] = [];
-    const adapter = new CodexCliAdapter(fake([]), {
-      probe: async command => { seen.push(command); return { installed: true, version: 'codex-cli 0.162', path: '/bin/codex' }; },
-    });
-    expect(await adapter.detect()).toMatchObject({ installed: true, version: 'codex-cli 0.162' });
-    expect(seen).toEqual(['codex']);
+  it('finds session ids from Codex rollout files and agy conversation dbs', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-sess-'));
+    const day = join(home, '.codex', 'sessions', '2026', '10', '21');
+    await mkdir(day, { recursive: true });
+    const id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const file = join(day, `rollout-2026-10-21T00-00-00-${id}.jsonl`);
+    await writeFile(file, '{}\n');
+    expect(newestCodexSessionId(join(home, '.codex', 'sessions'), Date.now() - 60_000)).toBe(id);
+
+    const conv = join(home, '.gemini', 'antigravity-cli', 'conversations');
+    await mkdir(conv, { recursive: true });
+    const cid = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff';
+    await writeFile(join(conv, `${cid}.db`), '');
+    expect(newestAgyConversationId(conv, Date.now() - 60_000)).toBe(cid);
+  });
+
+  it('wraps the CLI in a terminal emulator when DISPLAY is set', () => {
+    const prev = process.env.DISPLAY;
+    process.env.DISPLAY = process.env.DISPLAY || ':0';
+    try {
+      const wrapped = wrapInTerminal('codex', ['-m', 'gpt-6.1-sol', 'hi'], 'Agent Room · Desk');
+      expect(wrapped.command).toMatch(/terminal|xterm/i);
+      expect(wrapped.args.join(' ')).toContain('codex');
+      expect(wrapped.args.join(' ')).toContain('gpt-6.1-sol');
+    } finally {
+      if (prev === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = prev;
+    }
   });
 
   it('detaches a process group and appends stdout to a 0600 log', async () => {

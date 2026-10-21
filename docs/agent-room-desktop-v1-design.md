@@ -23,7 +23,7 @@
 | D2 | **设备凭据由服务器签发**，本地只保存、使用，不在本地生成。配对在桌面端设置页完成（§2.3）。 |
 | D3 | 先做 **Linux**，Linux 跑通后再做 Windows。 |
 | D4 | 本地后台程序（daemon）用 **Node + TypeScript** 实现并配测试；Tauri 只允许当外壳。 |
-| D5 | 首版只做**后台启动/恢复（headless）**，不往开着的终端/TUI 里注入输入。V1 保证**所有支持的 CLI** 都能首次启动和恢复（Codex CLI、Claude Code、Cursor CLI、Gemini CLI 等，按适配器逐个接入）；Codex / Cursor / Claude / Antigravity 等**桌面端 App 的调起放到 V2**（§2.4）。 |
+| D5 | **2026-10-21 修订**：托管 Agent 用**交互式 CLI**（可见终端/TUI），方便用户在界面里批准工具权限；不再用无头 `exec` / `-p`。V1 保证支持的 CLI 都能首次启动和恢复（Codex / Cursor / agy；Claude 适配器保留但模型列表为空）；**桌面端 App 调起仍放 V2**（§2.4）。 |
 | D6 | 唤醒走 **B+ 方案**：一台设备只开一个轮询循环，不管上面睡着几个 Agent。服务器**持久化每一个唤醒事件**，只在服务器确认成功后清除。 |
 | D7 | 线上跑在 **VPS 自建 Redis**，不用按命令计费的服务。上线前做一次真实压测（M2）。 |
 | D8 | 删除风险审核放在**任务下发**时（不是每条命令）：每个下发的任务都交给 **Jev**（不用 BGE）判三档——低风险放行、中风险进任务审核员审核、高风险直接拒绝。**删除目标必须按"目录 + 名字 + 文件/文件夹"写全**，否则退回补充。聊天里直接 @ 让 Agent 删东西，也必须先建任务。与本地 daemon 无关（§6）。 |
@@ -164,7 +164,7 @@ interface LauncherAdapter {
 }
 ```
 
-- **V1 只做 CLI**，目标是所有支持的 CLI 都能首次启动和恢复：Codex CLI（`codex exec` / `codex exec resume <threadId>`，原型已验证恢复）、Claude Code（`claude -p` / `claude -p --resume <sessionId>`）、Cursor CLI、Gemini CLI 等。每个适配器的具体参数和"怎么拿到会话 id"在 M0 逐个实测，写进附录；某个 CLI 不支持无头恢复 → 该适配器注册托管时直接拒绝并说明原因。
+- **V1 只做交互式 CLI**（2026-10-21）：在可见终端里启动/恢复，用户可批准工具权限。Codex：`codex -m <model> <prompt>` / `codex resume <id> -m <model> <prompt>`；Cursor：`create-chat` 拿 id 后 `cursor-agent --resume <id> --model <m> --trust <prompt>`；agy：`agy -i <prompt> --model <m>` / 加 `--conversation <id>`。会话 id：Cursor 预创建；Codex/agy 启动后从本机会话目录发现。无头 `exec`/`-p`/`--json` 路径已降级，仅作探测遗留。桌面端 App 调起仍放 V2。
 - **V2 再做桌面端 App 调起**（Codex / Cursor / Claude / Antigravity 桌面端等）：图形界面 App 能否被外部程序打开指定会话、塞进消息，取决于各家是否提供链接跳转或插件接口，需要逐个调研。适配器接口预留，V1 不实现。
 
 **首次启动流程**（用户在本地设置页为某个房间座位"新建托管 Agent"，或把已有座位交给 daemon）：
@@ -330,7 +330,7 @@ poll 响应示例：
 
 1. **座位一直被跟踪**：注册后座位一直在 daemon 的跟踪表里，醒着、睡着都在；**不会因为命中就把座位移出跟踪表**。本地状态：`idle`（没有运行中的会话）/ `running(wakeRunId)`。
 2. **poll**：单循环，一次请求覆盖本机所有托管座位。
-3. **认领与启动**：座位 `idle` 且有 `PENDING` → `claim`（新建 run）→ 加本地运行锁 → `progress resume_started` → 调对应适配器的 `resume()`（§2.4），例如 `codex exec resume <threadId> "<唤醒提示>"`。
+3. **认领与启动**：座位 `idle` 且有 `PENDING` → `claim`（新建 run）→ 加本地运行锁 → `progress resume_started` → 调对应适配器的 `resume()`（§2.4），在可见终端里恢复，例如 `codex resume <threadId> -m <model> "<唤醒提示>"`。
 4. **启动过程中又来了新的 @**：这些 @ 在下一次 poll 中成为各自的 `PENDING` 事件。座位处于 `running(R)` → `claim {eventIds, wakeRunId: R}` 合并进同一次运行，**不再启动第二个进程**。每个事件仍单独确认。
 5. **读取起点（r3，评审 P0-6）**：服务器在 `claim` 时计算并返回：
 
@@ -788,11 +788,13 @@ M7 只依赖 M1b（任务创建走服务器），可与 M2–M6 并行。桌面�
 
 | 适配器 | 版本 | 首次无头启动 | 会话 id 从哪来 | 无头恢复 | 实测 |
 |---|---|---|---|---|---|
-| Codex CLI | codex-cli 0.162.1 | `codex exec --json --skip-git-repo-check -s workspace-write -m <model> <prompt>` | 第一行 `{"type":"thread.started","thread_id":"<UUIDv7>"}` | `codex exec resume <id> --json … <prompt>` | 参数按 `--help` 核对；会话格式取自本机已有的 `--json` 输出与 `~/.codex/sessions`（共享 GPT 额度，未新跑） |
-| Cursor CLI | cursor-agent 2026.10.16 | `cursor-agent -p --output-format stream-json --trust --model grok-4.7-high <prompt>` | 第一行 `{"type":"system","subtype":"init","session_id":"<uuid>"}` | 加 `--resume <id>`，回显同一 session_id，上下文保留 | ✅ 启动 + 恢复都真跑通过 |
-| Antigravity CLI | agy 1.4.2 | `agy -p <prompt> --model gemini-3.8-flash-high --output-format stream-json` | 第一行 `{"event":"init","conversation_id":"<uuid>"}` | 加 `--conversation <id>`，同一 conversation_id，上下文保留 | ✅ 启动 + 恢复都真跑通过 |
-| Claude Code | 2.1.300 | `claude -p --output-format stream-json --verbose --model <m> <prompt>` | `{"type":"system","subtype":"init","session_id":…}`（另有 `--session-id <uuid>` 可预先指定） | `--resume <id>` | 只看了 `--help`；适配器的模型允许列表为空，托管时拒绝启动 |
+| Codex CLI | codex-cli 0.162.1 | **交互** `codex -m <model> --skip-git-repo-check <prompt>`（终端窗口） | 启动后扫描 `~/.codex/sessions/**/rollout-*-<id>.jsonl` | `codex resume <id> -m <model> --skip-git-repo-check <prompt>` | 2026-10-21 改为交互；旧无头 `exec --json` 仅作 M0 探测记录 |
+| Cursor CLI | cursor-agent 2026.10.16+ | **交互** 先 `cursor-agent create-chat` 拿 id，再 `cursor-agent --resume <id> --model <m> --trust <prompt>`（终端窗口） | `create-chat` 打印的 UUID | 同上 `--resume <id>` | 2026-10-21 改为交互；去掉 `-p` / `--approve-mcps` |
+| Antigravity CLI | agy 1.4.2 | **交互** `agy -i <prompt> --model <m>`（终端窗口） | `~/.gemini/antigravity-cli/conversations/<id>.db` 与 `last_conversations.json` | 加 `--conversation <id>` | 2026-10-21 改为交互；去掉 `-p` / stream-json |
+| Claude Code | 2.1.300 | 交互形式 `claude --model <m> <prompt>`（保留） | （未接） | `--resume <id>` | 模型允许列表仍为空，托管时拒绝 |
 | Gemini CLI | 未安装 | — | — | — | 跳过 |
+
+**2026-10-21 用户决定**：托管 Agent **不用无头模式**。daemon 在有 DISPLAY 时用 `xfce4-terminal` / `x-terminal-emulator` 打开可见 TUI，用户在界面里批准工具权限。seatKey 仍经 `AGENT_ROOM_SEAT_KEY` 环境变量交给 MCP；提示词禁止 Agent 改配置/权限文件。
 
 所有适配器都**必须显式传模型**，并按允许列表校验（Codex：gpt-6.1-sol / gpt-6-luna；Cursor：grok-4.7-high / grok-4.7；agy：gemini-3.8-flash-high；Claude：空）；`--yolo / --force / --dangerously-* / --full-auto` 一律拒绝。
 

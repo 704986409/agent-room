@@ -11,6 +11,7 @@ export function firstRunPrompt(input: {
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
     '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间工具时必须把它作为 `seatKey` 或 `managed.seatKey` 传入，绝不要打印、复述或写进回复。',
+    '不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）；需要权限时在交互界面里由用户批准。',
     wakePrompt({ code: input.code, name: input.name, readFrom: input.readFrom, gap: input.gap }),
   ].join('\n');
 }
@@ -24,6 +25,7 @@ export function wakePrompt(input: {
 }): string {
   const lines = [
     `你在房间 ${input.code} 被 @ 了。`,
+    '这是交互式会话：需要工具权限时请在本终端/窗口里由用户批准；不要改配置文件或权限列表。',
     `1) 先调用 room_listen({ code: "${input.code}", name: "${input.name}", since: ${input.readFrom}, timeoutMs: 0 })`,
     '   读取未处理的消息，并处理其中给你的工作、在房间里回复。',
     `2) 处理完后调用 room_listen({ code: "${input.code}", name: "${input.name}", since: <上一步返回的 cursor> })`,

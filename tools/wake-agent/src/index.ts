@@ -174,7 +174,8 @@ async function runDaemon(statePath: string, mode: {
   if (holder) secrets.add(holder);
   const tokenOf = async () => holder;
   const log = new DaemonLog(secrets, join(stateDir, 'daemon.log'));
-  const adapters = createDefaultAdapters(nodeSpawner());
+  const direct = process.env.AGENT_ROOM_DIRECT_SPAWN === '1' || (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY);
+  const adapters = createDefaultAdapters(nodeSpawner(), { directSpawn: direct });
   const daemon = new WakeDaemon({
     api: createHttpWakeApi(server, tokenOf),
     adapters,

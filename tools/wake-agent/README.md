@@ -8,7 +8,7 @@ AGENT_ROOM_DEVICE_TOKEN=... node --experimental-strip-types src/index.ts serve \
 ```
 
 - Registers seats, polls, claims, renews, and reports progress. It never sends `succeeded`.
-- Codex CLI args (`codex exec` / `codex exec resume <threadId>`) are provisional until M0.
+- Interactive CLI adapters (codex / cursor-agent / agy) open a visible terminal; see design §2.4 and appendix B.1.
 - State file mode `0600`. It stores session id and pid, never seatKey or the device token.
 - One file lock per seat. A second process refuses the seat until the lock is released.
 
