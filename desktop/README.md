@@ -6,7 +6,7 @@ Tauri v2 shell + Node wake daemon. The shell opens the web app and a local setti
 
 - **Node.js ≥ 20** on PATH (daemon runs as `agent-room-daemon.mjs`)
 - One supported agent CLI: `agy`, `cursor-agent`, or `codex` (interactive TUI)
-- A reachable Agent Room **server** (`AGENT_ROOM_SERVER`). The desktop app alone is not enough.
+- A reachable Agent Room **server** (set `AGENT_ROOM_SERVER` or `desktop.json`; defaults to `https://ai-room.pupgo.top`). The desktop app alone is not enough.
 
 ## Configure server URL
 
@@ -15,7 +15,17 @@ Tauri v2 shell + Node wake daemon. The shell opens the web app and a local setti
    - Linux: `~/.config/agent-room/desktop.json` → `{"serverUrl":"https://..."}`
    - Windows: `%APPDATA%\agent-room\desktop.json` → same JSON
 
-Default if unset: `https://www.agent-room.com`.
+Default if unset: `https://ai-room.pupgo.top`.
+
+## Start on Windows
+
+After installing the portable daemon, start it manually with:
+
+```powershell
+node "$env:LOCALAPPDATA\AgentRoom\Desktop\daemon\agent-room-daemon.mjs" serve --server "https://ai-room.pupgo.top"
+```
+
+The portable Installer desktop shortcut also passes `serve --server <url>`. It selects the URL from `%APPDATA%\agent-room\desktop.json` (`serverUrl`) first, then `AGENT_ROOM_SERVER`, then `https://ai-room.pupgo.top`.
 
 ## Pairing (first run)
 

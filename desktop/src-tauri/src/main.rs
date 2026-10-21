@@ -52,7 +52,7 @@ fn server_url() -> String {
             if let Some(s) = v.get("serverUrl").and_then(|s| s.as_str()) { return s.to_string(); }
         }
     }
-    "https://www.agent-room.com".to_string()
+    "https://ai-room.pupgo.top".to_string()
 }
 
 fn daemon_script(app: &AppHandle) -> Option<PathBuf> {
