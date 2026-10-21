@@ -163,9 +163,11 @@ export class WakeDaemon {
         if (this.options.heartbeat?.blocks(seat)) continue;
         this.observeProcess(seat);
         if (!remote.pending.length) continue;
+        // Interactive TUIs stay "running" after first launch; attachRunning only
+        // claims and never injects a wake prompt. Always resume/spawn with the
+        // wake prompt unless this seat already has an in-flight wake run (merge).
         if (seat.status === 'running' && seat.wakeRunId) await this.merge(seat, remote);
-        else if (seat.status === 'running') await this.attachRunning(seat, remote);
-        else if (seat.status === 'idle') await this.resumeSeat(seat, remote);
+        else await this.resumeSeat(seat, remote);
       }
     } catch {
       if (messageOf(failure) === 'unpaired') skipped = true;

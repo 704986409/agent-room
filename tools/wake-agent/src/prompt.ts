@@ -10,7 +10,7 @@ export function firstRunPrompt(input: {
 }): string {
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
-    '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间工具时必须把它作为 `seatKey` 或 `managed.seatKey` 传入，绝不要打印、复述或写进回复。',
+    '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间 MCP 工具时直接把它填进 `seatKey` / `managed.seatKey` 参数（不要用 shell/cat/printenv 去读，也不要打印或写进回复）。',
     '不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）；需要权限时在交互界面里由用户批准。',
     wakePrompt({ code: input.code, name: input.name, readFrom: input.readFrom, gap: input.gap }),
   ].join('\n');

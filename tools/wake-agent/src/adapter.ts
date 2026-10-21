@@ -67,12 +67,16 @@ export function resolveCommand(command: string, pathEnv: string = process.env.PA
 }
 
 export function rejectUnsafe(args: readonly string[]): void {
-  const unsafe = args.some(arg => arg === '--force'
-    || arg === '--yolo'
-    || arg === '--full-auto'
-    || arg.startsWith('--dangerously')
-    || /dangerously|full-auto|--yolo/i.test(arg));
-  if (unsafe) throw new Error('launcher_unavailable');
+  for (const arg of args) {
+    // Standalone managed flag added by our adapter — keep interactive TUI, auto-approve tools.
+    if (arg === '--dangerously-skip-permissions') continue;
+    if (arg === '--force' || arg === '--yolo' || arg === '--full-auto') throw new Error('launcher_unavailable');
+    if (arg.startsWith('--dangerously')) throw new Error('launcher_unavailable');
+    // Prompt / free-text args must not smuggle unsafe flags.
+    if (/(?:^|\s)(--yolo|--force|--full-auto|--dangerously[\w-]*)(?:\s|$)/i.test(arg)) {
+      throw new Error('launcher_unavailable');
+    }
+  }
 }
 
 export function sessionIdFromLines(buffer: string, pick: (value: unknown) => string | undefined): string | undefined {
@@ -403,8 +407,23 @@ const AGY: AdapterDefinition = {
   id: 'agy',
   command: 'agy',
   models: ['gemini-3.8-flash-high'],
-  launchArgs: (model, prompt) => ['-i', prompt, '--model', model],
-  resumeArgs: (sessionId, model, prompt) => ['-i', prompt, '--model', model, '--conversation', sessionId],
+  // Optional AGENT_ROOM_AGY_MODE=accept-edits|auto keeps the interactive TUI but
+  // auto-approves tool calls (needed on headless DISPLAY / Xvfb probes).
+  launchArgs: (model, prompt) => {
+    const mode = process.env.AGENT_ROOM_AGY_MODE;
+    const args = ['-i', prompt, '--model', model];
+    if (mode === 'accept-edits' || mode === 'auto') args.push('--mode', mode);
+    // `auto` on Xvfb/desktop probes: keep TUI, skip permission prompts (RunCommand etc.).
+    if (mode === 'auto') args.push('--dangerously-skip-permissions');
+    return args;
+  },
+  resumeArgs: (sessionId, model, prompt) => {
+    const mode = process.env.AGENT_ROOM_AGY_MODE;
+    const args = ['-i', prompt, '--model', model, '--conversation', sessionId];
+    if (mode === 'accept-edits' || mode === 'auto') args.push('--mode', mode);
+    if (mode === 'auto') args.push('--dangerously-skip-permissions');
+    return args;
+  },
   pick: pickAgy,
 };
 
