@@ -32,8 +32,8 @@ web_hash=$(printf '%s' "$REDIS_WEB_PASSWORD" | sha256sum | awk '{print $1}')
 
 cat > "$temporary_file" <<EOF
 user default off
-user backend on #$backend_hash ~* +get +set +del +rpush +incr +ltrim +lrange +llen +expire +expireat +sadd +sismember +smembers +srem +eval +ping +ttl +bgsave +lastsave
-user web on #$web_hash ~* +get +set +del +rpush +incr +ltrim +lrange +llen +expire +expireat +sadd +sismember +smembers +srem +eval +ping +ttl
+user backend on #$backend_hash ~* +get +set +del +getdel +rpush +incr +ltrim +lrange +llen +expire +expireat +pexpireat +exists +sadd +scard +sismember +smembers +srem +eval +ping +ttl +type +bgsave +lastsave
+user web on #$web_hash ~* +get +set +del +getdel +rpush +incr +ltrim +lrange +llen +expire +expireat +pexpireat +exists +sadd +scard +sismember +smembers +srem +eval +ping +ttl +type
 EOF
 
 chmod 644 "$temporary_file"
