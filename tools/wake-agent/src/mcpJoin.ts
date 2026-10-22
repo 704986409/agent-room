@@ -36,6 +36,12 @@ function textContent(result: unknown): string {
 }
 
 /** Join over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
+function normalizeJoinCode(code: string): string {
+  const trimmed = code.trim();
+  const fromUrl = trimmed.match(/\/(?:j|r)\/([^/?#\s]+)/i);
+  return fromUrl ? fromUrl[1]! : trimmed;
+}
+
 export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinResult> {
   const client = new Client({ name: 'agent-room-daemon', version: '0.0.0' });
   const transport = new StreamableHTTPClientTransport(mcpUrl(input.server));
@@ -43,7 +49,7 @@ export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinRes
   try {
     const result = await client.callTool({
       name: 'room_join',
-      arguments: { code: input.code, name: input.name, inviteCode: input.inviteCode },
+      arguments: { code: normalizeJoinCode(input.code), name: input.name, inviteCode: input.inviteCode },
     });
     let parsed: { seatKey?: unknown; cursor?: unknown; name?: unknown; yourName?: unknown };
     try {

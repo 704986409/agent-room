@@ -16,12 +16,22 @@ import type { ClientKind } from './types.js';
  * messages it means "not addressed to anyone in particular", so they fall back
  * to waking the whole room rather than leaving it silent.
  */
+/** Normalize mention markers so fullwidth ＠ and NBSP do not miss a seat. */
+function normalizeMentionText(text: string): string {
+  return text
+    .replace(/\uFF20/g, '@') // fullwidth commercial at
+    .replace(/\u00A0/g, ' '); // NBSP → space
+}
+
 export function mentionedAgents(text: string, agentNames: readonly string[]): string[] {
   if (!text) return [];
-  const lowerText = text.toLowerCase();
-  return agentNames.filter(name =>
-    text.includes(`@${name}`) || lowerText.includes(`@${name.toLowerCase()}`),
-  );
+  const normalized = normalizeMentionText(text);
+  const lowerText = normalized.toLowerCase();
+  return agentNames.filter(name => {
+    const n = name.trim();
+    if (!n) return false;
+    return normalized.includes(`@${n}`) || lowerText.includes(`@${n.toLowerCase()}`);
+  });
 }
 
 /**
@@ -40,7 +50,8 @@ export function mentionedAgents(text: string, agentNames: readonly string[]): st
  */
 export function hasMentionSyntax(text: string): boolean {
   if (!text) return false;
-  return /(^|[\s(（[【{<"'“‘*_>])@[\p{L}\p{N}]/u.test(text);
+  const normalized = normalizeMentionText(text);
+  return /(^|[\s(（[【{<"'“‘*_>])@[\p{L}\p{N}]/u.test(normalized);
 }
 
 /** Just enough of a message to decide who it is aimed at. */

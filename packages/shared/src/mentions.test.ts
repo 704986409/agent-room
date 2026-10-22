@@ -8,6 +8,11 @@ describe('mentionedAgents', () => {
     expect(mentionedAgents('@Claude 看下这个', ROSTER)).toEqual(['Claude']);
   });
 
+  it('matches a fullwidth ＠ the same as ASCII @', () => {
+    expect(mentionedAgents('＠Claude 看下这个', ROSTER)).toEqual(['Claude']);
+    expect(hasMentionSyntax('＠Claude 看下这个')).toBe(true);
+  });
+
   it('matches case-insensitively — people type @claude', () => {
     expect(mentionedAgents('@claude can you check this', ROSTER)).toEqual(['Claude']);
     expect(mentionedAgents('@deepseek write it', ROSTER)).toEqual(['DeepSeek']);

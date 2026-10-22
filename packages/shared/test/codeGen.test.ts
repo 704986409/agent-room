@@ -67,6 +67,8 @@ describe('parseRoomCode', () => {
       'agent-room.com/j/abc-def-ghj',
       'https://www.agent-room.com/j/ABC-DEF-GHJ?utm=x#top',
       'https://www.agent-room.com/j/ABC-DEF-GHJ/',
+      'https://ai-room.pupgo.top/j/ABC-DEF-GHJ',
+      'https://ai-room.pupgo.top/j/ABC-DEF-GHJ?x=1',
     ]) {
       expect(parseRoomCode(input), input).toBe('ABC-DEF-GHJ');
     }

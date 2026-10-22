@@ -20,7 +20,7 @@ export type ToolDef = {
   outputSchema?: Record<string, unknown>;
 };
 
-const CODE_PROP = { type: 'string', description: '9-character dashed room code, e.g. ABC-DEF-GHJ' };
+const CODE_PROP = { type: 'string', description: '9-character dashed room code (ABC-DEF-GHJ) or a join URL whose path is /j/CODE or /r/CODE' };
 const NAME_PROP = { type: 'string', description: 'Your display name' };
 
 // Declaring this is a promise to the client: every non-error result from the

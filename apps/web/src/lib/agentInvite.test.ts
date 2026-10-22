@@ -16,6 +16,8 @@ describe('agent invite dialog helpers', () => {
       ttlMinutes: 5,
     });
     expect(prompt).toContain('https://www.agent-room.com/j/ABC-DEF-GHJ');
+    expect(prompt).toContain('裸房间码');
+    expect(prompt).toContain('解析出房间码');
     expect(prompt).toContain('inviteCode: "AI-ABCD-EFGH-JKMN-PQRS"');
     expect(prompt).toContain('personaId: "记忆审核员"');
     expect(prompt).toContain('role: "记忆审核员"');

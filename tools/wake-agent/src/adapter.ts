@@ -187,7 +187,15 @@ export function spawnCommand(
 export function wrapInTerminal(command: string, args: readonly string[], title: string): { command: string; args: string[] } {
   if (process.platform === 'win32') {
     const wt = resolveCommand('wt.exe') ?? resolveCommand('wt');
+    const viaCmd = /\.(cmd|bat)$/i.test(command);
+    // Node cannot CreateProcess a .cmd/.bat (EINVAL). Route those through cmd.exe.
     if (wt) {
+      if (viaCmd) {
+        return {
+          command: wt,
+          args: ['-d', '.', '--title', title, 'cmd.exe', '/d', '/s', '/k', winCmdLine(command, args)],
+        };
+      }
       return { command: wt, args: ['-d', '.', '--title', title, command, ...args] };
     }
     const line = [command, ...args.map(windowsCmdEscape)].join(' ');
@@ -316,7 +324,12 @@ export type CreateChat = () => Promise<string>;
 export function cursorCreateChat(command = 'cursor-agent', timeoutMs = 15_000): Promise<string> {
   const resolved = resolveCommand(command) ?? command;
   return new Promise((resolve, reject) => {
-    const child = spawn(resolved, ['create-chat'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const spec = spawnCommand(resolved, ['create-chat']);
+    const child = spawn(spec.command, spec.args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: spec.windowsHide,
+      ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+    });
     let output = '';
     const timer = setTimeout(() => { child.kill(); reject(new Error('launcher_unavailable')); }, timeoutMs);
     child.stdout?.on('data', chunk => { output += String(chunk); });
@@ -713,9 +726,9 @@ export function nodeSpawner(): ProcessSpawner {
       if (opts.logFile) chmodSync(logDir, 0o700);
       const fd = openSync(logFile, 'a', 0o600);
       chmodSync(logFile, 0o600);
-      const wrapped = opts.terminalTitle
-        ? wrapInTerminal(command, args, opts.terminalTitle)
-        : { command, args: [...args] };
+      const wrapped: CommandSpawn = opts.terminalTitle
+        ? { ...wrapInTerminal(command, args, opts.terminalTitle), windowsHide: process.platform === 'win32' }
+        : spawnCommand(command, args);
       // Record the intended agent argv for diagnostics (never secrets).
       try {
         writeFileSync(logFile, `# spawn ${wrapped.command} ${JSON.stringify(wrapped.args)}\n`, { flag: 'a', mode: 0o600 });
@@ -724,7 +737,9 @@ export function nodeSpawner(): ProcessSpawner {
         cwd: opts.cwd,
         env: { ...process.env, ...opts.env },
         detached: true,
-        stdio: ['ignore', fd, fd],
+        stdio: ['ignore', fd, fd] as const,
+        windowsHide: wrapped.windowsHide,
+        ...(wrapped.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       });
       closeSync(fd);
       child.unref();

@@ -28,6 +28,7 @@
 
 import {
   buildRoomContextView,
+  parseRoomCode,
   ROOM_POLICY_VERSION,
   roomPolicySummary,
   safeAttachmentPromptText,
@@ -165,6 +166,12 @@ export async function callTool(
   memoryDependencies?: MemoryToolDependencies,
 ): Promise<McpToolResult> {
   const { name, args } = resolveAlias(rawName, rawArgs as Record<string, any>);
+  // Agents often paste the full /j/ or /r/ URL as `code` (invite copy says to).
+  // Canonicalize before any getRoom/joinRoom so URL-as-code is not room_not_found.
+  if (typeof args.code === 'string') {
+    const parsed = parseRoomCode(args.code);
+    if (parsed) args.code = parsed;
+  }
   if (name === 'room_create' && !isRoomCreateEnabled()) {
     return {
       ...ok({

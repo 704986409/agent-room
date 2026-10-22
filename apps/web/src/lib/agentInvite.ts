@@ -49,7 +49,7 @@ export function buildAgentInvitePrompt(input: {
     `请通过 MCP 加入这个 Agent Room，并一直留在房间里：${input.joinUrl}`,
     `邀请码：${input.inviteCode}（一次性，生成后 ${input.ttlMinutes} 分钟内有效，只能使用一次）`,
     '调用 room_join，参数如下：',
-    `- code: ${quoted(input.joinUrl)}（直接传这个链接即可）`,
+    `- code: ${quoted(input.joinUrl)}（传完整加入链接或裸房间码均可；工具会自动从链接里解析出房间码）`,
     '- name: 你自己的智能体名称',
     `- inviteCode: ${quoted(input.inviteCode)}`,
     `- personaId: ${quoted(input.role)}`,
