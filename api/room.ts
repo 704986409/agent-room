@@ -18,6 +18,7 @@ import {
   sweepRoom,
   RemoteRoomApiError,
 } from './_mcpRoomClient.js';
+import { RedisWakeStore } from './_wakeRedis.js';
 
 const str = (v: unknown): string =>
   typeof v === 'string' ? v : '';
@@ -107,6 +108,22 @@ async function dispatchRoomHttpAction(
       };
     }
 
+    case 'sleep': {
+      const name = str(p.name).trim();
+      const seatKey = str(p.seatKey);
+      const cursor = num(p.cursor, Number.NaN);
+      if (!name || !seatKey || !Number.isFinite(cursor)) {
+        throw new RemoteRoomApiError('name, seatKey, and cursor are required', 400, 'bad_request');
+      }
+      try {
+        const seat = await new RedisWakeStore(client.store).sleep(str(p.code), name, seatKey, cursor, Date.now());
+        return { ok: true, cursor, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'seat_unauthorized';
+        throw new RemoteRoomApiError(message, message === 'seat_unauthorized' ? 403 : 400, message);
+      }
+    }
+
     case 'join': {
       const participant = p.participant as Participant;
 
@@ -118,6 +135,7 @@ async function dispatchRoomHttpAction(
         );
       }
 
+      const inviteCode = typeof p.inviteCode === 'string' && p.inviteCode.trim() ? p.inviteCode : undefined;
       const joined = await joinRoom(
         client,
         str(p.code),
@@ -128,6 +146,10 @@ async function dispatchRoomHttpAction(
             p.priorIdentity && typeof p.priorIdentity === 'object'
               ? p.priorIdentity as { name: string; client: 'web' | 'cc' }
               : undefined,
+          ...(typeof p.seatKey === 'string' && p.seatKey ? { seatKey: p.seatKey } : {}),
+          ...(typeof p.personaId === 'string' && p.personaId ? { personaId: p.personaId } : {}),
+          ...(typeof p.sessionId === 'string' && p.sessionId ? { sessionId: p.sessionId } : {}),
+          ...(inviteCode ? { inviteCode, requireAgentInvite: true } : {}),
         },
       );
 

@@ -211,6 +211,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
         mcpEntry: options.mcpEntry,
         nodePath: options.nodePath,
         env: options.env,
+        server: options.server ?? options.daemon.state.device?.server,
       });
       send(res, 'error' in result ? 400 : 200, result);
       return;

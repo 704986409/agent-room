@@ -106,6 +106,15 @@ async function exists(path: string): Promise<boolean> {
 
 const REINSTALL_HINT = '未找到安装包内的 MCP 运行时。请重新安装 Agent Room 桌面端。';
 
+/** Desktop shell default. Same host as `desktop/src-tauri/src/main.rs` `server_url()`. */
+export const DEFAULT_PAIRED_SERVER = 'https://ai-room.pupgo.top';
+
+export function pairedServerUrl(options: { server?: string; env?: NodeJS.ProcessEnv } = {}): string {
+  const env = options.env ?? process.env;
+  const raw = (options.server || env.AGENT_ROOM_BASE_URL || env.AGENT_ROOM_SERVER || DEFAULT_PAIRED_SERVER).trim();
+  return raw.replace(/\/$/, '');
+}
+
 /**
  * Tauri `resource_dir()` can be a Win32 extended path (`\\?\D:\Agent Room\...`).
  * Node then fails `realpath` when the directory contains spaces. Strip `\\?\`
@@ -214,6 +223,8 @@ export async function installMcp(target: string, options: {
   mcpEntry?: string;
   nodePath?: string;
   env?: NodeJS.ProcessEnv;
+  /** Paired room server. Written into client config as AGENT_ROOM_BASE_URL / HTTP MCP url. */
+  server?: string;
 }): Promise<{ ok: true; backup?: string } | { error: string; hint?: string }> {
   const initTarget = INIT_TARGET[target];
   if (!initTarget) return { error: 'unknown_target' };
@@ -244,6 +255,7 @@ export async function installMcp(target: string, options: {
     backups.push({ file, backup });
   }
   const childEnv: NodeJS.ProcessEnv = { HOME: home, USERPROFILE: home };
+  childEnv.AGENT_ROOM_BASE_URL = pairedServerUrl({ server: options.server, env: options.env });
   let result: CommandResult;
   try {
     if (mcpEntry && nodePath) {

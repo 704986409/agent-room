@@ -118,8 +118,9 @@ describe('wake daemon', () => {
     expect(child.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.stringContaining('AGENT_ROOM_SEAT_KEY')]);
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
     expect(child.calls[0]!.env).toMatchObject({
-      AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9', AGENT_ROOM_CODE: 'ABC-DEF-GHJ',
-      AGENT_ROOM_NAME: 'codex-a', AGENT_ROOM_SEAT_KEY: 'super-secret-key',
+      AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9',
+      AGENT_ROOM_BASE_URL: 'http://127.0.0.1:9', AGENT_ROOM_CODE: 'ABC-DEF-GHJ',
+      AGENT_ROOM_NAME: 'codex-a', AGENT_ROOM_SEAT_KEY: 'super-secret-key', AGENT_ROOM_CURSOR: '3',
     });
     expect(await creds.get('seat:st_a')).toBe('super-secret-key');
     expect(client.registered[0]).toMatchObject({ seatKey: 'super-secret-key', cursor: 3 });
@@ -154,7 +155,8 @@ describe('wake daemon', () => {
     expect(logs[0]).toContain('since: 183');
     expect(logs[0]).toContain('第 120–182 条');
     expect(logs[0]).not.toContain('secret body');
-    expect(logs[0]).not.toContain('seatKey');
+    expect(logs[0]).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(logs[0]).not.toContain('super-secret');
     expect(client.calls).toContain('resume_started');
     expect(client.calls).not.toContain('SUCCEEDED');
 

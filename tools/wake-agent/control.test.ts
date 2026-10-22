@@ -180,6 +180,7 @@ describe('mcp config', () => {
       home,
       nodePath,
       mcpEntry,
+      server: 'http://127.0.0.1:9',
       commandExists: () => { throw new Error('global lookup'); },
       run: async (command, args, _input, _timeout, env) => {
         calls.push({ command, args: [...args], env });
@@ -194,6 +195,7 @@ describe('mcp config', () => {
     expect(calls[0]?.env?.AGENT_ROOM_MCP_COMMAND).toBe(nodePath);
     expect(JSON.parse(calls[0]?.env?.AGENT_ROOM_MCP_ARGS ?? 'null')).toEqual([mcpEntry]);
     expect(calls[0]?.env?.HOME).toBe(home);
+    expect(calls[0]?.env?.AGENT_ROOM_BASE_URL).toBe('http://127.0.0.1:9');
   });
 
   it('strips Win32 verbatim prefixes before they reach Node', () => {

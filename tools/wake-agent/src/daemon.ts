@@ -234,7 +234,7 @@ export class WakeDaemon {
       cwd: input.cwd,
       prompt,
       model: input.model,
-      env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey),
+      env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor),
       logFile: this.logFile(registered.seatId),
     });
     const seat: SeatRecord = {
@@ -266,17 +266,21 @@ export class WakeDaemon {
     return this.options.stateDir ? join(this.options.stateDir, 'logs', `${seatId}.log`) : undefined;
   }
 
-  private async childEnv(seatId: string, code: string, name: string, server: string, seatKey?: string): Promise<Record<string, string>> {
+  private async childEnv(seatId: string, code: string, name: string, server: string, seatKey?: string, cursor?: number): Promise<Record<string, string>> {
     const stored = seatKey ?? await this.options.credentials?.get(`seat:${seatId}`) ?? '';
     if (stored) this.options.secrets?.add(stored);
-    return {
+    const base = server || this.options.server || '';
+    const env: Record<string, string> = {
       ...(this.options.env ?? {}),
       AGENT_ROOM_MANAGED: '1',
-      AGENT_ROOM_SERVER: server || this.options.server || '',
+      AGENT_ROOM_SERVER: base,
+      AGENT_ROOM_BASE_URL: base,
       AGENT_ROOM_CODE: code,
       AGENT_ROOM_NAME: name,
       AGENT_ROOM_SEAT_KEY: stored,
     };
+    if (typeof cursor === 'number' && Number.isFinite(cursor)) env.AGENT_ROOM_CURSOR = String(cursor);
+    return env;
   }
 
   private markRevoked(seat: SeatRecord, line: string): void {
@@ -341,7 +345,7 @@ export class WakeDaemon {
         cwd: seat.cwd,
         prompt,
         model: seat.model,
-        env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? ''),
+        env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? '', undefined, claimed.readFrom),
         logFile: this.logFile(seat.seatId),
       });
       seat.pid = child.pid;
