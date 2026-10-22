@@ -1,6 +1,3 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-
 export interface RoomJoinResult {
   seatKey: string;
   cursor: number;
@@ -17,56 +14,86 @@ export interface RoomJoinInput {
 
 export type RoomJoin = (input: RoomJoinInput) => Promise<RoomJoinResult>;
 
-function mcpUrl(server: string): URL {
+function mcpUrl(server: string): string {
   const base = server.endsWith('/') ? server : `${server}/`;
-  return new URL('mcp', base);
+  return new URL('mcp', base).toString();
 }
 
-function textContent(result: unknown): string {
-  if (!result || typeof result !== 'object' || !('content' in result)) return '';
-  const content = (result as { content?: unknown }).content;
-  if (!Array.isArray(content)) return '';
-  for (const item of content) {
-    if (item && typeof item === 'object' && (item as { type?: string }).type === 'text') {
-      const text = (item as { text?: unknown }).text;
-      if (typeof text === 'string') return text;
-    }
-  }
-  return '';
-}
-
-/** Join over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
 function normalizeJoinCode(code: string): string {
   const trimmed = code.trim();
   const fromUrl = trimmed.match(/\/(?:j|r)\/([^/?#\s]+)/i);
   return fromUrl ? fromUrl[1]! : trimmed;
 }
 
-export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinResult> {
-  const client = new Client({ name: 'agent-room-daemon', version: '0.0.0' });
-  const transport = new StreamableHTTPClientTransport(mcpUrl(input.server));
-  await client.connect(transport);
-  try {
-    const result = await client.callTool({
-      name: 'room_join',
-      arguments: { code: normalizeJoinCode(input.code), name: input.name, inviteCode: input.inviteCode },
-    });
-    let parsed: { seatKey?: unknown; cursor?: unknown; name?: unknown; yourName?: unknown };
-    try {
-      parsed = JSON.parse(textContent(result)) as { seatKey?: unknown; cursor?: unknown; name?: unknown; yourName?: unknown };
-    } catch {
-      throw new Error('join_failed');
-    }
-    if (typeof parsed.seatKey !== 'string' || !parsed.seatKey || typeof parsed.cursor !== 'number') {
-      throw new Error('join_failed');
-    }
-    return {
-      seatKey: parsed.seatKey,
-      cursor: parsed.cursor,
-      name: typeof parsed.name === 'string' ? parsed.name : undefined,
-      yourName: typeof parsed.yourName === 'string' ? parsed.yourName : undefined,
-    };
-  } finally {
-    await client.close();
+type JoinPayload = {
+  seatKey?: unknown;
+  cursor?: unknown;
+  name?: unknown;
+  yourName?: unknown;
+  assignedName?: unknown;
+  error?: unknown;
+};
+
+function payloadFromToolResult(result: unknown): JoinPayload {
+  if (!result || typeof result !== 'object') return {};
+  const record = result as { structuredContent?: unknown; content?: unknown };
+  if (record.structuredContent && typeof record.structuredContent === 'object') {
+    return record.structuredContent as JoinPayload;
   }
+  if (Array.isArray(record.content)) {
+    for (const item of record.content) {
+      if (item && typeof item === 'object' && (item as { type?: string }).type === 'text') {
+        const text = (item as { text?: unknown }).text;
+        if (typeof text === 'string') {
+          try { return JSON.parse(text) as JoinPayload; } catch { /* keep looking */ }
+        }
+      }
+    }
+  }
+  return {};
+}
+
+async function mcpCall(url: string, method: string, params?: Record<string, unknown>): Promise<unknown> {
+  const body = { jsonrpc: '2.0', id: Date.now(), method, ...(params ? { params } : {}) };
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) throw new Error('join_failed');
+  const json = await response.json() as { result?: unknown; error?: unknown };
+  if (json.error) throw new Error('join_failed');
+  return json.result;
+}
+
+/** Join over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
+export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinResult> {
+  const url = mcpUrl(input.server);
+  await mcpCall(url, 'initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'agent-room-daemon', version: '0.0.0' },
+  });
+  const result = await mcpCall(url, 'tools/call', {
+    name: 'room_join',
+    arguments: {
+      code: normalizeJoinCode(input.code),
+      name: input.name,
+      inviteCode: input.inviteCode,
+    },
+  });
+  const parsed = payloadFromToolResult(result);
+  if (parsed.error || typeof parsed.seatKey !== 'string' || !parsed.seatKey || typeof parsed.cursor !== 'number') {
+    throw new Error('join_failed');
+  }
+  const assigned = typeof parsed.assignedName === 'string' ? parsed.assignedName
+    : typeof parsed.name === 'string' ? parsed.name
+      : undefined;
+  return {
+    seatKey: parsed.seatKey,
+    cursor: parsed.cursor,
+    name: assigned,
+    yourName: typeof parsed.yourName === 'string' ? parsed.yourName : assigned,
+  };
 }
