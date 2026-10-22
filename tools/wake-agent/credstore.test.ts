@@ -6,6 +6,7 @@ import {
   FileStore,
   LinuxSecretStore,
   openCredentialStore,
+  processRunner,
   resetCredentialStoreWarning,
   type CommandRunner,
 } from './src/credstore.js';
@@ -61,5 +62,17 @@ describe('credential store', () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     await openCredentialStore({ dir: directory, commandExists: () => false, log: line => logs.push(line) });
     expect(logs).toHaveLength(1);
+  });
+
+  it('pipes stdin through to the child and returns stdout', async () => {
+    const result = await processRunner()(
+      process.execPath,
+      ['-e', 'let s=""; process.stdin.on("data", c => { s += c; }); process.stdin.on("end", () => process.stdout.write(s));'],
+      'secret-value',
+      5_000,
+    );
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('secret-value');
+    expect(result.stderr).toBe('');
   });
 });

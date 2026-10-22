@@ -4,7 +4,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveCommand } from './adapter.js';
+import { resolveCommand, spawnCommand } from './adapter.js';
 
 export interface CredentialStore {
   get(key: string): Promise<string | undefined>;
@@ -35,9 +35,12 @@ export type CommandRunner = (
 
 export function processRunner(): CommandRunner {
   return (command, args, input, timeoutMs = 5_000, env) => new Promise((resolve, reject) => {
-    const child = spawn(command, [...args], {
+    const spec = spawnCommand(command, args);
+    const child = spawn(spec.command, spec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: env ? { ...process.env, ...env } : undefined,
+      windowsHide: spec.windowsHide,
+      ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
     });
     let stdout = '';
     let stderr = '';

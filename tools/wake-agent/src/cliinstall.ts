@@ -88,6 +88,62 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
+function firstOnPath(names: readonly string[], pathEnv: string): string | undefined {
+  for (const name of names) {
+    const found = resolveCommand(name, pathEnv);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/** `npm-cli.js` shipped beside a Node install (Windows zip or Unix `lib/` layout). */
+async function npmCliBeside(node: string): Promise<string | undefined> {
+  const dir = dirname(node);
+  const candidates = [
+    join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+  ];
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+async function nodePlusNpmCli(node: string | undefined): Promise<{ command: string; prefix: string[] } | undefined> {
+  if (!node || !(await fileExists(node))) return undefined;
+  const cli = await npmCliBeside(node);
+  if (!cli) return undefined;
+  return { command: node, prefix: [cli] };
+}
+
+/**
+ * On Windows, `spawn` of `npm.cmd` returns EINVAL. Prefer `node` + `npm-cli.js`
+ * next to nodePath, the bundled runtime, or a PATH / nvm Node when that script exists.
+ */
+async function winNodeNpmCli(options: {
+  nodePath?: string;
+  env: NodeJS.ProcessEnv;
+  pathEnv: string;
+  npmOnPath?: string;
+}): Promise<{ command: string; prefix: string[] } | undefined> {
+  const nodes: string[] = [];
+  const push = (candidate?: string) => {
+    if (candidate && !nodes.includes(candidate)) nodes.push(candidate);
+  };
+  push(await resolveNodeBinary({ nodePath: options.nodePath, env: options.env }));
+  push(firstOnPath(['node.exe', 'node'], options.pathEnv));
+  if (options.npmOnPath) {
+    const dir = dirname(options.npmOnPath);
+    push(join(dir, 'node.exe'));
+    push(join(dir, 'node'));
+  }
+  for (const node of nodes) {
+    const found = await nodePlusNpmCli(node);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 /** PATH `npm`, else `npm` / `npm-cli.js` next to the bundled or configured Node. */
 export async function resolveNpmInvocation(options: {
   platform?: NodeJS.Platform;
@@ -97,27 +153,25 @@ export async function resolveNpmInvocation(options: {
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
   const pathEnv = env.PATH ?? '';
-  const names = platform === 'win32' ? ['npm.cmd', 'npm.exe', 'npm'] : ['npm'];
-  for (const name of names) {
-    const found = resolveCommand(name, pathEnv);
-    if (found) return { command: found, prefix: [] };
+  const npmNames = platform === 'win32' ? ['npm.cmd', 'npm.exe', 'npm'] : ['npm'];
+  const npmOnPath = firstOnPath(npmNames, pathEnv);
+
+  if (platform === 'win32') {
+    const viaNode = await winNodeNpmCli({ nodePath: options.nodePath, env, pathEnv, npmOnPath });
+    if (viaNode) return viaNode;
+    if (npmOnPath) return { command: npmOnPath, prefix: [] };
+  } else if (npmOnPath) {
+    return { command: npmOnPath, prefix: [] };
   }
+
   const node = await resolveNodeBinary({ nodePath: options.nodePath, env });
   if (!node) return undefined;
   const dir = dirname(node);
-  const siblings = platform === 'win32' ? ['npm.cmd', 'npm.exe', 'npm'] : ['npm'];
-  for (const name of siblings) {
+  for (const name of npmNames) {
     const sibling = join(dir, name);
     if (await fileExists(sibling)) return { command: sibling, prefix: [] };
   }
-  const clis = [
-    join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-    join(dir, '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js'),
-  ];
-  for (const cli of clis) {
-    if (await fileExists(cli)) return { command: node, prefix: [cli] };
-  }
-  return undefined;
+  return nodePlusNpmCli(node);
 }
 
 async function npmGlobal(pkg: string, options: AdapterInstallOptions): Promise<InstallInvocation | { error: string; hint: string }> {

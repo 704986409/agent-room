@@ -129,10 +129,53 @@ function shellEscape(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** Escape for cmd.exe when building a single command line after `cmd /k`. */
+/** Escape for cmd.exe when building a single command line after `cmd /k` or `cmd /c`. */
 export function windowsCmdEscape(value: string): string {
   if (/^[A-Za-z0-9_./:@%+=,\\-]+$/.test(value)) return value;
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+export interface CommandSpawn {
+  command: string;
+  args: string[];
+  windowsHide: boolean;
+  /** Args are already a cmd.exe command line; Node must not quote them again. */
+  windowsVerbatimArguments?: boolean;
+}
+
+/**
+ * One command line for `cmd.exe /d /s /c`.
+ * `/s` strips the first and last quote, so the extra pair keeps quotes around
+ * paths that contain spaces (`D:\Agent Room\...`).
+ */
+export function winCmdLine(command: string, args: readonly string[]): string {
+  const inner = [windowsCmdEscape(command), ...args.map(windowsCmdEscape)].join(' ');
+  return `"${inner}"`;
+}
+
+/**
+ * File and argv for `child_process.spawn`.
+ * Windows `.cmd`/`.bat` must go through `cmd.exe`; a direct spawn returns EINVAL.
+ */
+export function spawnCommand(
+  command: string,
+  args: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): CommandSpawn {
+  if (platform === 'win32' && /\.(cmd|bat)$/i.test(command)) {
+    return {
+      command: env.ComSpec || env.comspec || 'cmd.exe',
+      args: ['/d', '/s', '/c', winCmdLine(command, args)],
+      windowsHide: true,
+      windowsVerbatimArguments: true,
+    };
+  }
+  return {
+    command,
+    args: [...args],
+    windowsHide: platform === 'win32',
+  };
 }
 
 /**
@@ -581,14 +624,12 @@ function clipProbe(text: string): string {
 
 /** Windows `.cmd` shims need cmd.exe; `spawn` without a shell returns EINVAL. */
 function spawnVersionProbe(resolved: string) {
-  if (process.platform === 'win32' && /\.(cmd|bat)$/i.test(resolved)) {
-    const quoted = `"${resolved.replace(/"/g, '""')}" --version`;
-    return spawn(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', quoted], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-  }
-  return spawn(resolved, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  const spec = spawnCommand(resolved, ['--version']);
+  return spawn(spec.command, spec.args, {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: spec.windowsHide,
+    ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  });
 }
 
 /** `<cmd> --version` with a timeout. No model flag is passed. */

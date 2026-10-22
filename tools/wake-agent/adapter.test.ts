@@ -14,6 +14,8 @@ import {
   nodeSpawner,
   probeVersion,
   resolveCommand,
+  spawnCommand,
+  winCmdLine,
   wrapInTerminal,
   windowsCmdEscape,
   type ProcessSpawner,
@@ -166,6 +168,60 @@ describe('interactive launcher adapters', () => {
     expect(windowsCmdEscape('plain')).toBe('plain');
     expect(windowsCmdEscape('a b')).toBe('"a b"');
     expect(windowsCmdEscape('say "hi"')).toBe('"say ""hi"""');
+  });
+
+  it('spawns Windows .cmd/.bat through cmd.exe and quotes paths with spaces', () => {
+    const npm = spawnCommand(
+      'D:\\Agent Room\\npm.cmd',
+      ['i', '-g', '@openai/codex'],
+      'win32',
+      { ComSpec: 'C:\\Windows\\System32\\cmd.exe' },
+    );
+    expect(npm.command).toBe('C:\\Windows\\System32\\cmd.exe');
+    expect(npm.windowsHide).toBe(true);
+    expect(npm.windowsVerbatimArguments).toBe(true);
+    expect(npm.args).toEqual([
+      '/d',
+      '/s',
+      '/c',
+      '""D:\\Agent Room\\npm.cmd" i -g @openai/codex"',
+    ]);
+
+    const prefix = spawnCommand(
+      'C:\\nvm4w\\nodejs\\npm.cmd',
+      ['--prefix', 'D:\\Agent Room'],
+      'win32',
+      {},
+    );
+    expect(prefix.command).toBe('cmd.exe');
+    expect(prefix.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
+    expect(prefix.args[3]).toBe(winCmdLine('C:\\nvm4w\\nodejs\\npm.cmd', ['--prefix', 'D:\\Agent Room']));
+    expect(prefix.args[3]).toBe('"C:\\nvm4w\\nodejs\\npm.cmd --prefix "D:\\Agent Room""');
+
+    const bat = spawnCommand('C:\\Temp\\install.BAT', ['D:\\Agent Room'], 'win32', {});
+    expect(bat.command).toBe('cmd.exe');
+    expect(bat.args[2]).toBe('/c');
+    expect(bat.args[3]).toContain('"D:\\Agent Room"');
+
+    const node = spawnCommand(
+      'D:\\Agent Room\\node.exe',
+      ['D:\\Agent Room\\node_modules\\npm\\bin\\npm-cli.js', 'i', '-g', '@openai/codex'],
+      'win32',
+      {},
+    );
+    expect(node.command).toBe('D:\\Agent Room\\node.exe');
+    expect(node.args).toEqual([
+      'D:\\Agent Room\\node_modules\\npm\\bin\\npm-cli.js',
+      'i',
+      '-g',
+      '@openai/codex',
+    ]);
+    expect(node.windowsHide).toBe(true);
+    expect(node.windowsVerbatimArguments).toBeUndefined();
+
+    expect(spawnCommand('npm.cmd', ['i'], 'linux', {}).command).toBe('npm.cmd');
+    expect(spawnCommand('C:\\nvm4w\\nodejs\\npm.cmd', ['--version'], 'win32', {}).args[3])
+      .toBe('"C:\\nvm4w\\nodejs\\npm.cmd --version"');
   });
 
   it('wraps the CLI in a terminal emulator when DISPLAY is set', () => {

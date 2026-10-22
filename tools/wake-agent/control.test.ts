@@ -515,4 +515,84 @@ describe('cli install gate', () => {
     const found = await resolveNpmInvocation({ env: { PATH: '' }, nodePath, platform: 'linux' });
     expect(found).toEqual({ command: nodePath, prefix: [cli] });
   });
+
+  it('prefers node + npm-cli.js over PATH npm.cmd on Windows', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-npm-win-'));
+    const bundled = join(home, 'Agent Room', 'node.exe');
+    const nvm = join(home, 'nvm');
+    const node = join(nvm, 'node.exe');
+    const cli = join(nvm, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const npmCmd = join(nvm, 'npm.cmd');
+    await mkdir(dirname(bundled), { recursive: true });
+    await mkdir(dirname(cli), { recursive: true });
+    await writeFile(bundled, '');
+    await writeFile(node, '');
+    await writeFile(cli, '');
+    await writeFile(npmCmd, '@echo off\r\n');
+    await chmod(node, 0o755);
+    await chmod(npmCmd, 0o755);
+    const found = await resolveNpmInvocation({
+      env: { PATH: nvm },
+      nodePath: bundled,
+      platform: 'win32',
+    });
+    expect(found).toEqual({ command: node, prefix: [cli] });
+  });
+
+  it('uses npm-cli.js next to nodePath before a PATH shim on Windows', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-npm-nodepath-'));
+    const nodePath = join(home, 'runtime', 'node.exe');
+    const cli = join(home, 'runtime', 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const bin = join(home, 'bin');
+    const npmCmd = join(bin, 'npm.cmd');
+    await mkdir(dirname(cli), { recursive: true });
+    await mkdir(bin, { recursive: true });
+    await writeFile(nodePath, '');
+    await writeFile(cli, '');
+    await writeFile(npmCmd, '@echo off\r\n');
+    await chmod(npmCmd, 0o755);
+    const found = await resolveNpmInvocation({
+      env: { PATH: bin },
+      nodePath,
+      platform: 'win32',
+    });
+    expect(found).toEqual({ command: nodePath, prefix: [cli] });
+  });
+
+  it('falls back to npm.cmd on Windows when npm-cli.js is missing', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-npm-cmd-'));
+    const nodePath = join(home, 'node.exe');
+    const bin = join(home, 'bin');
+    const npmCmd = join(bin, 'npm.cmd');
+    await mkdir(bin, { recursive: true });
+    await writeFile(nodePath, '');
+    await writeFile(npmCmd, '@echo off\r\n');
+    await chmod(npmCmd, 0o755);
+    const found = await resolveNpmInvocation({
+      env: { PATH: bin },
+      nodePath,
+      platform: 'win32',
+    });
+    expect(found).toEqual({ command: npmCmd, prefix: [] });
+  });
+
+  it('keeps PATH npm ahead of npm-cli.js off Windows', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-npm-posix-'));
+    const nodePath = join(home, 'node');
+    const cli = join(home, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+    const bin = join(home, 'bin');
+    const npm = join(bin, 'npm');
+    await mkdir(dirname(cli), { recursive: true });
+    await mkdir(bin, { recursive: true });
+    await writeFile(nodePath, '');
+    await writeFile(cli, '');
+    await writeFile(npm, '#!/bin/sh\nexit 0\n');
+    await chmod(npm, 0o755);
+    const found = await resolveNpmInvocation({
+      env: { PATH: bin },
+      nodePath,
+      platform: 'linux',
+    });
+    expect(found).toEqual({ command: npm, prefix: [] });
+  });
 });
