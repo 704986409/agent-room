@@ -133,7 +133,7 @@
 
     function fillModels(id) {
       const models = adapterModels[id] || [];
-      modelSelect.innerHTML = models.map(model => '<option>' + esc(model) + '</option>').join('');
+      modelSelect.innerHTML = models.map(model => '<option value="' + esc(model) + '">' + esc(model === 'default' ? '默认 (Codex 配置)' : model) + '</option>').join('');
     }
 
     async function refreshLogsOnly() {

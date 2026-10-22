@@ -49,14 +49,14 @@ describe('interactive launcher adapters', () => {
       directSpawn: true,
       waitCodexSession: async () => '11111111-1111-4111-8111-111111111111',
     });
-    const launched = await codex.launch({ ...opts, model: 'gpt-6.1-sol' });
+    const launched = await codex.launch({ ...opts, model: 'gpt-6-sol' });
     expect(launched.sessionId).toBe('11111111-1111-4111-8111-111111111111');
-    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6-sol', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
     expect(codexSpawn.calls[0]!.args).not.toContain('exec');
     expect(codexSpawn.calls[0]!.args).not.toContain('--json');
     codexSpawn.calls.length = 0;
     await codex.resume({ ...opts, model: 'gpt-6-luna', sessionId: '11111111-1111-4111-8111-111111111111' });
-    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
     await expect(codex.launch({ ...opts, model: 'gpt-4' })).rejects.toThrow('model_not_allowed');
 
     const cursorSpawn = fake();
@@ -72,7 +72,7 @@ describe('interactive launcher adapters', () => {
     await cursor.resume({ ...opts, model: 'grok-4.7', sessionId: '22222222-2222-4222-8222-222222222222' });
     expect(cursorSpawn.calls[1]!.args).toContain('--resume');
     expect(cursorSpawn.calls[1]!.args).toContain('grok-4.7');
-    await expect(cursor.launch({ ...opts, model: 'gpt-6.1-sol' })).rejects.toThrow('model_not_allowed');
+    await expect(cursor.launch({ ...opts, model: 'gpt-6-sol' })).rejects.toThrow('model_not_allowed');
 
     const agySpawn = fake();
     const agy = createAgyAdapter(agySpawn, {
@@ -97,10 +97,10 @@ describe('interactive launcher adapters', () => {
       directSpawn: true,
       waitCodexSession: async () => 'x',
     });
-    await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--yolo' })).rejects.toThrow('launcher_unavailable');
-    await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--force' })).rejects.toThrow('launcher_unavailable');
-    await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--dangerously-skip-permissions' })).rejects.toThrow('launcher_unavailable');
-    await expect(codex.resume({ ...opts, model: 'gpt-6.1-sol', sessionId: 'thr', prompt: '--full-auto' })).rejects.toThrow('launcher_unavailable');
+    await expect(codex.launch({ ...opts, model: 'gpt-6-sol', prompt: '--yolo' })).rejects.toThrow('launcher_unavailable');
+    await expect(codex.launch({ ...opts, model: 'gpt-6-sol', prompt: '--force' })).rejects.toThrow('launcher_unavailable');
+    await expect(codex.launch({ ...opts, model: 'gpt-6-sol', prompt: '--dangerously-skip-permissions' })).rejects.toThrow('launcher_unavailable');
+    await expect(codex.resume({ ...opts, model: 'gpt-6-sol', sessionId: 'thr', prompt: '--full-auto' })).rejects.toThrow('launcher_unavailable');
     expect(spawn.calls).toHaveLength(0);
   });
 
@@ -133,7 +133,7 @@ describe('interactive launcher adapters', () => {
 
   it('opens a Windows console on the launcher path and does not embed CLI args', () => {
     const launcher = 'D:\\Agent Room\\logs\\st_b5e09cd0.cmd';
-    const wrapped = wrapInTerminal(launcher, ['-m', 'gpt-6.1-sol', 'hello\nroom'], 'Agent Room · Desk', 'win32', {
+    const wrapped = wrapInTerminal(launcher, ['-m', 'gpt-6-sol', 'hello\nroom'], 'Agent Room · Desk', 'win32', {
       ComSpec: 'C:\\Windows\\System32\\cmd.exe',
     });
     expect(wrapped.windowsHide).toBe(false);
@@ -274,10 +274,10 @@ describe('interactive launcher adapters', () => {
     const prev = process.env.DISPLAY;
     process.env.DISPLAY = process.env.DISPLAY || ':0';
     try {
-      const wrapped = wrapInTerminal('codex', ['-m', 'gpt-6.1-sol', 'hi'], 'Agent Room · Desk');
+      const wrapped = wrapInTerminal('codex', ['-m', 'gpt-6-sol', 'hi'], 'Agent Room · Desk');
       expect(wrapped.command).toMatch(/terminal|xterm/i);
       expect(wrapped.args.join(' ')).toContain('codex');
-      expect(wrapped.args.join(' ')).toContain('gpt-6.1-sol');
+      expect(wrapped.args.join(' ')).toContain('gpt-6-sol');
     } finally {
       if (prev === undefined) delete process.env.DISPLAY;
       else process.env.DISPLAY = prev;

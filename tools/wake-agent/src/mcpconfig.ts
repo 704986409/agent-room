@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, win32 } from 'node:path';
+import { dirname, isAbsolute, join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveCommand, windowsCmdEscape } from './adapter.js';
 import type { CommandResult, CommandRunner } from './credstore.js';
@@ -215,16 +215,12 @@ export async function resolveNodeBinary(options: {
   return onPath ? forNodeArgv(onPath) : undefined;
 }
 
-function looksLikeWindowsAbs(path: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\');
-}
-
 function parentDir(path: string): string {
   const index = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
   return index >= 0 ? path.slice(0, index) : path;
 }
 
-/** Launcher next to `mcp/dist/index.js`, so the Stop hook command is one `call`. */
+/** Launcher next to `mcp/dist/index.js`. Fallback when no space-free directory exists. */
 export function windowsHookLauncherPath(mcpEntry: string): string {
   const entryDir = parentDir(mcpEntry);
   const leaf = entryDir.split(/[\\/]/).pop()?.toLowerCase();
@@ -234,25 +230,37 @@ export function windowsHookLauncherPath(mcpEntry: string): string {
 }
 
 /**
- * Batch body. Sibling `resources/node` + `resources/mcp` uses `%~dp0` so the
- * install directory can contain spaces. Other node paths are quoted absolutely.
- * Does not emit a relative `.\.agent-room` fragment.
+ * Directories whose `hook.cmd` path contains no spaces.
+ * `%ProgramData%\AgentRoom` first. A path with a space is skipped: Codex runs
+ * hook commands through PowerShell, where `call` and a quoted path both exit 1.
  */
+function hookChild(root: string, leaf: string): string {
+  // Tests on Linux pass ProgramData as a real `/tmp/...` directory.
+  if (root.includes('/') && !root.includes('\\')) return `${root.replace(/\/+$/, '')}/${leaf}`;
+  return win32.join(root, leaf);
+}
+
+export function spaceFreeHookDirs(env: NodeJS.ProcessEnv = process.env): string[] {
+  const out: string[] = [];
+  const add = (root: string | undefined) => {
+    const trimmed = root?.trim();
+    if (!trimmed || /\s/.test(trimmed)) return;
+    const dir = hookChild(trimmed, 'AgentRoom');
+    if (/\s/.test(dir) || out.includes(dir)) return;
+    out.push(dir);
+  };
+  add(env.ProgramData || env.ALLUSERSPROFILE || 'C:\\ProgramData');
+  if (env.ALLUSERSPROFILE) add(env.ALLUSERSPROFILE);
+  add(env.LOCALAPPDATA);
+  add(env.TEMP || env.TMP);
+  add('C:\\');
+  return out;
+}
+
+/** Absolute quoted node + index.js. The launcher may live far from the install. */
 export function hookLauncherBat(nodePath: string, mcpEntry: string, baseUrl: string): string {
-  const launcher = windowsHookLauncherPath(mcpEntry);
-  const mcpDir = parentDir(launcher);
-  let nodeCmd = `"${nodePath.replace(/"/g, '')}"`;
-  let entryCmd = `"${mcpEntry.replace(/"/g, '')}"`;
-  if (looksLikeWindowsAbs(nodePath) && looksLikeWindowsAbs(mcpEntry)) {
-    const relNode = win32.relative(mcpDir, nodePath);
-    const relEntry = win32.relative(mcpDir, mcpEntry);
-    if (relNode && !relNode.startsWith('..\\..') && !win32.isAbsolute(relNode)) {
-      nodeCmd = `"%~dp0${relNode}"`;
-    }
-    if (relEntry && !relEntry.startsWith('..\\') && !win32.isAbsolute(relEntry)) {
-      entryCmd = `"%~dp0${relEntry}"`;
-    }
-  }
+  const nodeCmd = `"${nodePath.replace(/"/g, '')}"`;
+  const entryCmd = `"${mcpEntry.replace(/"/g, '')}"`;
   const base = baseUrl.replace(/["%\r\n]/g, '').trim();
   return [
     '@echo off',
@@ -264,14 +272,22 @@ export function hookLauncherBat(nodePath: string, mcpEntry: string, baseUrl: str
 }
 
 /**
- * Codex strips a leading and trailing quote (`cmd /s`). `call` keeps each
- * quoted path intact, including `...\Agent Room\...`.
+ * Bare space-free path. PowerShell does not understand `call`, and a leading
+ * quote (or `& "..."`) makes the hook exit 1. A spaced path is the last resort.
  */
 export function windowsHookInvocation(launcherPath: string): string {
   if (!launcherPath || launcherPath.startsWith('.\\') || launcherPath.startsWith('./') || launcherPath.includes('\\.\\.agent-room')) {
     throw new Error('hook_path_not_absolute');
   }
+  if (!/[\s"&|<>^%]/.test(launcherPath)) return launcherPath;
   return `call ${windowsCmdEscape(launcherPath)}`;
+}
+
+function hookDirWritable(dir: string): boolean {
+  if (/\s/.test(dir)) return false;
+  if (process.platform === 'win32') return win32.isAbsolute(dir);
+  // Tests pass ProgramData as a real temp directory on Linux CI.
+  return isAbsolute(dir);
 }
 
 function tomlQuoteHook(value: string): string {
@@ -308,10 +324,30 @@ async function installWindowsStopHook(input: {
   nodePath: string;
   mcpEntry: string;
   baseUrl: string;
+  env?: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const launcher = windowsHookLauncherPath(input.mcpEntry);
-  await mkdir(dirname(launcher), { recursive: true });
-  await writeFile(launcher, hookLauncherBat(input.nodePath, input.mcpEntry, input.baseUrl));
+  const body = hookLauncherBat(input.nodePath, input.mcpEntry, input.baseUrl);
+  let launcher: string | undefined;
+  for (const dir of spaceFreeHookDirs(input.env)) {
+    if (!hookDirWritable(dir)) continue;
+    const candidate = hookChild(dir, 'hook.cmd');
+    if (/\s/.test(candidate)) continue;
+    try {
+      await mkdir(dir, { recursive: true });
+      await writeFile(candidate, body);
+      launcher = candidate;
+      break;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'write failed';
+      console.warn(`[agent-room] could not write ${candidate}: ${detail}`);
+    }
+  }
+  if (!launcher) {
+    launcher = windowsHookLauncherPath(input.mcpEntry);
+    console.warn(`[agent-room] no space-free directory for hook.cmd; falling back to call "${launcher}". Codex runs hooks through PowerShell, where call and a quoted path exit 1.`);
+    await mkdir(dirname(launcher), { recursive: true });
+    await writeFile(launcher, body);
+  }
   const invocation = windowsHookInvocation(launcher);
   const tomlPath = join(input.home, '.codex', 'config.toml');
   const toml = await readFile(tomlPath, 'utf8').catch(() => '');
@@ -394,6 +430,7 @@ export async function installMcp(target: string, options: {
         nodePath,
         mcpEntry,
         baseUrl: childEnv.AGENT_ROOM_BASE_URL ?? '',
+        env: options.env,
       });
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'hook_launcher_failed';

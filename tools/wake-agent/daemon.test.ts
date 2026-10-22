@@ -110,12 +110,12 @@ describe('wake daemon', () => {
     child.spawn = (command, args, opts) => { order.push('launch'); return inner(command, args, opts); };
     const seat = await daemon.startAgent({
       server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'codex-a',
-      cwd: '/work', adapterId: 'codex', model: 'gpt-6.1-sol',
+      cwd: '/work', adapterId: 'codex', model: 'gpt-6-sol',
     });
     expect(order).toEqual(['join', 'register', 'launch']);
-    expect(seat).toMatchObject({ seatId: 'st_a', roomInstanceId: 'ri', sessionId: 'thr_9', pid: 400, status: 'running', model: 'gpt-6.1-sol' });
+    expect(seat).toMatchObject({ seatId: 'st_a', roomInstanceId: 'ri', sessionId: 'thr_9', pid: 400, status: 'running', model: 'gpt-6-sol' });
     expect(seat.startedAt).toEqual(expect.any(String));
-    expect(child.calls[0]!.args.slice(0, 3)).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check']);
+    expect(child.calls[0]!.args.slice(0, 2)).toEqual(['-m', 'gpt-6-sol']);
     expect(child.calls[0]!.args).toContain('mcp_servers.agent-room.default_tools_approval_mode="approve"');
     expect(child.calls[0]!.args.at(-1)).toEqual(expect.stringContaining('AGENT_ROOM_SEAT_KEY'));
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
@@ -127,7 +127,7 @@ describe('wake daemon', () => {
     expect(await creds.get('seat:st_a')).toBe('super-secret-key');
     expect(client.registered[0]).toMatchObject({ seatKey: 'super-secret-key', cursor: 3 });
     const saved = await readState(path);
-    expect(saved.seats[0]).toMatchObject({ sessionId: 'thr_9', model: 'gpt-6.1-sol' });
+    expect(saved.seats[0]).toMatchObject({ sessionId: 'thr_9', model: 'gpt-6-sol' });
     expect(JSON.stringify(saved)).not.toContain('super-secret-key');
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(logs.join('\n')).not.toContain('super-secret-key');
@@ -143,7 +143,7 @@ describe('wake daemon', () => {
     const daemon = new WakeDaemon({
       api: client,
       adapters: new Map([['codex', adapter]]),
-      state: { seats: [{ seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6.1-sol', sessionId: 'thr_9', cwd: '/work', status: 'idle' }] },
+      state: { seats: [{ seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol', sessionId: 'thr_9', cwd: '/work', status: 'idle' }] },
       lock: new MemoryRunLock(),
       inspect: pid => ({ alive: pid > 0, cmdline: 'codex resume thr_9' }),
       log: line => logs.push(line),
@@ -154,7 +154,7 @@ describe('wake daemon', () => {
     expect(client.polls).toBe(1);
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args).toEqual([
-      'resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check',
+      'resume', 'thr_9', '-m', 'gpt-6-sol',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       expect.any(String),
     ]);
@@ -232,13 +232,13 @@ describe('wake daemon', () => {
     const creds = new MemoryCredentialStore();
     await creds.set('seat:st_dead', 'seat-key-secret');
     const base = (extra: Partial<SeatRecord>): SeatRecord => ({
-      seatId: 'st_live', code: 'ABC', name: 'codex-a', adapterId: 'codex', model: 'gpt-6.1-sol',
+      seatId: 'st_live', code: 'ABC', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
       sessionId: 'thr_live', cwd: '/work', pid: 11, status: 'running', ...extra,
     });
     const state: DaemonState = { seats: [
       base({ seatId: 'st_live', pid: 11, sessionId: 'thr_live', adapterId: 'codex' }),
       base({ seatId: 'st_reuse', pid: 22, sessionId: 'ses_2', adapterId: 'cursor-agent', model: 'grok-4.7', name: 'cursor-a' }),
-      base({ seatId: 'st_dead', pid: 33, sessionId: 'thr_9', model: 'gpt-6.1-sol', name: 'sleeper' }),
+      base({ seatId: 'st_dead', pid: 33, sessionId: 'thr_9', model: 'gpt-6-sol', name: 'sleeper' }),
     ] };
     const client = api();
     client.poll = async () => {
@@ -272,12 +272,12 @@ describe('wake daemon', () => {
     await daemon.tick();
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args).toEqual([
-      'resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check',
+      'resume', 'thr_9', '-m', 'gpt-6-sol',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       expect.any(String),
     ]);
     expect(child.calls[0]!.env.AGENT_ROOM_SEAT_KEY).toBe('seat-key-secret');
-    expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
+    expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6-sol' });
   });
 
   it('marks a remotely revoked seat, and stops polling after device 401', async () => {
@@ -287,7 +287,7 @@ describe('wake daemon', () => {
       seats: [{ seatId: 'st_a', code: 'ABC', name: 'codex-a', status: 'revoked' as const, pending: [], inFlight: [], failed: [] }],
     });
     const running: SeatRecord = {
-      seatId: 'st_a', code: 'ABC', name: 'codex-a', adapterId: 'codex', model: 'gpt-6.1-sol',
+      seatId: 'st_a', code: 'ABC', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
       sessionId: 'thr_9', cwd: '/work', pid: 9, status: 'running',
     };
     const daemon = new WakeDaemon({
@@ -421,7 +421,7 @@ describe('state file round trip', () => {
     });
     const seat = await daemon.startAgent({
       server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'codex-a',
-      cwd: '/work', adapterId: 'codex', model: 'gpt-6.1-sol',
+      cwd: '/work', adapterId: 'codex', model: 'gpt-6-sol',
     });
     expect((await readState(path)).seats.map(item => item.seatId)).toEqual([seat.seatId]);
     finish(1);
@@ -433,7 +433,7 @@ describe('state file round trip', () => {
     }
     const disk = await readState(path);
     expect(disk.seats).toHaveLength(1);
-    expect(disk.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
+    expect(disk.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6-sol' });
     expect(disk.seats[0]!.pid).toBeUndefined();
     expect(JSON.stringify(disk)).not.toContain('super-secret-key');
     const restarted = new WakeDaemon({
@@ -444,6 +444,6 @@ describe('state file round trip', () => {
       inspect: () => ({ alive: false, cmdline: '' }),
     });
     expect(restarted.seats).toHaveLength(1);
-    expect(restarted.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
+    expect(restarted.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6-sol' });
   });
 });

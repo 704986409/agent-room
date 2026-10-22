@@ -503,13 +503,17 @@ async function readSession(child: SpawnedProcess, parse: (chunk: string) => stri
   throw new Error('launcher_unavailable');
 }
 
+const codexModelArgs = (model: string): string[] => (model && model !== 'default' ? ['-m', model] : []);
+
 /** Interactive Codex TUI (no `exec`, no `--json`). */
 const CODEX: AdapterDefinition = {
   id: 'codex',
   command: 'codex',
-  models: ['gpt-6.1-sol', 'gpt-6-luna'],
-  launchArgs: (model, prompt) => ['-m', model, '--skip-git-repo-check', prompt],
-  resumeArgs: (sessionId, model, prompt) => ['resume', sessionId, '-m', model, '--skip-git-repo-check', prompt],
+  // Verified with ChatGPT-account Codex (gpt-6.1-sol → 400 not supported).
+  // 'default' = no -m, use the model from ~/.codex/config.toml.
+  models: ['default', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol'],
+  launchArgs: (model, prompt) => [...codexModelArgs(model), prompt],
+  resumeArgs: (sessionId, model, prompt) => ['resume', sessionId, ...codexModelArgs(model), prompt],
   pick: pickCodex,
 };
 
@@ -795,7 +799,9 @@ export function nodeSpawner(): ProcessSpawner {
       const child = spawn(wrapped.command, wrapped.args, {
         cwd: opts.cwd,
         env: { ...process.env, ...opts.env },
-        detached: !interactiveWin,
+        // Windows: detached gives the seat its own visible console. Without it the
+        // CLI inherits the daemon's hidden console and no window ever appears.
+        detached: true,
         stdio: interactiveWin ? (['ignore', 'ignore', 'ignore'] as const) : (['ignore', fd, fd] as const),
         windowsHide: wrapped.windowsHide,
         ...(wrapped.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),

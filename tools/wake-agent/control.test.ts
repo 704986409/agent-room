@@ -19,6 +19,17 @@ import {
 } from './src/mcpconfig.js';
 import { SecretRegistry } from './src/redact.js';
 
+function tomlAssigned(toml: string, key: string): string {
+  const line = toml.split('\n').find(entry => entry.startsWith(`${key} = `));
+  if (!line) return '';
+  const raw = line.slice(key.length + 3).trim();
+  if (raw.startsWith("'") && raw.endsWith("'")) return raw.slice(1, -1);
+  if (raw.startsWith('"') && raw.endsWith('"')) {
+    return raw.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return raw;
+}
+
 function quietSpawner(): ProcessSpawner {
   return { spawn() { throw new Error('spawned'); } };
 }
@@ -83,7 +94,7 @@ describe('local control server', () => {
         server: 'http://127.0.0.1:9',
         seats: [],
       });
-      expect(body.adapters[0]).toMatchObject({ id: 'codex', version: 'codex-cli 0.162', models: ['gpt-6.1-sol', 'gpt-6-luna'] });
+      expect(body.adapters[0]).toMatchObject({ id: 'codex', version: 'codex-cli 0.162', models: ['default', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol'] });
       expect(JSON.stringify(body)).not.toContain('control-secret-value');
 
       const page = await fetch(`http://127.0.0.1:${control.port}/?t=${control.token}`);
@@ -212,18 +223,25 @@ describe('mcp config', () => {
     expect(forNodeArgv('/usr/bin/node')).toBe('/usr/bin/node');
   });
 
-  it('writes a space-safe Windows stop-hook launcher and rewrites installed commands', async () => {
+  it('writes a space-free Windows stop-hook launcher and migrates old call commands', async () => {
     const nodePath = 'D:\\Agent Room\\resources\\node\\node.exe';
     const mcpEntry = 'D:\\Agent Room\\resources\\mcp\\dist\\index.js';
     const bat = hookLauncherBat(nodePath, mcpEntry, 'https://ai-room.pupgo.top');
-    expect(bat).toContain('"%~dp0..\\node\\node.exe"');
-    expect(bat).toContain('"%~dp0dist\\index.js" hook');
+    expect(bat).toContain(`"${nodePath}"`);
+    expect(bat).toContain(`"${mcpEntry}" hook`);
+    expect(bat).not.toContain('call ');
     expect(bat).not.toContain('.\\.agent-room');
-    const invocation = windowsHookInvocation('D:\\Agent Room\\resources\\mcp\\hook.cmd');
-    expect(invocation).toBe('call "D:\\Agent Room\\resources\\mcp\\hook.cmd"');
-    expect(invocation.startsWith('"')).toBe(false);
+    expect(bat).not.toContain('%~dp0');
+    const spaced = windowsHookInvocation('D:\\Agent Room\\resources\\mcp\\hook.cmd');
+    expect(spaced).toBe('call "D:\\Agent Room\\resources\\mcp\\hook.cmd"');
+    const bare = windowsHookInvocation('C:\\ProgramData\\AgentRoom\\hook.cmd');
+    expect(bare).toBe('C:\\ProgramData\\AgentRoom\\hook.cmd');
+    expect(bare.includes(' ')).toBe(false);
+    expect(bare.includes('call')).toBe(false);
+    expect(bare.startsWith('"')).toBe(false);
 
     const home = await mkdtemp(join(tmpdir(), 'wake-mcp-space-'));
+    const programData = join(home, 'ProgramData');
     const install = join(home, 'Agent Room', 'resources');
     const nodeFile = join(install, 'node', 'node.exe');
     const entry = join(install, 'mcp', 'dist', 'index.js');
@@ -235,10 +253,15 @@ describe('mcp config', () => {
     const hooksPath = join(home, '.cursor', 'hooks.json');
     await mkdir(dirname(tomlPath), { recursive: true });
     await mkdir(dirname(hooksPath), { recursive: true });
-    await writeFile(tomlPath, 'command = "npx -y agent-room-mcp hook"\n');
+    const oldCall = 'call "D:\\Agent Room\\resources\\mcp\\hook.cmd"';
+    await writeFile(tomlPath, [
+      'command = \'call "D:\\Agent Room\\resources\\mcp\\hook.cmd"\'',
+      'command_windows = \'call "D:\\Agent Room\\resources\\mcp\\hook.cmd"\'',
+      '',
+    ].join('\n'));
     await writeFile(hooksPath, JSON.stringify({
       version: 1,
-      hooks: { stop: [{ command: 'npx -y agent-room-mcp hook', loop_limit: null }] },
+      hooks: { stop: [{ command: oldCall, loop_limit: null }] },
     }));
     const result = await installMcp('codex', {
       home,
@@ -246,25 +269,75 @@ describe('mcp config', () => {
       mcpEntry: entry,
       platform: 'win32',
       server: 'https://ai-room.pupgo.top',
+      env: { ProgramData: programData },
       commandExists: () => { throw new Error('global lookup'); },
       run: async () => ({ code: 0, stdout: '', stderr: '' }),
     });
     expect(result).toMatchObject({ ok: true });
-    const launcher = join(install, 'mcp', 'hook.cmd');
+    const launcher = join(programData, 'AgentRoom', 'hook.cmd');
     const body = await readFile(launcher, 'utf8');
     expect(body).toContain(`"${nodeFile}"`);
     expect(body).toContain(`"${entry}" hook`);
+    expect(body).toContain('AGENT_ROOM_BASE_URL=https://ai-room.pupgo.top');
     expect(body).not.toContain('.\\.agent-room');
+    const rewritten = await readFile(tomlPath, 'utf8');
+    expect(rewritten).not.toContain('call ');
+    expect(rewritten).not.toContain('Agent Room');
+    expect(rewritten).toContain('hook.cmd');
+    expect(rewritten).not.toMatch(/^\s*command(?:_windows)?\s*=\s*['"]call /m);
+    const commandValue = tomlAssigned(rewritten, 'command');
+    const windowsValue = tomlAssigned(rewritten, 'command_windows');
+    for (const value of [commandValue, windowsValue]) {
+      expect(value.includes(' ')).toBe(false);
+      expect(value.startsWith('"')).toBe(false);
+      expect(value.includes('call')).toBe(false);
+      expect(value.endsWith('hook.cmd')).toBe(true);
+    }
+    const hooks = JSON.parse(await readFile(hooksPath, 'utf8')) as { hooks: { stop: Array<{ command: string }> } };
+    const cursorCommand = hooks.hooks.stop[0]!.command;
+    expect(cursorCommand.includes(' ')).toBe(false);
+    expect(cursorCommand.includes('call')).toBe(false);
+    expect(cursorCommand.startsWith('"')).toBe(false);
+    expect(cursorCommand.endsWith('hook.cmd') || cursorCommand.endsWith('hook.cmd'.replace(/\\/g, '/'))).toBe(true);
+    expect(rewriteHookCommandsInToml('command = "other"\n', 'C:\\ProgramData\\AgentRoom\\hook.cmd')).toBe('command = "other"\n');
+    expect(rewriteCursorStopHook('{"hooks":{"stop":[{"command":"echo"}]}}', bare))
+      .toBe('{"hooks":{"stop":[{"command":"echo"}]}}');
+  });
+
+  it('falls back to call when every space-free hook directory is unusable', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-mcp-fallback-'));
+    const install = join(home, 'Agent Room', 'resources');
+    const nodeFile = join(install, 'node', 'node.exe');
+    const entry = join(install, 'mcp', 'dist', 'index.js');
+    await mkdir(dirname(nodeFile), { recursive: true });
+    await mkdir(dirname(entry), { recursive: true });
+    await writeFile(nodeFile, '');
+    await writeFile(entry, '');
+    const tomlPath = join(home, '.codex', 'config.toml');
+    await mkdir(dirname(tomlPath), { recursive: true });
+    await writeFile(tomlPath, 'command = "npx -y agent-room-mcp hook"\n');
+    const warnings: string[] = [];
+    const prev = console.warn;
+    console.warn = (message?: unknown) => { warnings.push(String(message ?? '')); };
+    try {
+      const result = await installMcp('codex', {
+        home,
+        nodePath: nodeFile,
+        mcpEntry: entry,
+        platform: 'win32',
+        server: 'https://ai-room.pupgo.top',
+        env: { ProgramData: 'D:\\Program Data', LOCALAPPDATA: 'D:\\Local Data', TEMP: 'D:\\Temp Dir' },
+        commandExists: () => { throw new Error('global lookup'); },
+        run: async () => ({ code: 0, stdout: '', stderr: '' }),
+      });
+      expect(result).toMatchObject({ ok: true });
+    } finally {
+      console.warn = prev;
+    }
+    expect(warnings.join('\n')).toContain('no space-free directory');
     const rewritten = await readFile(tomlPath, 'utf8');
     expect(rewritten).toContain('call ');
     expect(rewritten).toContain('hook.cmd');
-    expect(rewritten).not.toContain('npx -y agent-room-mcp hook');
-    const hooks = JSON.parse(await readFile(hooksPath, 'utf8')) as { hooks: { stop: Array<{ command: string }> } };
-    expect(hooks.hooks.stop[0]!.command.startsWith('call ')).toBe(true);
-    expect(hooks.hooks.stop[0]!.command).toContain('hook.cmd');
-    expect(rewriteHookCommandsInToml('command = "other"\n', 'call "x"')).toBe('command = "other"\n');
-    expect(rewriteCursorStopHook('{"hooks":{"stop":[{"command":"echo"}]}}', 'call "x"'))
-      .toBe('{"hooks":{"stop":[{"command":"echo"}]}}');
   });
 });
 

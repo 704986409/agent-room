@@ -43,7 +43,7 @@ async function deliver(kind: 'npm' | 'cursor') {
   await writeFile(shim, kind === 'npm' ? NPM_SHIM : CURSOR_SHIM);
   await writeFile(script, RECORDER);
   await chmod(script, 0o755);
-  const args = ['-m', 'gpt-6-luna', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, PROMPT];
+  const args = ['-m', 'gpt-6-luna', '-c', CODEX_MANAGED_MCP_APPROVAL, PROMPT];
   const split = splitPromptArg(args, PROMPT);
   const prepared = prepareWindowsSeatLaunch({
     directory,
@@ -97,9 +97,9 @@ describe('windows seat launcher', () => {
       promptIndex: number;
       env: { AGENT_ROOM_NAME: string };
     };
-    expect(spec.args).toEqual(['-m', 'gpt-6-luna', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL]);
-    expect(spec.args[4]).toBe('mcp_servers.agent-room.default_tools_approval_mode="approve"');
-    expect(spec.promptIndex).toBe(5);
+    expect(spec.args).toEqual(['-m', 'gpt-6-luna', '-c', CODEX_MANAGED_MCP_APPROVAL]);
+    expect(spec.args[3]).toBe('mcp_servers.agent-room.default_tools_approval_mode="approve"');
+    expect(spec.promptIndex).toBe(4);
     expect(spec.env.AGENT_ROOM_NAME).toBe('中文席');
     expect(JSON.stringify(spec)).not.toContain('你是房间');
   });
@@ -111,12 +111,12 @@ describe('windows seat launcher', () => {
       expect(result.status, result.stderr).toBe(0);
       const recorded = JSON.parse(await readFile(argvOut, 'utf8')) as { argv: string[]; name: string; seatKey: string };
       expect(recorded.argv).toEqual([
-        '-m', 'gpt-6-luna', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, PROMPT,
+        '-m', 'gpt-6-luna', '-c', CODEX_MANAGED_MCP_APPROVAL, PROMPT,
       ]);
-      expect(recorded.argv[5]).toBe(PROMPT);
-      expect(recorded.argv[5]).toContain('\n');
-      expect(recorded.argv[5]).toContain('你是房间');
-      expect(recorded.argv[5]).toContain('""你好""');
+      expect(recorded.argv[4]).toBe(PROMPT);
+      expect(recorded.argv[4]).toContain('\n');
+      expect(recorded.argv[4]).toContain('你是房间');
+      expect(recorded.argv[4]).toContain('""你好""');
       expect(recorded.name).toBe('中文席');
       expect(recorded.seatKey).toBe('sekret');
     }
