@@ -1,8 +1,8 @@
-import { copyFile, readFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveCommand } from './adapter.js';
+import { resolveCommand, windowsCmdEscape } from './adapter.js';
 import type { CommandResult, CommandRunner } from './credstore.js';
 
 export interface McpToolStatus {
@@ -215,6 +215,118 @@ export async function resolveNodeBinary(options: {
   return onPath ? forNodeArgv(onPath) : undefined;
 }
 
+function looksLikeWindowsAbs(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith('\\\\');
+}
+
+function parentDir(path: string): string {
+  const index = Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/'));
+  return index >= 0 ? path.slice(0, index) : path;
+}
+
+/** Launcher next to `mcp/dist/index.js`, so the Stop hook command is one `call`. */
+export function windowsHookLauncherPath(mcpEntry: string): string {
+  const entryDir = parentDir(mcpEntry);
+  const leaf = entryDir.split(/[\\/]/).pop()?.toLowerCase();
+  const mcpDir = leaf === 'dist' ? parentDir(entryDir) : entryDir;
+  const sep = mcpEntry.includes('\\') ? '\\' : '/';
+  return `${mcpDir}${sep}hook.cmd`;
+}
+
+/**
+ * Batch body. Sibling `resources/node` + `resources/mcp` uses `%~dp0` so the
+ * install directory can contain spaces. Other node paths are quoted absolutely.
+ * Does not emit a relative `.\.agent-room` fragment.
+ */
+export function hookLauncherBat(nodePath: string, mcpEntry: string, baseUrl: string): string {
+  const launcher = windowsHookLauncherPath(mcpEntry);
+  const mcpDir = parentDir(launcher);
+  let nodeCmd = `"${nodePath.replace(/"/g, '')}"`;
+  let entryCmd = `"${mcpEntry.replace(/"/g, '')}"`;
+  if (looksLikeWindowsAbs(nodePath) && looksLikeWindowsAbs(mcpEntry)) {
+    const relNode = win32.relative(mcpDir, nodePath);
+    const relEntry = win32.relative(mcpDir, mcpEntry);
+    if (relNode && !relNode.startsWith('..\\..') && !win32.isAbsolute(relNode)) {
+      nodeCmd = `"%~dp0${relNode}"`;
+    }
+    if (relEntry && !relEntry.startsWith('..\\') && !win32.isAbsolute(relEntry)) {
+      entryCmd = `"%~dp0${relEntry}"`;
+    }
+  }
+  const base = baseUrl.replace(/["%\r\n]/g, '').trim();
+  return [
+    '@echo off',
+    'setlocal',
+    `if not defined AGENT_ROOM_BASE_URL set "AGENT_ROOM_BASE_URL=${base}"`,
+    `${nodeCmd} ${entryCmd} hook`,
+    '',
+  ].join('\r\n');
+}
+
+/**
+ * Codex strips a leading and trailing quote (`cmd /s`). `call` keeps each
+ * quoted path intact, including `...\Agent Room\...`.
+ */
+export function windowsHookInvocation(launcherPath: string): string {
+  if (!launcherPath || launcherPath.startsWith('.\\') || launcherPath.startsWith('./') || launcherPath.includes('\\.\\.agent-room')) {
+    throw new Error('hook_path_not_absolute');
+  }
+  return `call ${windowsCmdEscape(launcherPath)}`;
+}
+
+function tomlQuoteHook(value: string): string {
+  if (!value.includes("'") && /[\\"\n\r\t]/.test(value)) return `'${value}'`;
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+export function rewriteHookCommandsInToml(toml: string, invocation: string): string {
+  const quoted = tomlQuoteHook(invocation);
+  return toml.split('\n').map(line => {
+    if (!/^\s*command(?:_windows)?\s*=/.test(line)) return line;
+    if (!/(?:agent-room-mcp|mcp[\\/]+dist[\\/]+index\.js|hook\.cmd)\b/.test(line) || !/\bhook\b/.test(line)) return line;
+    return line.replace(/=\s*(?:"(?:\\.|[^"\n])*"|'(?:[^'\n])*')/, `= ${quoted}`);
+  }).join('\n');
+}
+
+export function rewriteCursorStopHook(jsonText: string, invocation: string): string {
+  const data = JSON.parse(jsonText) as { hooks?: { stop?: Array<{ command?: string }> } };
+  const stop = data.hooks?.stop;
+  if (!Array.isArray(stop)) return jsonText;
+  let changed = false;
+  for (const hook of stop) {
+    if (!hook || typeof hook.command !== 'string') continue;
+    if (!/(?:agent-room-mcp|mcp[\\/]+dist[\\/]+index\.js|hook\.cmd)/.test(hook.command)) continue;
+    if (hook.command === invocation) continue;
+    hook.command = invocation;
+    changed = true;
+  }
+  return changed ? `${JSON.stringify(data, null, 2)}\n` : jsonText;
+}
+
+async function installWindowsStopHook(input: {
+  home: string;
+  nodePath: string;
+  mcpEntry: string;
+  baseUrl: string;
+}): Promise<void> {
+  const launcher = windowsHookLauncherPath(input.mcpEntry);
+  await mkdir(dirname(launcher), { recursive: true });
+  await writeFile(launcher, hookLauncherBat(input.nodePath, input.mcpEntry, input.baseUrl));
+  const invocation = windowsHookInvocation(launcher);
+  const tomlPath = join(input.home, '.codex', 'config.toml');
+  const toml = await readFile(tomlPath, 'utf8').catch(() => '');
+  if (toml) {
+    const next = rewriteHookCommandsInToml(toml, invocation);
+    if (next !== toml) await writeFile(tomlPath, next);
+  }
+  const hooksPath = join(input.home, '.cursor', 'hooks.json');
+  const hooks = await readFile(hooksPath, 'utf8').catch(() => '');
+  if (hooks) {
+    const next = rewriteCursorStopHook(hooks, invocation);
+    if (next !== hooks) await writeFile(hooksPath, next);
+  }
+}
+
 export async function installMcp(target: string, options: {
   home?: string;
   run?: CommandRunner;
@@ -225,6 +337,8 @@ export async function installMcp(target: string, options: {
   env?: NodeJS.ProcessEnv;
   /** Paired room server. Written into client config as AGENT_ROOM_BASE_URL / HTTP MCP url. */
   server?: string;
+  /** Tests pass `win32` on Linux CI. Production uses `process.platform`. */
+  platform?: NodeJS.Platform;
 }): Promise<{ ok: true; backup?: string } | { error: string; hint?: string }> {
   const initTarget = INIT_TARGET[target];
   if (!initTarget) return { error: 'unknown_target' };
@@ -272,6 +386,19 @@ export async function installMcp(target: string, options: {
     for (const item of backups) await copyFile(item.backup, item.file);
     for (const file of absent) await rm(file, { force: true });
     return { error: 'mcp_init_failed', hint: result.stderr.trim() || result.stdout.trim() || 'init failed' };
+  }
+  if ((options.platform ?? process.platform) === 'win32' && mcpEntry && nodePath) {
+    try {
+      await installWindowsStopHook({
+        home,
+        nodePath,
+        mcpEntry,
+        baseUrl: childEnv.AGENT_ROOM_BASE_URL ?? '',
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : 'hook_launcher_failed';
+      return { error: 'hook_launcher_failed', hint: detail };
+    }
   }
   return { ok: true, backup: backups[0]?.backup };
 }

@@ -8,6 +8,18 @@ import { firstRunPrompt, wakePrompt } from './prompt.js';
 import type { SecretRegistry } from './redact.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
 
+/**
+ * Seat logs live next to daemon.log. When the state dir is already `<install>/logs`
+ * (Tauri sets AGENT_ROOM_STATE_DIR there), write `st_*.log` in that folder.
+ * Otherwise keep a `logs/` subdirectory. Never a relative `.\.agent-room` fragment.
+ */
+export function seatLogPath(stateDir: string, seatId: string): string {
+  const base = stateDir.replace(/[\\/]+$/, '');
+  const sep = base.includes('\\') ? '\\' : '/';
+  if (/(?:^|[\\/])logs$/i.test(base)) return `${base}${sep}${seatId}.log`;
+  return `${base}${sep}logs${sep}${seatId}.log`;
+}
+
 export interface WakeSeatView {
   seatId: string;
   code: string;
@@ -263,7 +275,7 @@ export class WakeDaemon {
   }
 
   private logFile(seatId: string): string | undefined {
-    return this.options.stateDir ? join(this.options.stateDir, 'logs', `${seatId}.log`) : undefined;
+    return this.options.stateDir ? seatLogPath(this.options.stateDir, seatId) : undefined;
   }
 
   private async childEnv(seatId: string, code: string, name: string, server: string, seatKey?: string, cursor?: number): Promise<Record<string, string>> {

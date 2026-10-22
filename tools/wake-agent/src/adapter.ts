@@ -131,8 +131,35 @@ function shellEscape(value: string): string {
 
 /** Escape for cmd.exe when building a single command line after `cmd /k` or `cmd /c`. */
 export function windowsCmdEscape(value: string): string {
-  if (/^[A-Za-z0-9_./:@%+=,\\-]+$/.test(value)) return value;
-  return `"${value.replace(/"/g, '""')}"`;
+  // `%` expands inside quotes too; double it so a prompt cannot expand env vars.
+  const escaped = value.replace(/%/g, '%%').replace(/"/g, '""');
+  if (escaped === value && /^[A-Za-z0-9_./:@+=,\\-]+$/.test(value)) return value;
+  return `"${escaped}"`;
+}
+
+/**
+ * Windows managed seats open a console by default. `DISPLAY` is unset on
+ * win32, so the Linux headless check must not force a hidden `cmd /c`.
+ * `AGENT_ROOM_DIRECT_SPAWN=1` still skips the console (tests, probes).
+ */
+export function shouldDirectSpawn(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (env.AGENT_ROOM_DIRECT_SPAWN === '1') return true;
+  if (env.AGENT_ROOM_DIRECT_SPAWN === '0') return false;
+  if (platform === 'win32') return false;
+  return !env.DISPLAY && !env.WAYLAND_DISPLAY;
+}
+
+/** Session `-c` override. Approves agent-room MCP tools without `--yolo` / `--full-auto`. */
+export const CODEX_MANAGED_MCP_APPROVAL = 'mcp_servers.agent-room.default_tools_approval_mode="approve"';
+
+/** Extra argv inserted before the prompt when `AGENT_ROOM_MANAGED=1`. */
+export function managedApprovalArgs(adapterId: string): readonly string[] {
+  if (adapterId === 'codex') return ['-c', CODEX_MANAGED_MCP_APPROVAL];
+  if (adapterId === 'cursor-agent') return ['--approve-mcps'];
+  return [];
 }
 
 export interface CommandSpawn {
@@ -179,40 +206,63 @@ export function spawnCommand(
 }
 
 /**
+ * `/k` payload that closes the console after a successful turn and leaves it
+ * open when the command exits non-zero, so the error stays readable.
+ * The returned string is one argv (already wrapped for `cmd /s /k`).
+ */
+export function windowsKeepOpenLine(command: string, args: readonly string[], title?: string): string {
+  const quoted = winCmdLine(command, args);
+  const inner = quoted.slice(1, -1);
+  const safeTitle = (title ?? '').replace(/["&<>^|%]/g, ' ').replace(/\s+/g, ' ').trim();
+  const prefix = safeTitle ? `title ${windowsCmdEscape(safeTitle)} & ` : '';
+  return `"${prefix}${inner} & if not errorlevel 1 exit"`;
+}
+
+/**
+ * One visible `cmd /k` console. `windowsHide` stays false so a GUI parent
+ * does not pass CREATE_NO_WINDOW. Paths with spaces stay inside quotes.
+ */
+export function windowsInteractiveSpawn(
+  command: string,
+  args: readonly string[],
+  comspec = 'cmd.exe',
+  title?: string,
+): CommandSpawn {
+  return {
+    command: comspec,
+    args: ['/d', '/s', '/k', windowsKeepOpenLine(command, args, title)],
+    windowsHide: false,
+    windowsVerbatimArguments: true,
+  };
+}
+
+/**
  * Open the CLI in a visible terminal so the user can approve tools.
  * - Linux: xfce4-terminal / x-terminal-emulator when DISPLAY is set
- * - Windows: Windows Terminal (`wt`) if on PATH, otherwise `cmd /c start … cmd /k`
+ * - Windows: `cmd /d /s /k` (console stays open after a non-zero exit)
  * - Otherwise: spawn the CLI directly (tests / no display)
  */
-export function wrapInTerminal(command: string, args: readonly string[], title: string): { command: string; args: string[] } {
-  if (process.platform === 'win32') {
-    const wt = resolveCommand('wt.exe') ?? resolveCommand('wt');
-    const viaCmd = /\.(cmd|bat)$/i.test(command);
-    // Node cannot CreateProcess a .cmd/.bat (EINVAL). Route those through cmd.exe.
-    if (wt) {
-      if (viaCmd) {
-        return {
-          command: wt,
-          args: ['-d', '.', '--title', title, 'cmd.exe', '/d', '/s', '/k', winCmdLine(command, args)],
-        };
-      }
-      return { command: wt, args: ['-d', '.', '--title', title, command, ...args] };
-    }
-    const line = [command, ...args.map(windowsCmdEscape)].join(' ');
-    // `start "title" cmd /k …` opens a new console and keeps it open.
-    return { command: 'cmd.exe', args: ['/c', 'start', title, 'cmd.exe', '/k', line] };
+export function wrapInTerminal(
+  command: string,
+  args: readonly string[],
+  title: string,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): CommandSpawn {
+  if (platform === 'win32') {
+    return windowsInteractiveSpawn(command, args, env.ComSpec || env.comspec || 'cmd.exe', title);
   }
 
   const line = [command, ...args.map(shellEscape)].join(' ');
   const xfce = resolveCommand('xfce4-terminal');
   if (xfce && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
-    return { command: xfce, args: ['--title', title, '--disable-server', '-e', line] };
+    return { command: xfce, args: ['--title', title, '--disable-server', '-e', line], windowsHide: false };
   }
   const xterm = resolveCommand('x-terminal-emulator');
   if (xterm && (process.env.DISPLAY || process.env.WAYLAND_DISPLAY)) {
-    return { command: xterm, args: ['-T', title, '-e', 'bash', '-lc', line] };
+    return { command: xterm, args: ['-T', title, '-e', 'bash', '-lc', line], windowsHide: false };
   }
-  return { command, args: [...args] };
+  return { command, args: [...args], windowsHide: false };
 }
 
 export interface SessionWaiter {
@@ -427,7 +477,7 @@ export class CliAdapter implements LauncherAdapter {
     if (this.id === 'cursor-agent') {
       sessionId = await (this.createChat ?? (() => cursorCreateChat(this.executable())))();
     }
-    const args = this.launchArgv(opts.model, opts.prompt, sessionId);
+    const args = this.withManaged(this.launchArgv(opts.model, opts.prompt, sessionId), opts.env);
     rejectUnsafe(args);
     const sinceMs = Date.now();
     const child = this.spawnInteractive(args, opts);
@@ -444,10 +494,17 @@ export class CliAdapter implements LauncherAdapter {
 
   async resume(opts: LaunchOptions & { sessionId: string }): Promise<{ pid: number; exited: Promise<number> }> {
     this.assertModel(opts.model);
-    const args = this.resumeArgv(opts.sessionId, opts.model, opts.prompt);
+    const args = this.withManaged(this.resumeArgv(opts.sessionId, opts.model, opts.prompt), opts.env);
     rejectUnsafe(args);
     const child = this.spawnInteractive(args, opts);
     return { pid: child.pid, exited: child.exited };
+  }
+
+  private withManaged(args: readonly string[], env: Record<string, string>): string[] {
+    const extra = env.AGENT_ROOM_MANAGED === '1' ? managedApprovalArgs(this.id) : [];
+    if (extra.length === 0) return [...args];
+    const prompt = args[args.length - 1] ?? '';
+    return [...args.slice(0, -1), ...extra, prompt];
   }
 
   private spawnInteractive(args: readonly string[], opts: LaunchOptions): SpawnedProcess {
@@ -727,8 +784,11 @@ export function nodeSpawner(): ProcessSpawner {
       const fd = openSync(logFile, 'a', 0o600);
       chmodSync(logFile, 0o600);
       const wrapped: CommandSpawn = opts.terminalTitle
-        ? { ...wrapInTerminal(command, args, opts.terminalTitle), windowsHide: process.platform === 'win32' }
+        ? wrapInTerminal(command, args, opts.terminalTitle)
         : spawnCommand(command, args);
+      // Interactive Windows consoles must not be CREATE_NO_WINDOW, and must not
+      // have their stdio stolen by the log file (that blanks the TUI).
+      const interactiveWin = process.platform === 'win32' && Boolean(opts.terminalTitle);
       // Record the intended agent argv for diagnostics (never secrets).
       try {
         writeFileSync(logFile, `# spawn ${wrapped.command} ${JSON.stringify(wrapped.args)}\n`, { flag: 'a', mode: 0o600 });
@@ -736,8 +796,8 @@ export function nodeSpawner(): ProcessSpawner {
       const child = spawn(wrapped.command, wrapped.args, {
         cwd: opts.cwd,
         env: { ...process.env, ...opts.env },
-        detached: true,
-        stdio: ['ignore', fd, fd] as const,
+        detached: !interactiveWin,
+        stdio: interactiveWin ? (['ignore', 'ignore', 'ignore'] as const) : (['ignore', fd, fd] as const),
         windowsHide: wrapped.windowsHide,
         ...(wrapped.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
       });

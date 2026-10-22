@@ -35,6 +35,7 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
   const { t } = useLocale();
   const [open, setOpen] = useState(false);
   const [role, setRole] = useState('');
+  const [customRole, setCustomRole] = useState(false);
   const [roleProfile, setRoleProfile] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -133,17 +134,32 @@ export function InviteAgentDialog({ roomCode, isHost, ended, variant = 'header' 
             <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4">
               <label className="block">
                 <span className="mb-1 block text-[11px] font-semibold text-ink-muted">{t('inviteAgent.roleLabel')}</span>
-                <input
-                  list="invite-agent-roles"
-                  value={role}
-                  maxLength={128}
-                  onChange={e => setRole(e.target.value)}
-                  placeholder={t('inviteAgent.rolePlaceholder')}
+                <select
+                  value={customRole ? '__custom__' : role}
+                  onChange={e => {
+                    if (e.target.value === '__custom__') {
+                      setCustomRole(true);
+                      if ((SUGGESTED_INVITE_ROLES as readonly string[]).includes(role)) setRole('');
+                      return;
+                    }
+                    setCustomRole(false);
+                    setRole(e.target.value);
+                  }}
                   className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint"
-                />
-                <datalist id="invite-agent-roles">
-                  {SUGGESTED_INVITE_ROLES.map(r => <option key={r} value={r} />)}
-                </datalist>
+                >
+                  <option value="">{t('inviteAgent.rolePlaceholder')}</option>
+                  {SUGGESTED_INVITE_ROLES.map(item => <option key={item} value={item}>{item}</option>)}
+                  <option value="__custom__">{t('inviteAgent.roleCustom')}</option>
+                </select>
+                {customRole && (
+                  <input
+                    value={role}
+                    maxLength={128}
+                    onChange={e => setRole(e.target.value)}
+                    placeholder={t('inviteAgent.rolePlaceholder')}
+                    className="mt-2 w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint"
+                  />
+                )}
                 <span className="mt-1 block text-[10px] text-ink-faint">{t('inviteAgent.roleHelp')}</span>
               </label>
 

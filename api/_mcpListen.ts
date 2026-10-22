@@ -303,6 +303,15 @@ export async function hydrateListenImages(
   return parts.filter((part): part is McpImageContent => part !== null);
 }
 
+/** Rejoin context. Completed @ mentions in recentMessages are not new work. */
+export const REJOIN_RECENT_HINT =
+  'recentMessages 只是重进房间时的上下文，用来了解已经发生的事。不要把其中已经完成的 @ 再做一遍；只处理尚未完成、且仍然在等你的工作。';
+
+export function rejoinRecentFields(reconnecting: boolean): { recentMessagesHint?: string } {
+  if (!reconnecting) return {};
+  return { recentMessagesHint: REJOIN_RECENT_HINT };
+}
+
 export function contextFields(messages: Message[]) {
   const view = buildRoomContextView(messages);
   if (!view.digest) return {};

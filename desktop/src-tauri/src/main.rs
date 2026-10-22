@@ -200,17 +200,81 @@ fn find_node(app: &AppHandle) -> Result<PathBuf, String> {
     )
 }
 
-/// `%USERPROFILE%\.agent-room` on Windows, `~/.agent-room` elsewhere.
-fn daemon_log_dir() -> PathBuf {
+fn is_unsafe_log_dir_text(text: &str) -> bool {
+    if text.is_empty() || text == "." || text.starts_with(".\\") || text.starts_with("./") {
+        return true;
+    }
+    if text.contains("\\.\\") || text.contains("/./") {
+        return true;
+    }
+    let bytes = text.as_bytes();
+    let windows_abs = bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/');
+    let unc = text.starts_with("\\\\") || text.starts_with("//");
+    let posix_abs = text.starts_with('/');
+    !(windows_abs || unc || posix_abs)
+}
+
+fn is_unsafe_log_dir(path: &Path) -> bool {
+    is_unsafe_log_dir_text(&path.to_string_lossy())
+}
+
+fn ensure_writable_dir(dir: &Path) -> bool {
+    if std::fs::create_dir_all(dir).is_err() {
+        return false;
+    }
+    let probe = dir.join(".write-probe");
+    match OpenOptions::new().create(true).write(true).truncate(true).open(&probe) {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// First safe, writable candidate. Relative `.\.agent-room` is never created.
+fn choose_log_dir(candidates: &[Option<PathBuf>]) -> PathBuf {
+    for candidate in candidates.iter().flatten() {
+        if is_unsafe_log_dir(candidate) {
+            continue;
+        }
+        if ensure_writable_dir(candidate) {
+            return candidate.clone();
+        }
+    }
+    let last = std::env::temp_dir().join("agent-room-logs");
+    let _ = std::fs::create_dir_all(&last);
+    last
+}
+
+fn fallback_log_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
-            .join(".agent-room")
+        let base = std::env::var("LOCALAPPDATA").ok().filter(|value| !value.is_empty())?;
+        return Some(for_node_argv(PathBuf::from(base).join("agent-room").join("logs")));
     }
     #[cfg(not(windows))]
     {
-        PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".agent-room")
+        let base = std::env::var("HOME").ok().filter(|value| !value.is_empty())?;
+        Some(PathBuf::from(base).join(".local").join("state").join("agent-room").join("logs"))
     }
+}
+
+/// `<exe dir>\logs` (daemon.log and st_*.log). Falls back when that dir is not writable.
+/// `AGENT_ROOM_STATE_DIR`, when set to an absolute path, wins.
+fn daemon_log_dir() -> PathBuf {
+    let from_env = std::env::var("AGENT_ROOM_STATE_DIR")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| for_node_argv(PathBuf::from(value)));
+    let install = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| for_node_argv(dir.to_path_buf())))
+        .map(|dir| dir.join("logs"));
+    choose_log_dir(&[from_env, install, fallback_log_dir()])
 }
 
 fn daemon_log_path() -> PathBuf {
@@ -492,16 +556,18 @@ impl Daemon {
             .parent()
             .filter(|dir| dir.is_dir())
             .map(|dir| for_node_argv(dir.to_path_buf()));
+        let log_dir = daemon_log_dir();
         let mut log = open_daemon_log()?;
         let _ = writeln!(
             log,
-            "----- {} daemon start -----\nnode: {}\nscript: {}\ncwd: {}",
+            "----- {} daemon start -----\nnode: {}\nscript: {}\ncwd: {}\nstate: {}",
             log_stamp(),
             node.display(),
             script.display(),
             cwd.as_ref()
                 .map(|dir| dir.display().to_string())
-                .unwrap_or_else(|| "(unchanged)".into())
+                .unwrap_or_else(|| "(unchanged)".into()),
+            log_dir.display(),
         );
         let _ = log.flush();
         let stderr = log
@@ -516,6 +582,7 @@ impl Daemon {
         let mut cmd = Command::new(&node);
         cmd.arg(&script)
             .args(["serve", "--server", &server_url()])
+            .env("AGENT_ROOM_STATE_DIR", &log_dir)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::from(stderr));
@@ -840,6 +907,28 @@ mod tests {
         );
         assert_eq!(strip_win32_verbatim_prefix(r"\\?\"), None);
         assert_eq!(strip_win32_verbatim_prefix(r"\\?\UNC\"), None);
+    }
+
+    #[test]
+    fn rejects_relative_dot_agent_room_and_keeps_spaced_install_logs() {
+        assert!(is_unsafe_log_dir_text(r".\.agent-room"));
+        assert!(is_unsafe_log_dir_text(r".\.agent-room\logs"));
+        assert!(is_unsafe_log_dir_text("./.agent-room"));
+        assert!(!is_unsafe_log_dir_text(r"C:\Users\a\AppData\Local\Agent Room\logs"));
+        assert!(!is_unsafe_log_dir_text(r"\\server\share\Agent Room\logs"));
+
+        let root = std::env::temp_dir().join(format!("agent-room-logs-{}", std::process::id()));
+        let spaced = root.join("Agent Room").join("logs");
+        let chosen = choose_log_dir(&[
+            Some(PathBuf::from(r".\.agent-room")),
+            Some(spaced.clone()),
+        ]);
+        assert_eq!(chosen, spaced);
+        assert!(spaced.is_dir());
+        let shown = chosen.to_string_lossy();
+        assert!(!shown.contains(r".\.agent-room"));
+        assert!(shown.contains("Agent Room"));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

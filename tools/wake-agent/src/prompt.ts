@@ -10,8 +10,8 @@ export function firstRunPrompt(input: {
 }): string {
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
-    '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间 MCP 工具时直接把它填进 `seatKey` / `managed.seatKey` 参数（不要用 shell/cat/printenv 去读，也不要打印或写进回复）。',
-    '不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）；需要权限时在交互界面里由用户批准。',
+    '你的 seatKey 在环境变量 AGENT_ROOM_SEAT_KEY 里。调用房间 MCP 工具时直接把它填进 `seatKey` / `managed.seatKey` 参数（不要用 shell/cat/printenv 去读，也不要打印或写进回复）。room_sleep 的 seatKey 同样填这个值，不要留空，也不要写占位符。',
+    'MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）。',
     wakePrompt({ code: input.code, name: input.name, readFrom: input.readFrom, gap: input.gap }),
   ].join('\n');
 }
@@ -25,7 +25,7 @@ export function wakePrompt(input: {
 }): string {
   const lines = [
     `你在房间 ${input.code} 被 @ 了。`,
-    '这是交互式会话：需要工具权限时请在本终端/窗口里由用户批准；不要改配置文件或权限列表。',
+    'MCP 工具已预先批准。直接调用房间工具，不要等用户在终端里逐个批准，也不要改配置文件或权限列表。',
     `1) 先调用 room_listen({ code: "${input.code}", name: "${input.name}", since: ${input.readFrom}, timeoutMs: 0, managed: { seatKey: "<AGENT_ROOM_SEAT_KEY>" } })`,
     '   读取未处理的消息，并处理其中给你的工作、在房间里回复。seatKey 用环境变量里的值，不要写进回复。',
     `2) 处理完后调用 room_listen({ code: "${input.code}", name: "${input.name}", since: <上一步返回的 cursor>, managed: { seatKey: "<AGENT_ROOM_SEAT_KEY>" } })`,

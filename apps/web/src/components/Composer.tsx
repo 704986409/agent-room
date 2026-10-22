@@ -9,6 +9,14 @@ import { showToast } from './Toast.js';
 export const TEXTAREA_MAX_HEIGHT = 200;
 export const TEXTAREA_MIN_HEIGHT = 42;
 
+/** Phone layout only. Windows desktops often report maxTouchPoints > 0 and must still send on Enter. */
+export function enterInsertsNewline(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  const coarse = window.matchMedia('(pointer: coarse)').matches;
+  const canHover = window.matchMedia('(hover: hover)').matches;
+  return coarse && !canHover;
+}
+
 interface ComposerProps {
   roomCode: string;
   text: string;
@@ -206,16 +214,15 @@ export function Composer({
             onChange={e => onTextChange(e.target.value)}
             onPaste={e => { void handlePaste(e); }}
             onKeyDown={e => {
-              // Desktop: Enter sends; Shift+Enter for new line.
-              // Mobile touch: let Enter insert a newline so user can type freely without accidental send.
-              const isTouch = typeof window !== 'undefined'
-                && ('ontouchstart' in window || (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0));
-              if (!isTouch && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              // Desktop (including Windows touch-capable laptops): Enter sends.
+              // A phone-style coarse pointer with no hover keeps Enter as a newline.
+              if (!enterInsertsNewline() && e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 void send();
               }
             }}
             placeholder={t('room.messagePlaceholder')}
+            title={t('room.messagePlaceholder')}
             rows={1}
             style={{ height: TEXTAREA_MIN_HEIGHT, maxHeight: TEXTAREA_MAX_HEIGHT }}
             className="w-full resize-none overflow-y-auto px-3.5 py-2.5 bg-surface-softer border border-border rounded-xl text-base sm:text-sm leading-relaxed outline-none focus:border-accent focus:ring-2 focus:ring-accent-tint"

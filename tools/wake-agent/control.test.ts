@@ -8,7 +8,15 @@ import { startControlServer, type RunningControl } from './src/control.js';
 import { MemoryCredentialStore, type CommandRunner } from './src/credstore.js';
 import { MemoryRunLock, WakeDaemon } from './src/daemon.js';
 import { DaemonLog } from './src/log.js';
-import { forNodeArgv, installMcp, mcpStatus } from './src/mcpconfig.js';
+import {
+  forNodeArgv,
+  hookLauncherBat,
+  installMcp,
+  mcpStatus,
+  rewriteCursorStopHook,
+  rewriteHookCommandsInToml,
+  windowsHookInvocation,
+} from './src/mcpconfig.js';
 import { SecretRegistry } from './src/redact.js';
 
 function quietSpawner(): ProcessSpawner {
@@ -202,6 +210,61 @@ describe('mcp config', () => {
     expect(forNodeArgv('\\\\?\\D:\\Agent Room\\node.exe')).toBe('D:\\Agent Room\\node.exe');
     expect(forNodeArgv('\\\\?\\UNC\\server\\share\\node.exe')).toBe('\\\\server\\share\\node.exe');
     expect(forNodeArgv('/usr/bin/node')).toBe('/usr/bin/node');
+  });
+
+  it('writes a space-safe Windows stop-hook launcher and rewrites installed commands', async () => {
+    const nodePath = 'D:\\Agent Room\\resources\\node\\node.exe';
+    const mcpEntry = 'D:\\Agent Room\\resources\\mcp\\dist\\index.js';
+    const bat = hookLauncherBat(nodePath, mcpEntry, 'https://ai-room.pupgo.top');
+    expect(bat).toContain('"%~dp0..\\node\\node.exe"');
+    expect(bat).toContain('"%~dp0dist\\index.js" hook');
+    expect(bat).not.toContain('.\\.agent-room');
+    const invocation = windowsHookInvocation('D:\\Agent Room\\resources\\mcp\\hook.cmd');
+    expect(invocation).toBe('call "D:\\Agent Room\\resources\\mcp\\hook.cmd"');
+    expect(invocation.startsWith('"')).toBe(false);
+
+    const home = await mkdtemp(join(tmpdir(), 'wake-mcp-space-'));
+    const install = join(home, 'Agent Room', 'resources');
+    const nodeFile = join(install, 'node', 'node.exe');
+    const entry = join(install, 'mcp', 'dist', 'index.js');
+    await mkdir(dirname(nodeFile), { recursive: true });
+    await mkdir(dirname(entry), { recursive: true });
+    await writeFile(nodeFile, '');
+    await writeFile(entry, '');
+    const tomlPath = join(home, '.codex', 'config.toml');
+    const hooksPath = join(home, '.cursor', 'hooks.json');
+    await mkdir(dirname(tomlPath), { recursive: true });
+    await mkdir(dirname(hooksPath), { recursive: true });
+    await writeFile(tomlPath, 'command = "npx -y agent-room-mcp hook"\n');
+    await writeFile(hooksPath, JSON.stringify({
+      version: 1,
+      hooks: { stop: [{ command: 'npx -y agent-room-mcp hook', loop_limit: null }] },
+    }));
+    const result = await installMcp('codex', {
+      home,
+      nodePath: nodeFile,
+      mcpEntry: entry,
+      platform: 'win32',
+      server: 'https://ai-room.pupgo.top',
+      commandExists: () => { throw new Error('global lookup'); },
+      run: async () => ({ code: 0, stdout: '', stderr: '' }),
+    });
+    expect(result).toMatchObject({ ok: true });
+    const launcher = join(install, 'mcp', 'hook.cmd');
+    const body = await readFile(launcher, 'utf8');
+    expect(body).toContain(`"${nodeFile}"`);
+    expect(body).toContain(`"${entry}" hook`);
+    expect(body).not.toContain('.\\.agent-room');
+    const rewritten = await readFile(tomlPath, 'utf8');
+    expect(rewritten).toContain('call ');
+    expect(rewritten).toContain('hook.cmd');
+    expect(rewritten).not.toContain('npx -y agent-room-mcp hook');
+    const hooks = JSON.parse(await readFile(hooksPath, 'utf8')) as { hooks: { stop: Array<{ command: string }> } };
+    expect(hooks.hooks.stop[0]!.command.startsWith('call ')).toBe(true);
+    expect(hooks.hooks.stop[0]!.command).toContain('hook.cmd');
+    expect(rewriteHookCommandsInToml('command = "other"\n', 'call "x"')).toBe('command = "other"\n');
+    expect(rewriteCursorStopHook('{"hooks":{"stop":[{"command":"echo"}]}}', 'call "x"'))
+      .toBe('{"hooks":{"stop":[{"command":"echo"}]}}');
   });
 });
 

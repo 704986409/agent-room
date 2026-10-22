@@ -14,8 +14,12 @@ import {
   nodeSpawner,
   probeVersion,
   resolveCommand,
+  CODEX_MANAGED_MCP_APPROVAL,
+  managedApprovalArgs,
+  shouldDirectSpawn,
   spawnCommand,
   winCmdLine,
+  windowsKeepOpenLine,
   wrapInTerminal,
   windowsCmdEscape,
   type ProcessSpawner,
@@ -48,12 +52,12 @@ describe('interactive launcher adapters', () => {
     });
     const launched = await codex.launch({ ...opts, model: 'gpt-6.1-sol' });
     expect(launched.sessionId).toBe('11111111-1111-4111-8111-111111111111');
-    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
     expect(codexSpawn.calls[0]!.args).not.toContain('exec');
     expect(codexSpawn.calls[0]!.args).not.toContain('--json');
     codexSpawn.calls.length = 0;
     await codex.resume({ ...opts, model: 'gpt-6-luna', sessionId: '11111111-1111-4111-8111-111111111111' });
-    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '--skip-git-repo-check', 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '--skip-git-repo-check', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
     await expect(codex.launch({ ...opts, model: 'gpt-4' })).rejects.toThrow('model_not_allowed');
 
     const cursorSpawn = fake();
@@ -62,9 +66,10 @@ describe('interactive launcher adapters', () => {
       createChat: async () => '22222222-2222-4222-8222-222222222222',
     });
     expect((await cursor.launch({ ...opts, model: 'grok-4.7-high' })).sessionId).toBe('22222222-2222-4222-8222-222222222222');
-    expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', 'hello room']);
+    expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', '--approve-mcps', 'hello room']);
     expect(cursorSpawn.calls[0]!.args).not.toContain('-p');
-    expect(cursorSpawn.calls[0]!.args).not.toContain('--approve-mcps');
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--force');
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--yolo');
     await cursor.resume({ ...opts, model: 'grok-4.7', sessionId: '22222222-2222-4222-8222-222222222222' });
     expect(cursorSpawn.calls[1]!.args).toContain('--resume');
     expect(cursorSpawn.calls[1]!.args).toContain('grok-4.7');
@@ -98,6 +103,55 @@ describe('interactive launcher adapters', () => {
     await expect(codex.launch({ ...opts, model: 'gpt-6.1-sol', prompt: '--dangerously-skip-permissions' })).rejects.toThrow('launcher_unavailable');
     await expect(codex.resume({ ...opts, model: 'gpt-6.1-sol', sessionId: 'thr', prompt: '--full-auto' })).rejects.toThrow('launcher_unavailable');
     expect(spawn.calls).toHaveLength(0);
+  });
+
+  it('auto-approves MCP tools only for managed seats, without yolo or full-auto', async () => {
+    expect(managedApprovalArgs('codex')).toEqual(['-c', CODEX_MANAGED_MCP_APPROVAL]);
+    expect(managedApprovalArgs('cursor-agent')).toEqual(['--approve-mcps']);
+    expect(CODEX_MANAGED_MCP_APPROVAL).not.toMatch(/yolo|full-auto|--force/);
+
+    const cursorSpawn = fake();
+    const cursor = createCursorAdapter(cursorSpawn, {
+      directSpawn: true,
+      createChat: async () => '22222222-2222-4222-8222-222222222222',
+    });
+    await cursor.launch({ ...opts, env: {}, model: 'grok-4.7-high' });
+    expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', 'hello room']);
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--approve-mcps');
+  });
+
+  it('does not direct-spawn on win32 unless AGENT_ROOM_DIRECT_SPAWN=1', () => {
+    expect(shouldDirectSpawn({}, 'win32')).toBe(false);
+    expect(shouldDirectSpawn({ DISPLAY: '' }, 'win32')).toBe(false);
+    expect(shouldDirectSpawn({ WAYLAND_DISPLAY: '' }, 'win32')).toBe(false);
+    expect(shouldDirectSpawn({ AGENT_ROOM_DIRECT_SPAWN: '1' }, 'win32')).toBe(true);
+    expect(shouldDirectSpawn({}, 'linux')).toBe(true);
+    expect(shouldDirectSpawn({ DISPLAY: ':0' }, 'linux')).toBe(false);
+    expect(shouldDirectSpawn({ WAYLAND_DISPLAY: 'wayland-0' }, 'linux')).toBe(false);
+    expect(shouldDirectSpawn({ AGENT_ROOM_DIRECT_SPAWN: '0' }, 'linux')).toBe(false);
+    expect(shouldDirectSpawn({ AGENT_ROOM_DIRECT_SPAWN: '1', DISPLAY: ':0' }, 'linux')).toBe(true);
+  });
+
+  it('keeps a visible Windows console with /k and quotes paths that contain spaces', () => {
+    const command = 'D:\\Agent Room\\codex.cmd';
+    const args = ['-m', 'gpt-6.1-sol', 'hello room'];
+    const line = windowsKeepOpenLine(command, args, 'Agent Room · Desk');
+    expect(line).toContain('"D:\\Agent Room\\codex.cmd"');
+    expect(line).toContain('if not errorlevel 1 exit');
+    expect(line).not.toContain('.\\.agent-room');
+    expect(line.startsWith('"')).toBe(true);
+
+    const wrapped = wrapInTerminal(command, args, 'Agent Room · Desk', 'win32', {
+      ComSpec: 'C:\\Windows\\System32\\cmd.exe',
+    });
+    expect(wrapped.windowsHide).toBe(false);
+    expect(wrapped.windowsVerbatimArguments).toBe(true);
+    expect(wrapped.command).toBe('C:\\Windows\\System32\\cmd.exe');
+    expect(wrapped.args.slice(0, 3)).toEqual(['/d', '/s', '/k']);
+    expect(wrapped.args[3]).toBe(line);
+    expect(wrapped.args.join(' ')).toContain('"D:\\Agent Room\\codex.cmd"');
+    expect(wrapped.args.join(' ')).not.toContain('.\\.agent-room');
+    expect(wrapped.args.join(' ')).not.toContain('-d .');
   });
 
   it('detects with --version only and resolves the command on PATH', async () => {

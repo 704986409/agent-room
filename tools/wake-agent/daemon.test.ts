@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CodexCliAdapter, createCursorAdapter, type ProcessSpawner, type SpawnedProcess } from './src/adapter.js';
 import { MemoryCredentialStore } from './src/credstore.js';
-import { FileRunLock, MemoryRunLock, WakeDaemon, type WakeApi } from './src/daemon.js';
+import { FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { wakePrompt } from './src/prompt.js';
@@ -115,7 +115,9 @@ describe('wake daemon', () => {
     expect(order).toEqual(['join', 'register', 'launch']);
     expect(seat).toMatchObject({ seatId: 'st_a', roomInstanceId: 'ri', sessionId: 'thr_9', pid: 400, status: 'running', model: 'gpt-6.1-sol' });
     expect(seat.startedAt).toEqual(expect.any(String));
-    expect(child.calls[0]!.args).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.stringContaining('AGENT_ROOM_SEAT_KEY')]);
+    expect(child.calls[0]!.args.slice(0, 3)).toEqual(['-m', 'gpt-6.1-sol', '--skip-git-repo-check']);
+    expect(child.calls[0]!.args).toContain('mcp_servers.agent-room.default_tools_approval_mode="approve"');
+    expect(child.calls[0]!.args.at(-1)).toEqual(expect.stringContaining('AGENT_ROOM_SEAT_KEY'));
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
     expect(child.calls[0]!.env).toMatchObject({
       AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9',
@@ -151,7 +153,11 @@ describe('wake daemon', () => {
     await Promise.all([first, second]);
     expect(client.polls).toBe(1);
     expect(child.calls).toHaveLength(1);
-    expect(child.calls[0]!.args).toEqual(['resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.any(String)]);
+    expect(child.calls[0]!.args).toEqual([
+      'resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check',
+      '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
+      expect.any(String),
+    ]);
     expect(logs[0]).toContain('since: 183');
     expect(logs[0]).toContain('第 120–182 条');
     expect(logs[0]).not.toContain('secret body');
@@ -182,7 +188,14 @@ describe('wake daemon', () => {
     expect(reconciled.seats[1]).toMatchObject({ status: 'idle', pid: undefined });
     const prompt = wakePrompt({ code: 'ABC', name: 'codex-a', readFrom: 4 });
     expect(prompt).toContain('since: 4');
+    expect(prompt).toContain('MCP 工具已预先批准');
+    expect(prompt).toContain('不要等用户在终端里逐个批准');
     expect(prompt).not.toContain('seat-key');
+    expect(seatLogPath('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs', 'st_a'))
+      .toBe('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs\\st_a.log');
+    expect(seatLogPath('/home/me/.local/state/agent-room', 'st_b'))
+      .toBe('/home/me/.local/state/agent-room/logs/st_b.log');
+    expect(seatLogPath('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs', 'st_a')).not.toContain('.\\.agent-room');
   });
 
   it('backs off empty polls and network errors without changing the renew path', () => {
@@ -256,7 +269,11 @@ describe('wake daemon', () => {
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'idle', pid: undefined, sessionId: 'thr_9' });
     await daemon.tick();
     expect(child.calls).toHaveLength(1);
-    expect(child.calls[0]!.args).toEqual(['resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check', expect.any(String)]);
+    expect(child.calls[0]!.args).toEqual([
+      'resume', 'thr_9', '-m', 'gpt-6.1-sol', '--skip-git-repo-check',
+      '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
+      expect.any(String),
+    ]);
     expect(child.calls[0]!.env.AGENT_ROOM_SEAT_KEY).toBe('seat-key-secret');
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
   });

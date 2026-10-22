@@ -65,6 +65,8 @@ import { dispatchRoomTask } from './_mcpTaskTool.js';
 import {
   boardInbox,
   contextFields,
+  REJOIN_RECENT_HINT,
+  rejoinRecentFields,
   hydrateListenImages,
   inboxRequiresWork,
   listenPrefsFor,
@@ -364,6 +366,7 @@ async function dispatch(
         cursor,
         nextAction: nextActionForInbox(joinInbox, a.code, cursor, finalName, joinListenPrefs),
         recentMessages,
+        ...rejoinRecentFields(reconnecting),
         ...contextFields(msgs),
         ...(joinInbox.hint ? { yourTasks: joinInbox } : {}),
         roleBrief: roleBriefFor(updated.participant.role ?? a.role ?? ''),
@@ -377,6 +380,7 @@ async function dispatch(
           // Board work outranks presence: an agent told to listen right after
           // being handed a task listens, and the task sits.
           ...(inboxRequiresWork(joinInbox) ? [] : [NEXT_LISTEN(a.code, cursor), listenWindowHint(harness)]),
+          ...(reconnecting ? [REJOIN_RECENT_HINT] : []),
         ].filter(Boolean).join(' '),
       }, await hydrateListenImages(recentMessages), structured);
     }
@@ -589,6 +593,13 @@ async function dispatch(
       const cursor = typeof a.cursor === 'number' ? a.cursor : Number.NaN;
       const seatKey = typeof a.seatKey === 'string' ? a.seatKey : '';
       const name = typeof a.name === 'string' ? a.name.trim() : '';
+      if (seatKey.includes('AGENT_ROOM_SEAT_KEY')) {
+        return ok({
+          slept: false,
+          error: 'bad_request',
+          hint: 'seatKey 要填环境变量 AGENT_ROOM_SEAT_KEY 的实际值，不要填占位符。托管进程会把这个值放进环境变量。',
+        }, [], structured);
+      }
       if (!name || !seatKey || !Number.isFinite(cursor)) {
         return ok({ slept: false, error: 'bad_request' }, [], structured);
       }

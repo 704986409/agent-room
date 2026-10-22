@@ -2,7 +2,7 @@ import { writeSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createDefaultAdapters, nodeSpawner } from './adapter.js';
+import { createDefaultAdapters, nodeSpawner, shouldDirectSpawn } from './adapter.js';
 import { startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
 import { FileRunLock, WakeDaemon } from './daemon.js';
@@ -185,7 +185,7 @@ async function runDaemon(statePath: string, mode: {
   if (holder) secrets.add(holder);
   const tokenOf = async () => holder;
   const log = new DaemonLog(secrets, join(stateDir, 'daemon.log'));
-  const direct = process.env.AGENT_ROOM_DIRECT_SPAWN === '1' || (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY);
+  const direct = shouldDirectSpawn();
   const adapters = createDefaultAdapters(nodeSpawner(), { directSpawn: direct });
   const daemon = new WakeDaemon({
     api: createHttpWakeApi(server, tokenOf),
