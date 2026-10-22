@@ -8,7 +8,7 @@ import { FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } fro
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { wakePrompt } from './src/prompt.js';
-import { readState, reconcileAfterRestart, writeState, type DaemonState, type SeatRecord } from './src/state.js';
+import { readState, reconcileAfterRestart, setStateWriteBarrier, writeState, type DaemonState, type SeatRecord } from './src/state.js';
 
 const THREAD = '{"type":"thread.started","thread_id":"thr_9"}\n';
 const codexOpts = { directSpawn: true as const, waitCodexSession: async () => 'thr_9' };
@@ -196,6 +196,8 @@ describe('wake daemon', () => {
     expect(seatLogPath('/home/me/.local/state/agent-room', 'st_b'))
       .toBe('/home/me/.local/state/agent-room/logs/st_b.log');
     expect(seatLogPath('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs', 'st_a')).not.toContain('.\\.agent-room');
+    const live = reconcileAfterRestart({ seats: [state.seats[0]!] }, () => ({ alive: true, cmdline: '' }), 'codex');
+    expect(live.seats[0]).toMatchObject({ status: 'running', pid: 9, sessionId: 'thr_9' });
   });
 
   it('backs off empty polls and network errors without changing the renew path', () => {
@@ -359,5 +361,89 @@ describe('state file round trip', () => {
     const path = join(directory, 'nested', 'daemon.json');
     await writeState(path, { seats: [] });
     expect(await readFile(path, 'utf8')).toContain('seats');
+  });
+
+  it('does not let an in-flight empty write erase a seat added during launch', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-state-race-'));
+    const path = join(directory, 'daemon.json');
+    const state: DaemonState = { seats: [] };
+    const seat: SeatRecord = {
+      seatId: 'st_keep', code: 'ABC-DEF-GHJ', name: '席', adapterId: 'codex', model: 'gpt-6-luna',
+      sessionId: 'thr_keep', cwd: 'D:\\work', status: 'running', pid: 42,
+    };
+    let release: () => void = () => {};
+    let entered: () => void = () => {};
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    let used = false;
+    setStateWriteBarrier(async () => {
+      if (used) return;
+      used = true;
+      entered();
+      await gate;
+    });
+    try {
+      const first = writeState(path, state);
+      await enteredGate;
+      state.seats.push(seat);
+      const second = writeState(path, state);
+      release();
+      await first;
+      await second;
+    } finally {
+      setStateWriteBarrier(undefined);
+    }
+    const saved = await readState(path);
+    expect(saved.seats.map(item => item.seatId)).toEqual(['st_keep']);
+    expect(saved.seats[0]).toMatchObject({ sessionId: 'thr_keep', model: 'gpt-6-luna', name: '席' });
+  });
+
+  it('keeps the seat after the console exits and after a daemon restart', async () => {
+    let finish: (code: number) => void = () => {};
+    const exited = new Promise<number>(resolve => { finish = resolve; });
+    const child = spawner([]);
+    const inner = child.spawn.bind(child);
+    child.spawn = (command, args, opts) => ({ ...inner(command, args, opts), exited });
+    const adapter = new CodexCliAdapter(child, codexOpts);
+    const directory = await mkdtemp(join(tmpdir(), 'wake-survive-'));
+    const path = join(directory, 'daemon.json');
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['codex', adapter]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'codex -m' }),
+      persist: state => writeState(path, state),
+      credentials: new MemoryCredentialStore(),
+      server: 'http://127.0.0.1:9',
+      stateDir: directory,
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 3, name: 'codex-a' }),
+    });
+    const seat = await daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'codex-a',
+      cwd: '/work', adapterId: 'codex', model: 'gpt-6.1-sol',
+    });
+    expect((await readState(path)).seats.map(item => item.seatId)).toEqual([seat.seatId]);
+    finish(1);
+    let idle = false;
+    for (let attempt = 0; attempt < 50 && !idle; attempt += 1) {
+      const disk = await readState(path);
+      idle = disk.seats[0]?.status === 'idle' && disk.seats[0]?.sessionId === 'thr_9';
+      if (!idle) await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    const disk = await readState(path);
+    expect(disk.seats).toHaveLength(1);
+    expect(disk.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
+    expect(disk.seats[0]!.pid).toBeUndefined();
+    expect(JSON.stringify(disk)).not.toContain('super-secret-key');
+    const restarted = new WakeDaemon({
+      api: api(),
+      adapters: new Map(),
+      state: await readState(path),
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    expect(restarted.seats).toHaveLength(1);
+    expect(restarted.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6.1-sol' });
   });
 });

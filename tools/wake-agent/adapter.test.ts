@@ -19,7 +19,6 @@ import {
   shouldDirectSpawn,
   spawnCommand,
   winCmdLine,
-  windowsKeepOpenLine,
   wrapInTerminal,
   windowsCmdEscape,
   type ProcessSpawner,
@@ -132,26 +131,19 @@ describe('interactive launcher adapters', () => {
     expect(shouldDirectSpawn({ AGENT_ROOM_DIRECT_SPAWN: '1', DISPLAY: ':0' }, 'linux')).toBe(true);
   });
 
-  it('keeps a visible Windows console with /k and quotes paths that contain spaces', () => {
-    const command = 'D:\\Agent Room\\codex.cmd';
-    const args = ['-m', 'gpt-6.1-sol', 'hello room'];
-    const line = windowsKeepOpenLine(command, args, 'Agent Room · Desk');
-    expect(line).toContain('"D:\\Agent Room\\codex.cmd"');
-    expect(line).toContain('if not errorlevel 1 exit');
-    expect(line).not.toContain('.\\.agent-room');
-    expect(line.startsWith('"')).toBe(true);
-
-    const wrapped = wrapInTerminal(command, args, 'Agent Room · Desk', 'win32', {
+  it('opens a Windows console on the launcher path and does not embed CLI args', () => {
+    const launcher = 'D:\\Agent Room\\logs\\st_b5e09cd0.cmd';
+    const wrapped = wrapInTerminal(launcher, ['-m', 'gpt-6.1-sol', 'hello\nroom'], 'Agent Room · Desk', 'win32', {
       ComSpec: 'C:\\Windows\\System32\\cmd.exe',
     });
     expect(wrapped.windowsHide).toBe(false);
     expect(wrapped.windowsVerbatimArguments).toBe(true);
     expect(wrapped.command).toBe('C:\\Windows\\System32\\cmd.exe');
     expect(wrapped.args.slice(0, 3)).toEqual(['/d', '/s', '/k']);
-    expect(wrapped.args[3]).toBe(line);
-    expect(wrapped.args.join(' ')).toContain('"D:\\Agent Room\\codex.cmd"');
+    expect(wrapped.args[3]).toBe('""D:\\Agent Room\\logs\\st_b5e09cd0.cmd" & if not errorlevel 1 exit"');
+    expect(wrapped.args[3]).not.toContain('hello');
+    expect(wrapped.args[3]).not.toContain('\n');
     expect(wrapped.args.join(' ')).not.toContain('.\\.agent-room');
-    expect(wrapped.args.join(' ')).not.toContain('-d .');
   });
 
   it('detects with --version only and resolves the command on PATH', async () => {

@@ -55,11 +55,44 @@ export async function readState(path: string): Promise<DaemonState> {
   }
 }
 
-export async function writeState(path: string, state: DaemonState): Promise<void> {
+/**
+ * Holds the next write after JSON.stringify, still inside the per-file lock.
+ * Tests use this to prove an older poll cannot overwrite a seat saved later.
+ */
+let stateWriteBarrier: (() => Promise<void>) | undefined;
+
+export function setStateWriteBarrier(barrier: (() => Promise<void>) | undefined): void {
+  stateWriteBarrier = barrier;
+}
+
+const writeQueues = new Map<string, Promise<void>>();
+
+/**
+ * Writes are serialized per path. JSON is captured when the write runs, not
+ * when it was queued, so a poll that started before startAgent cannot land
+ * `{seats:[]}` after the seat row was added.
+ */
+export function writeState(path: string, state: DaemonState): Promise<void> {
+  const previous = writeQueues.get(path) ?? Promise.resolve();
+  const run = previous.catch(() => undefined).then(() => writeStateBody(path, state));
+  const tail = run.then(() => undefined, () => undefined);
+  writeQueues.set(path, tail);
+  return run.finally(() => {
+    if (writeQueues.get(path) === tail) writeQueues.delete(path);
+  });
+}
+
+async function writeStateBody(path: string, state: DaemonState): Promise<void> {
   assertStateHasNoSecrets(state);
+  const body = JSON.stringify(state, null, 2);
+  if (stateWriteBarrier) await stateWriteBarrier();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, JSON.stringify(state, null, 2), { mode: 0o600 });
-  await chmod(path, 0o600);
+  await writeFile(path, body, { mode: 0o600 });
+  try {
+    await chmod(path, 0o600);
+  } catch {
+    // Windows only honors the read-only bit. The file is already written.
+  }
 }
 
 /** Linux /proc check. A live PID whose command line is not the adapter is reuse. */
@@ -108,7 +141,9 @@ export function reconcileAfterRestart(
       if (seat.status === 'revoked') return seat;
       if (seat.status !== 'running' || !seat.pid) return { ...seat, status: 'idle', pid: undefined, wakeRunId: undefined };
       const seen = inspect(seat.pid);
-      if (seen.alive && cmdlineMatchesAdapter(seen.cmdline, resolve(seat.adapterId))) return seat;
+      if (!seen.alive) return { ...seat, status: 'idle', pid: undefined, wakeRunId: undefined };
+      // Windows has no /proc. An empty command line is not proof the PID was reused.
+      if (!seen.cmdline || cmdlineMatchesAdapter(seen.cmdline, resolve(seat.adapterId))) return seat;
       return { ...seat, status: 'idle', pid: undefined, wakeRunId: undefined };
     }),
   };

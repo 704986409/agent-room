@@ -19,3 +19,5 @@ const html = join(root, 'tools/wake-agent/src/settings.html');
 if (existsSync(html)) cpSync(html, join(out, 'settings.html'));
 const winCred = join(root, 'tools/wake-agent/scripts/win-cred.ps1');
 if (existsSync(winCred)) cpSync(winCred, join(out, 'win-cred.ps1'));
+const seatLaunch = join(root, 'tools/wake-agent/src/seat-launch.mjs');
+if (existsSync(seatLaunch)) cpSync(seatLaunch, join(out, 'seat-launch.mjs'));

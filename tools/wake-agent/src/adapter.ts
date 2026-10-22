@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, closeSync, constants, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { delimiter, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
+import { prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleSpawn } from './winlaunch.js';
 import { homedir, tmpdir } from 'node:os';
 
 /** Launcher adapter. Arguments below are the interactive CLI contracts (2026-10-21). */
@@ -47,6 +48,8 @@ export interface ProcessSpawner {
     cwd: string;
     env: Record<string, string>;
     logFile?: string;
+    /** Full prompt. On Windows it is written to a file and is not placed on the cmd line. */
+    prompt?: string;
     /** When set, open the CLI inside a visible terminal emulator (interactive). */
     terminalTitle?: string;
   }): SpawnedProcess;
@@ -206,40 +209,9 @@ export function spawnCommand(
 }
 
 /**
- * `/k` payload that closes the console after a successful turn and leaves it
- * open when the command exits non-zero, so the error stays readable.
- * The returned string is one argv (already wrapped for `cmd /s /k`).
- */
-export function windowsKeepOpenLine(command: string, args: readonly string[], title?: string): string {
-  const quoted = winCmdLine(command, args);
-  const inner = quoted.slice(1, -1);
-  const safeTitle = (title ?? '').replace(/["&<>^|%]/g, ' ').replace(/\s+/g, ' ').trim();
-  const prefix = safeTitle ? `title ${windowsCmdEscape(safeTitle)} & ` : '';
-  return `"${prefix}${inner} & if not errorlevel 1 exit"`;
-}
-
-/**
- * One visible `cmd /k` console. `windowsHide` stays false so a GUI parent
- * does not pass CREATE_NO_WINDOW. Paths with spaces stay inside quotes.
- */
-export function windowsInteractiveSpawn(
-  command: string,
-  args: readonly string[],
-  comspec = 'cmd.exe',
-  title?: string,
-): CommandSpawn {
-  return {
-    command: comspec,
-    args: ['/d', '/s', '/k', windowsKeepOpenLine(command, args, title)],
-    windowsHide: false,
-    windowsVerbatimArguments: true,
-  };
-}
-
-/**
  * Open the CLI in a visible terminal so the user can approve tools.
  * - Linux: xfce4-terminal / x-terminal-emulator when DISPLAY is set
- * - Windows: `cmd /d /s /k` (console stays open after a non-zero exit)
+ * - Windows: `command` is a launcher `.cmd`. Args are not placed on the cmd line.
  * - Otherwise: spawn the CLI directly (tests / no display)
  */
 export function wrapInTerminal(
@@ -250,7 +222,7 @@ export function wrapInTerminal(
   env: NodeJS.ProcessEnv = process.env,
 ): CommandSpawn {
   if (platform === 'win32') {
-    return windowsInteractiveSpawn(command, args, env.ComSpec || env.comspec || 'cmd.exe', title);
+    return windowsConsoleSpawn(command, env.ComSpec || env.comspec || 'cmd.exe');
   }
 
   const line = [command, ...args.map(shellEscape)].join(' ');
@@ -769,6 +741,29 @@ function tailLog(path: string, stopped: () => boolean): AsyncIterable<string> {
   };
 }
 
+function windowsSeatConsole(
+  command: string,
+  args: readonly string[],
+  opts: { cwd: string; env: Record<string, string>; prompt?: string; terminalTitle?: string },
+  logFile: string,
+): CommandSpawn {
+  const split = splitPromptArg(args, opts.prompt ?? '');
+  const seatId = basename(logFile).replace(/\.log$/i, '') || 'seat';
+  return prepareWindowsSeatLaunch({
+    directory: dirname(logFile),
+    seatId,
+    command,
+    args: split.args,
+    promptIndex: split.promptIndex,
+    prompt: opts.prompt ?? '',
+    cwd: opts.cwd,
+    env: opts.env,
+    nodePath: process.execPath,
+    title: opts.terminalTitle,
+    comspec: process.env.ComSpec || process.env.comspec || 'cmd.exe',
+  }).spawn;
+}
+
 /**
  * Spawns an interactive CLI. When `terminalTitle` is set and a terminal emulator
  * is available, opens a visible window so the user can approve tool permissions.
@@ -783,12 +778,16 @@ export function nodeSpawner(): ProcessSpawner {
       if (opts.logFile) chmodSync(logDir, 0o700);
       const fd = openSync(logFile, 'a', 0o600);
       chmodSync(logFile, 0o600);
-      const wrapped: CommandSpawn = opts.terminalTitle
-        ? wrapInTerminal(command, args, opts.terminalTitle)
-        : spawnCommand(command, args);
       // Interactive Windows consoles must not be CREATE_NO_WINDOW, and must not
       // have their stdio stolen by the log file (that blanks the TUI).
+      // The prompt is a file. cmd.exe only runs the launcher, so newlines in the
+      // prompt cannot split the command.
       const interactiveWin = process.platform === 'win32' && Boolean(opts.terminalTitle);
+      const wrapped: CommandSpawn = interactiveWin
+        ? windowsSeatConsole(command, args, opts, logFile)
+        : opts.terminalTitle
+          ? wrapInTerminal(command, args, opts.terminalTitle)
+          : spawnCommand(command, args);
       // Record the intended agent argv for diagnostics (never secrets).
       try {
         writeFileSync(logFile, `# spawn ${wrapped.command} ${JSON.stringify(wrapped.args)}\n`, { flag: 'a', mode: 0o600 });
