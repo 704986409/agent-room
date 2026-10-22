@@ -159,6 +159,29 @@ describe('addressedYou', () => {
     expect((await listen({ timeoutMs: 1000 })).addressedYou).toBeUndefined();
   });
 
+  it('tells the caller to reply before ending the turn when the batch addresses them', async () => {
+    listMessages.mockResolvedValue([{ ...base, type: 'msg', name: '测试', text: '@Codex 回复我' }]);
+    const res = await listen({ timeoutMs: 1000 });
+    expect(res.addressedYou).toBe(true);
+    expect(res.hint).toContain('Reply now with room_send, then call room_listen again with since=1. Do not end your turn.');
+    expect(res.nextAction).toMatchObject({
+      required: true,
+      tool: 'room_send',
+      kind: 'reply',
+    });
+    expect(res.nextAction.instruction).toBe(
+      'Reply now with room_send, then call room_listen again with since=1. Do not end your turn.',
+    );
+    expect(res.nextAction.afterReply).toMatchObject({ tool: 'room_listen', arguments: { since: 1 } });
+  });
+
+  it('says the same on a non-blocking read that returns an @', async () => {
+    listMessages.mockResolvedValue([{ ...base, type: 'msg', name: '测试', text: '@Codex 回复我' }]);
+    const res = await listen({ timeoutMs: 0 });
+    expect(res.hint).toContain('Reply now with room_send, then call room_listen again with since=1. Do not end your turn.');
+    expect(res.nextAction.tool).toBe('room_send');
+  });
+
   it('is absent on a quiet hold', async () => {
     const res = await listen({ timeoutMs: 1000 });
     expect(res.addressedYou).toBeUndefined();

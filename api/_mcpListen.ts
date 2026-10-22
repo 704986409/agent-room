@@ -17,7 +17,7 @@ import {
 } from '@agent-room/shared';
 import type { Message, Room, TaskBoard } from '@agent-room/shared';
 import { isDeliverLead, runDeliverSweep } from '@agent-room/upstash-client';
-import { messageAddressesAgent, wakeFactsForAgent } from './_agentWake.js';
+import { messageAddressesAgent, wakeFactsForAgent, type WakeFacts } from './_agentWake.js';
 import {
   getRoom,
   listMessages,
@@ -121,6 +121,62 @@ export const nextListenAction = (
   stay: true,
   listenStatus: 'active' as const,
 });
+
+/** Exact sentence a listen result uses when this batch is for the caller.
+ *  Codex was ending the turn after room_listen returned an @, with no room_send. */
+export const replyNowHint = (cursor: number): string =>
+  `Reply now with room_send, then call room_listen again with since=${cursor}. Do not end your turn.`;
+
+export function replyThenListenAction(
+  code: string,
+  cursor: number,
+  name?: string,
+  prefs: ListenPrefs = {},
+) {
+  return {
+    required: true as const,
+    tool: 'room_send' as const,
+    kind: 'reply' as const,
+    instruction: replyNowHint(cursor),
+    arguments: {
+      code,
+      ...(name ? { name } : {}),
+    },
+    afterReply: nextListenAction(code, cursor, name, prefs),
+  };
+}
+
+export function messagesAddressCaller(
+  messages: ReadonlyArray<Pick<Message, 'type' | 'client' | 'name' | 'text' | 'metadata'>>,
+  selfName: string | undefined,
+  room?: Pick<Room, 'participants' | 'replyMode' | 'modeConfig' | 'createdBy'>,
+): boolean {
+  if (!selfName?.trim() || messages.length === 0) return false;
+  const facts: WakeFacts = room
+    ? wakeFactsForAgent(room, selfName)
+    : { sole: false, humanBroadcastsToMe: true };
+  return messages.some((message) => messageAddressesAgent(message, selfName, facts));
+}
+
+/** When the batch is for this caller and the board is not already the next
+ *  action, say so on nextAction and hint. Board work still outranks a reply. */
+export function applyAddressedReply<T>(
+  nextAction: T | undefined,
+  hint: string,
+  addressed: boolean,
+  mustWork: boolean,
+  code: string,
+  cursor: number,
+  name: string | undefined,
+  prefs: ListenPrefs = {},
+): { nextAction: T | ReturnType<typeof replyThenListenAction> | undefined; hint: string } {
+  if (!nextAction || !addressed || mustWork) return { nextAction, hint };
+  const line = replyNowHint(cursor);
+  return {
+    nextAction: replyThenListenAction(code, cursor, name, prefs),
+    hint: hint.includes(line) ? hint : (hint ? `${line} ${hint}` : line),
+  };
+}
 
 /**
  * A structured work directive must outrank the generic presence continuation.

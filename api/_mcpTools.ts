@@ -74,6 +74,8 @@ import {
   listenWindowHint,
   listMessagesResilient,
   LISTEN_DEFAULT_MS,
+  applyAddressedReply,
+  messagesAddressCaller,
   nextActionForInbox,
   nextListenAction,
   NEXT_LISTEN,
@@ -421,20 +423,31 @@ async function dispatch(
             () => listed.messages,
           );
         const messages = listed.messages.map(slimMessage);
-        let catchUpMode: string | undefined;
-        try { catchUpMode = (await getRoom(client, a.code)).replyMode; } catch { /* lean */ }
-        const readInbox = await boardInbox(client, profile, a.code, selfName ?? '', false, catchUpMode);
+        let catchUpRoom: Room | undefined;
+        try { catchUpRoom = await getRoom(client, a.code); } catch { /* lean */ }
+        const readInbox = await boardInbox(client, profile, a.code, selfName ?? '', false, catchUpRoom?.replyMode);
         const readMustWork = inboxRequiresWork(readInbox);
+        const readAddressed = messagesAddressCaller(listed.messages, selfName, catchUpRoom);
+        const readHint = readMustWork
+          ? readInbox.hint
+          : [readInbox.hint, NEXT_LISTEN(a.code, cursor)].filter(Boolean).join(' ');
+        const readOverlaid = applyAddressedReply(
+          nextActionForInbox(readInbox, a.code, cursor, selfName),
+          readHint,
+          readAddressed,
+          readMustWork,
+          a.code,
+          cursor,
+          selfName,
+        );
         return ok({
           messages,
           cursor,
           ...listenStatusFields(),
-          nextAction: nextActionForInbox(readInbox, a.code, cursor, selfName),
+          nextAction: readOverlaid.nextAction,
           ...contextFields(all),
           ...(readInbox.hint ? { yourTasks: readInbox } : {}),
-          hint: readMustWork
-            ? readInbox.hint
-            : [readInbox.hint, NEXT_LISTEN(a.code, cursor)].filter(Boolean).join(' '),
+          hint: readOverlaid.hint,
         }, await hydrateListenImages(messages), structured);
       }
       // A hold longer than the client's own tool-call timeout does not return
@@ -512,6 +525,29 @@ async function dispatch(
         : await boardInbox(client, profile, a.code, selfName ?? '', result.addressedYou === true, room?.replyMode);
       const mustWork = inboxRequiresWork(inbox);
       const cursor = managedCursor ?? result.cursor;
+      const addressed = !result.terminated && (
+        result.addressedYou === true || messagesAddressCaller(result.messages, selfName, room)
+      );
+      const hint = [
+        isModerator && result.messages.length > 0
+          ? "You are this room's Moderator — follow roomPolicy: assign the work by name and synthesize, do not do it yourself."
+          : '',
+        inbox.hint,
+        mustWork
+          ? `${messages.length > 0 ? `${messages.length} new message(s). ` : ''}`
+            + 'BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.'
+          : result.hint,
+      ].filter(Boolean).join(' ');
+      const overlaid = applyAddressedReply(
+        result.terminated ? undefined : nextActionForInbox(inbox, a.code, cursor, selfName, nextPrefs),
+        hint,
+        addressed,
+        mustWork,
+        a.code,
+        cursor,
+        selfName,
+        nextPrefs,
+      );
       return ok({
         messages,
         cursor,
@@ -519,9 +555,7 @@ async function dispatch(
         ...listenStatusFields(result.terminated),
         ...(result.addressedYou ? { addressedYou: true } : {}),
         ...(result.terminated ? { terminated: result.terminated } : {}),
-        ...(!result.terminated
-          ? { nextAction: nextActionForInbox(inbox, a.code, cursor, selfName, nextPrefs) }
-          : {}),
+        ...(overlaid.nextAction ? { nextAction: overlaid.nextAction } : {}),
         ...(listenEpoch ? { listenEpoch } : {}),
         ...(inbox.hint ? { yourTasks: inbox } : {}),
         ...(replyMode ? { replyMode } : {}),
@@ -530,16 +564,7 @@ async function dispatch(
         // actually returned something to act on. Knowing the seat is a
         // Moderator is now also needed for wakeOn, which is why the flag is
         // computed on quiet holds too — but a quiet hold stays lean.
-        hint: [
-          isModerator && result.messages.length > 0
-            ? "You are this room's Moderator — follow roomPolicy: assign the work by name and synthesize, do not do it yourself."
-            : '',
-          inbox.hint,
-          mustWork
-            ? `${messages.length > 0 ? `${messages.length} new message(s). ` : ''}`
-              + 'BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.'
-            : result.hint,
-        ].filter(Boolean).join(' '),
+        hint: overlaid.hint,
       }, await hydrateListenImages(messages), structured);
     }
 
