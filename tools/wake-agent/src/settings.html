@@ -23,6 +23,7 @@
     pre { white-space: pre-wrap; background: #111; color: #e8e8e8; padding: 12px; border-radius: 8px; max-height: 280px; overflow: auto; }
     .muted { color: #5c616a; font-size: 13px; }
     .err { color: #9b1c1c; }
+    .ok { color: #0f6b3a; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -64,8 +65,9 @@
         <label>适配器 <select name="adapterId" id="adapter" required></select></label>
         <label>模型 <select name="model" id="model" required></select></label>
         <label>工作目录 <input name="cwd" required placeholder="/home/me/work"></label>
-        <button type="submit">新建托管 Agent</button>
+        <button type="submit" id="start-agent-btn">新建托管 Agent</button>
       </form>
+      <p id="start-agent-status" class="ok" hidden></p>
     </section>
     <section>
       <h2>MCP 一键配置</h2>
@@ -85,8 +87,13 @@
     const errorBox = document.getElementById('error');
     const adapterSelect = document.getElementById('adapter');
     const modelSelect = document.getElementById('model');
+    const startBtn = document.getElementById('start-agent-btn');
+    const startStatus = document.getElementById('start-agent-status');
     let adapterModels = {};
     let adapterInstallBusy = false;
+    let mcpInstallBusy = false;
+    let startAgentBusy = false;
+    let logPollTimer = null;
 
     async function api(path, options) {
       const response = await fetch(path, {
@@ -103,6 +110,16 @@
       errorBox.textContent = error && error.message ? error.message : '';
     }
 
+    function showStartStatus(message) {
+      if (!message) {
+        startStatus.hidden = true;
+        startStatus.textContent = '';
+        return;
+      }
+      startStatus.hidden = false;
+      startStatus.textContent = message;
+    }
+
     function esc(value) {
       return String(value ?? '').replace(/[&<>"']/g, function (ch) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch];
@@ -117,6 +134,25 @@
     function fillModels(id) {
       const models = adapterModels[id] || [];
       modelSelect.innerHTML = models.map(model => '<option>' + esc(model) + '</option>').join('');
+    }
+
+    async function refreshLogsOnly() {
+      const logs = await api('/api/logs');
+      document.getElementById('logs').textContent = (logs.lines || []).join('\n');
+    }
+
+    function startLogPoll() {
+      stopLogPoll();
+      logPollTimer = setInterval(() => {
+        refreshLogsOnly().catch(() => {});
+      }, 1000);
+    }
+
+    function stopLogPoll() {
+      if (logPollTimer) {
+        clearInterval(logPollTimer);
+        logPollTimer = null;
+      }
     }
 
     async function refresh() {
@@ -149,13 +185,15 @@
       ).join('');
       const mcp = await api('/api/mcp');
       document.getElementById('mcp').innerHTML = (mcp.tools || []).map(tool => {
-        const action = cliInstalled[tool.id]
-          ? ' <button type="button" data-target="' + esc(tool.id) + '">安装</button>'
-          : ' <span class="muted">需先安装 CLI</span>';
-        return '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') + action + '</div>';
+        if (!cliInstalled[tool.id]) {
+          return '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') +
+            ' <span class="muted">需先安装 CLI</span></div>';
+        }
+        const label = tool.configured ? '重新安装' : '安装';
+        return '<div>' + esc(tool.id) + '：' + (tool.configured ? '已配置' : '未配置') +
+          ' <button type="button" data-target="' + esc(tool.id) + '">' + label + '</button></div>';
       }).join('');
-      const logs = await api('/api/logs');
-      document.getElementById('logs').textContent = (logs.lines || []).join('\n');
+      await refreshLogsOnly();
     }
 
     adapterSelect.addEventListener('change', () => fillModels(adapterSelect.value));
@@ -181,14 +219,28 @@
     });
     document.getElementById('start-agent').addEventListener('submit', async event => {
       event.preventDefault();
+      if (startAgentBusy) return;
       const form = event.target;
+      startAgentBusy = true;
+      startBtn.disabled = true;
+      startBtn.textContent = '创建中…';
+      showStartStatus('');
+      showError(null);
       try {
         await api('/api/agents', { method: 'POST', body: {
           code: form.code.value, inviteCode: form.inviteCode.value, name: form.name.value,
           adapterId: form.adapterId.value, model: form.model.value, cwd: form.cwd.value,
         } });
         await refresh();
-      } catch (error) { showError(error); }
+        showStartStatus('已创建托管 Agent');
+      } catch (error) {
+        showError(error);
+        showStartStatus('');
+      } finally {
+        startAgentBusy = false;
+        startBtn.disabled = false;
+        startBtn.textContent = '新建托管 Agent';
+      }
     });
     document.getElementById('agents').addEventListener('click', async event => {
       const button = event.target && event.target.closest ? event.target.closest('[data-adapter-install]') : null;
@@ -198,6 +250,8 @@
       adapterInstallBusy = true;
       button.disabled = true;
       button.textContent = '安装中…';
+      showError(null);
+      startLogPoll();
       try {
         await api('/api/adapters/install', { method: 'POST', body: { id } });
         await refresh();
@@ -205,14 +259,30 @@
         try { await refresh(); } catch { /* keep the install error */ }
         showError(error);
       } finally {
+        stopLogPoll();
         adapterInstallBusy = false;
       }
     });
     document.getElementById('mcp').addEventListener('click', async event => {
-      const target = event.target && event.target.dataset && event.target.dataset.target;
+      const button = event.target && event.target.closest ? event.target.closest('[data-target]') : null;
+      if (!button || button.disabled || mcpInstallBusy) return;
+      const target = button.getAttribute('data-target');
       if (!target) return;
-      try { await api('/api/mcp/install', { method: 'POST', body: { target } }); await refresh(); }
-      catch (error) { showError(error); }
+      mcpInstallBusy = true;
+      button.disabled = true;
+      button.textContent = '配置中…';
+      showError(null);
+      startLogPoll();
+      try {
+        await api('/api/mcp/install', { method: 'POST', body: { target } });
+        await refresh();
+      } catch (error) {
+        try { await refresh(); } catch { /* keep install error */ }
+        showError(error);
+      } finally {
+        stopLogPoll();
+        mcpInstallBusy = false;
+      }
     });
     document.getElementById('refresh').addEventListener('click', () => refresh().catch(showError));
     refresh().catch(showError);

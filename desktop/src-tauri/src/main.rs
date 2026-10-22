@@ -382,7 +382,11 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .parse()
         .map_err(|e| format!("本机设置地址无效: {e}\n{url}"))?;
     if let Some(w) = app.get_webview_window("settings") {
-        let _ = w.close();
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        // Same daemon session keeps the control token; raising is enough.
+        return Ok(());
     }
     let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(parsed));
     if let Some(data_dir) = persistent_webview_data_directory(app)? {
@@ -393,6 +397,40 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
         .inner_size(900.0, 720.0)
         .build()
         .map_err(|e| format!("无法打开本机设置窗口: {e}"))?;
+    Ok(())
+}
+
+const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+fn close_labeled_window(app: &AppHandle, label: &str) {
+    if let Some(w) = app.get_webview_window(label) {
+        let _ = w.close();
+    }
+}
+
+fn open_daemon_loading_window(app: &AppHandle) -> Result<(), String> {
+    if app.get_webview_window("daemon-loading").is_some() {
+        return Ok(());
+    }
+    let html = concat!(
+        "data:text/html;charset=utf-8,",
+        "%3C!DOCTYPE%20html%3E%3Chtml%20lang%3Dzh-CN%3E%3Chead%3E%3Cmeta%20charset%3Dutf-8%3E",
+        "%3Ctitle%3Eloading%3C/title%3E%3Cstyle%3E",
+        "body%7Bmargin%3A0%3Bfont%3A15px/1.5%20system-ui%2Csans-serif%3Bdisplay%3Agrid%3Bplace-items%3Acenter%3Bheight%3A100vh%3Bbackground%3A%23f4f5f7%3Bcolor%3A%231c1d1f%7D",
+        ".box%7Btext-align%3Acenter%7D.spin%7Bwidth%3A28px%3Bheight%3A28px%3Bmargin%3A0%20auto%2012px%3Bborder%3A3px%20solid%20%23c5c8ce%3Bborder-top-color%3A%231f4b99%3Bborder-radius%3A50%25%3Banimation%3As%20.8s%20linear%20infinite%7D",
+        "%40keyframes%20s%7Bto%7Btransform%3Arotate(360deg)%7D%7D%3C/style%3E%3C/head%3E%3Cbody%3E%3Cdiv%20class%3Dbox%3E%3Cdiv%20class%3Dspin%3E%3C/div%3E",
+        "%3Cdiv%3E%E6%AD%A3%E5%9C%A8%E8%BF%9E%E6%8E%A5%E6%9C%AC%E6%9C%BA%E5%90%8E%E5%8F%B0%E2%80%A6%3C/div%3E",
+        "%3Cp%20style%3Dcolor%3A%235c616a%3Bfont-size%3A13px%3E%E6%9C%80%E5%A4%9A%E7%AD%8930%E7%A7%92%3C/p%3E%3C/div%3E%3C/body%3E%3C/html%3E",
+    );
+    let parsed = html
+        .parse()
+        .map_err(|e| format!("loading url invalid: {e}"))?;
+    WebviewWindowBuilder::new(app, "daemon-loading", WebviewUrl::External(parsed))
+        .title("正在连接本机后台…")
+        .inner_size(360.0, 160.0)
+        .resizable(false)
+        .build()
+        .map_err(|e| format!("无法打开连接提示窗口: {e}"))?;
     Ok(())
 }
 
@@ -629,11 +667,11 @@ fn spawn_show_settings(app: &AppHandle, daemon: &Daemon) {
 }
 
 fn report_autostart_readiness(daemon: Daemon) {
-    if daemon.wait_control_url(Duration::from_secs(8)).is_some() {
+    if daemon.wait_control_url(DAEMON_READY_TIMEOUT).is_some() {
         return;
     }
     let detail = if daemon.running() {
-        "本机后台进程已启动，但 8 秒内没有报告控制页地址。请确认安装包中的 daemon 文件完整，然后从主窗口菜单「本机设置」重试。"
+        "本机后台进程已启动，但 30 秒内没有报告控制页地址。请确认安装包中的 daemon 文件完整，然后从主窗口菜单「本机设置」重试。"
             .to_string()
     } else {
         daemon.early_exit_detail()
@@ -646,9 +684,20 @@ fn show_settings(app: AppHandle, daemon: Daemon) {
         alert("本机设置", &e);
         return;
     }
-    let Some(url) = daemon.wait_control_url(Duration::from_secs(8)) else {
+    let app_loading = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Err(err) = open_daemon_loading_window(&app_loading) {
+            alert("本机设置", &err);
+        }
+    });
+    let ready = daemon.wait_control_url(DAEMON_READY_TIMEOUT);
+    let app_close = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        close_labeled_window(&app_close, "daemon-loading");
+    });
+    let Some(url) = ready else {
         let hint = if daemon.running() {
-            "本机后台已启动，但 8 秒内未报到控制页地址（control: URL）。\n请查看安装目录下 daemon 是否完整，或重新打开主窗口菜单「本机设置」重试。"
+            "本机后台已启动，但 30 秒内未报到控制页地址（control: URL）。\n请查看安装目录下 daemon 是否完整，或重新打开主窗口菜单「本机设置」重试。"
                 .to_string()
         } else {
             format!(
