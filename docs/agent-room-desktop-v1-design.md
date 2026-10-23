@@ -796,7 +796,7 @@ M7 只依赖 M1b（任务创建走服务器），可与 M2–M6 并行。桌面�
 
 **2026-10-21 用户决定**：托管 Agent **不用无头模式**。daemon 在有 DISPLAY 时用 `xfce4-terminal` / `x-terminal-emulator` 打开可见 TUI，用户在界面里批准工具权限。seatKey 仍经 `AGENT_ROOM_SEAT_KEY` 环境变量交给 MCP；提示词禁止 Agent 改配置/权限文件。
 
-所有适配器都**必须显式传模型**，并按允许列表校验（Codex：gpt-6.1-sol / gpt-6-luna；Cursor：grok-4.7-high / grok-4.7；agy：gemini-3.8-flash-high；Claude：空）；`--yolo / --force / --dangerously-* / --full-auto` 一律拒绝。
+所有适配器都**必须显式传模型**，并按允许列表校验（Codex：默认（Codex 配置，`default`）/ gpt-6-sol / gpt-6-luna / gpt-5.6-sol，已去掉 gpt-6.1-sol：ChatGPT 账号返回 400；Cursor：grok-4.7-high / grok-4.7；agy：gemini-3.8-flash-high；Claude：空）；`--yolo / --force / --dangerously-* / --full-auto` 一律拒绝。
 
 ### B.2 M6 决定
 
