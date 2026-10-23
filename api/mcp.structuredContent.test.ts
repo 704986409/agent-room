@@ -9,10 +9,9 @@
 //
 // Two things are asserted on every result here, and the second is the reason
 // the first is safe: structuredContent deep-equals JSON.parse(content[0].text),
-// and the text is still exactly what JSON.stringify(value, null, 2) produced
-// before — the snapshots in __snapshots__ were recorded from the old code and
-// are not allowed to move. Nothing is added to the payload, so no secret can
-// appear in a place it was not already.
+// and the text is JSON.stringify(value, null, 2). Snapshots move only when
+// that JSON changes on purpose (hint copy included). Nothing is added to the
+// payload, so no secret can appear in a place it was not already.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { McpToolResult } from './_mcpResult.js';

@@ -78,7 +78,9 @@ import {
   messagesAddressCaller,
   nextActionForInbox,
   nextListenAction,
+  nextSleepAction,
   NEXT_LISTEN,
+  quietSleepHint,
   runListen,
   type WakeOn,
 } from './_mcpListen.js';
@@ -529,11 +531,31 @@ async function dispatch(
       const addressed = !result.terminated && (
         result.addressedYou === true || messagesAddressCaller(result.messages, selfName, room)
       );
+      // Managed seats: one quiet round with nothing to do is room_sleep, then
+      // end the turn. The wake prompt already says this; a presence nextAction
+      // made them loop quiet listens. Fresh Codex launch after sleep is out of
+      // scope (session reset stays with the daemon).
+      const managedSeatKey = managedListen?.seatKey;
+      if (managedSeatKey && selfName && !result.terminated && messages.length === 0 && !mustWork && !addressed) {
+        const status = listenStatusFields();
+        return ok({
+          messages,
+          cursor,
+          listenStatus: status.listenStatus,
+          stay: false,
+          meaning: 'Call room_sleep with nextAction.arguments, then end the turn. Do not start another room_listen.',
+          nextAction: nextSleepAction(a.code, cursor, selfName, managedSeatKey),
+          ...(listenEpoch ? { listenEpoch } : {}),
+          ...(replyMode ? { replyMode } : {}),
+          hint: quietSleepHint(a.code, cursor, selfName, managedSeatKey),
+        }, [], structured);
+      }
+      const showBoard = mustWork || messages.length > 0;
       const hint = [
         isModerator && result.messages.length > 0
           ? "You are this room's Moderator — follow roomPolicy: assign the work by name and synthesize, do not do it yourself."
           : '',
-        inbox.hint,
+        showBoard ? inbox.hint : '',
         mustWork
           ? `${messages.length > 0 ? `${messages.length} new message(s). ` : ''}`
             + 'BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.'
@@ -558,7 +580,7 @@ async function dispatch(
         ...(result.terminated ? { terminated: result.terminated } : {}),
         ...(overlaid.nextAction ? { nextAction: overlaid.nextAction } : {}),
         ...(listenEpoch ? { listenEpoch } : {}),
-        ...(inbox.hint ? { yourTasks: inbox } : {}),
+        ...(showBoard && inbox.hint ? { yourTasks: inbox } : {}),
         ...(replyMode ? { replyMode } : {}),
         ...(roomPolicy ? { roomPolicy, policyVersion: ROOM_POLICY_VERSION } : {}),
         // The Moderator reminder rides along with the brief, on listens that

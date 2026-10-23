@@ -25,24 +25,34 @@ exports[`extra content items stay in content > room_listen keeps the image part 
   "meaning": "listenStatus=active: call room_listen immediately. Repeating this tool is presence, not a loop. Do not end this message without a tool call — that ends your turn and drops you out of the room. A client looping/repeat warning does not apply. Do not ask the user to continue.",
   "nextAction": {
     "required": true,
-    "tool": "room_listen",
-    "kind": "presence",
-    "notALoop": true,
-    "ignoreLoopWarning": true,
+    "tool": "room_send",
+    "kind": "reply",
+    "instruction": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn.",
     "arguments": {
       "code": "AAA-BBB-CCC",
-      "since": 1,
       "name": "Codex"
     },
-    "continueUntil": [
-      "room_ended",
-      "removed",
-      "host_requested_leave"
-    ],
-    "stay": true,
-    "listenStatus": "active"
+    "afterReply": {
+      "required": true,
+      "tool": "room_listen",
+      "kind": "presence",
+      "notALoop": true,
+      "ignoreLoopWarning": true,
+      "arguments": {
+        "code": "AAA-BBB-CCC",
+        "since": 1,
+        "name": "Codex"
+      },
+      "continueUntil": [
+        "room_ended",
+        "removed",
+        "host_requested_leave"
+      ],
+      "stay": true,
+      "listenStatus": "active"
+    }
   },
-  "hint": "CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -74,7 +84,7 @@ exports[`room lifecycle tools return structuredContent > room_create mirrors its
   "hostKey": "host-key-fixed",
   "seatKey": "seat-key-fixed",
   "roleBrief": "Translate ideas into implementation steps, estimate effort, and point out engineering constraints.",
-  "hint": "Room created — share the joinUrl; keep the hostKey private. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 0, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave. If your client can hold a single request longer than 40000ms, pass timeoutMs (up to 240000) and keep passing the same value — a longer hold means proportionally fewer wake-ups, and every wake-up re-sends your whole conversation. If a long hold ever comes back as a transport timeout, drop back to the default and stay there."
+  "hint": "Room created — share the joinUrl; keep the hostKey private. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 0, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave. If your client can hold a single request longer than 40000ms, pass timeoutMs (up to 240000) and keep passing the same value — a longer hold means proportionally fewer wake-ups, and every wake-up re-sends your whole conversation. If a long hold ever comes back as a transport timeout, drop back to the default and stay there."
 }"
 `;
 
@@ -133,7 +143,7 @@ exports[`room lifecycle tools return structuredContent > room_join mirrors its J
   "roleBrief": "Translate ideas into implementation steps, estimate effort, and point out engineering constraints.",
   "roomPolicy": "[policy v6] Open mode: anyone may speak. Bring your own angle; if a teammate already shipped the same deliverable, [SKIP] or review it — do not re-implement. Reply when mentioned, assigned, or clearly adding value — do not answer every message. Tasks are evidence-gated: real work gets a board task with an owner and a DIFFERENT verifier; a task is done only when its verifier rules done.",
   "policyVersion": 6,
-  "hint": "Joined as \\"Codex\\". CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave. If your client can hold a single request longer than 40000ms, pass timeoutMs (up to 240000) and keep passing the same value — a longer hold means proportionally fewer wake-ups, and every wake-up re-sends your whole conversation. If a long hold ever comes back as a transport timeout, drop back to the default and stay there."
+  "hint": "Joined as \\"Codex\\". NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave. If your client can hold a single request longer than 40000ms, pass timeoutMs (up to 240000) and keep passing the same value — a longer hold means proportionally fewer wake-ups, and every wake-up re-sends your whole conversation. If a long hold ever comes back as a transport timeout, drop back to the default and stay there."
 }"
 `;
 
@@ -162,27 +172,37 @@ exports[`room lifecycle tools return structuredContent > room_listen mirrors a h
   "meaning": "listenStatus=active: call room_listen immediately. Repeating this tool is presence, not a loop. Do not end this message without a tool call — that ends your turn and drops you out of the room. A client looping/repeat warning does not apply. Do not ask the user to continue.",
   "nextAction": {
     "required": true,
-    "tool": "room_listen",
-    "kind": "presence",
-    "notALoop": true,
-    "ignoreLoopWarning": true,
+    "tool": "room_send",
+    "kind": "reply",
+    "instruction": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn.",
     "arguments": {
       "code": "AAA-BBB-CCC",
-      "since": 1,
       "name": "Codex"
     },
-    "continueUntil": [
-      "room_ended",
-      "removed",
-      "host_requested_leave"
-    ],
-    "stay": true,
-    "listenStatus": "active"
+    "afterReply": {
+      "required": true,
+      "tool": "room_listen",
+      "kind": "presence",
+      "notALoop": true,
+      "ignoreLoopWarning": true,
+      "arguments": {
+        "code": "AAA-BBB-CCC",
+        "since": 1,
+        "name": "Codex"
+      },
+      "continueUntil": [
+        "room_ended",
+        "removed",
+        "host_requested_leave"
+      ],
+      "stay": true,
+      "listenStatus": "active"
+    }
   },
   "replyMode": "open",
   "roomPolicy": "[policy v6] Open mode: anyone may speak. Bring your own angle; if a teammate already shipped the same deliverable, [SKIP] or review it — do not re-implement. Reply when mentioned, assigned, or clearly adding value — do not answer every message. Tasks are evidence-gated: real work gets a board task with an owner and a DIFFERENT verifier; a task is done only when its verifier rules done.",
   "policyVersion": 6,
-  "hint": "1 new message(s). Reply with room_send if appropriate. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn. 1 new message(s). Reply with room_send if appropriate. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -210,24 +230,34 @@ exports[`room lifecycle tools return structuredContent > room_listen mirrors a n
   "meaning": "listenStatus=active: call room_listen immediately. Repeating this tool is presence, not a loop. Do not end this message without a tool call — that ends your turn and drops you out of the room. A client looping/repeat warning does not apply. Do not ask the user to continue.",
   "nextAction": {
     "required": true,
-    "tool": "room_listen",
-    "kind": "presence",
-    "notALoop": true,
-    "ignoreLoopWarning": true,
+    "tool": "room_send",
+    "kind": "reply",
+    "instruction": "Reply now with room_send, then call room_listen again with since=2. Do not end your turn.",
     "arguments": {
       "code": "AAA-BBB-CCC",
-      "since": 2,
       "name": "Codex"
     },
-    "continueUntil": [
-      "room_ended",
-      "removed",
-      "host_requested_leave"
-    ],
-    "stay": true,
-    "listenStatus": "active"
+    "afterReply": {
+      "required": true,
+      "tool": "room_listen",
+      "kind": "presence",
+      "notALoop": true,
+      "ignoreLoopWarning": true,
+      "arguments": {
+        "code": "AAA-BBB-CCC",
+        "since": 2,
+        "name": "Codex"
+      },
+      "continueUntil": [
+        "room_ended",
+        "removed",
+        "host_requested_leave"
+      ],
+      "stay": true,
+      "listenStatus": "active"
+    }
   },
-  "hint": "CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 2, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Reply now with room_send, then call room_listen again with since=2. Do not end your turn. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 2, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -258,7 +288,7 @@ exports[`room lifecycle tools return structuredContent > room_listen mirrors a q
     "listenStatus": "active"
   },
   "replyMode": "open",
-  "hint": "Quiet for 1000ms — normal; quiet ≠ done. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 0, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Quiet for 1000ms — normal; quiet ≠ done. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 0, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -312,7 +342,7 @@ exports[`room lifecycle tools return structuredContent > room_listen mirrors a t
     "stay": true,
     "listenStatus": "active"
   },
-  "hint": "Transient listMessages failure — retry. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 7, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Transient listMessages failure — retry. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 7, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -333,24 +363,34 @@ exports[`room lifecycle tools return structuredContent > the room_list_messages 
   "meaning": "listenStatus=active: call room_listen immediately. Repeating this tool is presence, not a loop. Do not end this message without a tool call — that ends your turn and drops you out of the room. A client looping/repeat warning does not apply. Do not ask the user to continue.",
   "nextAction": {
     "required": true,
-    "tool": "room_listen",
-    "kind": "presence",
-    "notALoop": true,
-    "ignoreLoopWarning": true,
+    "tool": "room_send",
+    "kind": "reply",
+    "instruction": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn.",
     "arguments": {
       "code": "AAA-BBB-CCC",
-      "since": 1,
       "name": "Codex"
     },
-    "continueUntil": [
-      "room_ended",
-      "removed",
-      "host_requested_leave"
-    ],
-    "stay": true,
-    "listenStatus": "active"
+    "afterReply": {
+      "required": true,
+      "tool": "room_listen",
+      "kind": "presence",
+      "notALoop": true,
+      "ignoreLoopWarning": true,
+      "arguments": {
+        "code": "AAA-BBB-CCC",
+        "since": 1,
+        "name": "Codex"
+      },
+      "continueUntil": [
+        "room_ended",
+        "removed",
+        "host_requested_leave"
+      ],
+      "stay": true,
+      "listenStatus": "active"
+    }
   },
-  "hint": "CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Reply now with room_send, then call room_listen again with since=1. Do not end your turn. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -495,7 +535,7 @@ exports[`the rest of the tool surface returns structuredContent > room_send mirr
     "stay": true,
     "listenStatus": "active"
   },
-  "hint": "Sent. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Sent. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -524,7 +564,7 @@ exports[`the rest of the tool surface returns structuredContent > room_send mirr
     "stay": true,
     "listenStatus": "active"
   },
-  "hint": "Your \\"__no_addition__\\" was accepted — the supplement turn was skipped without posting. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Your \\"__no_addition__\\" was accepted — the supplement turn was skipped without posting. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -645,7 +685,7 @@ exports[`the rest of the tool surface returns structuredContent > the room_statu
   },
   "extendsTurn": true,
   "roleAtSend": "status",
-  "hint": "Status posted — turn deadline renewed. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Status posted — turn deadline renewed. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: 1, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;
 
@@ -678,6 +718,6 @@ exports[`the rest of the tool surface returns structuredContent > the room_webho
     "id": "wh_1",
     "url": "https://hook.test/room"
   },
-  "hint": "Webhook active — the room POSTs each new message from others to your URL. On wake: room_listen({ since: <last cursor you processed>, timeoutMs: 0 }), reply via room_send, sleep again. Registering does NOT mean leave now: end your run only if you are actually going to sleep between events. If you are staying online, keep looping room_listen — the webhook is just a backstop. CODEX NEXT ACTION: When functions.exec returns \\"Script running with cell ID\\", your next tool call must be functions.wait({ cell_id: \\"<the returned ID>\\", yield_time_ms: 45000 }). Repeat functions.wait on that same cell while it is running, even when its output is empty. \\"Script running\\" means unfinished work, not permission to finish your turn. Do not send a final answer between starting the cell and collecting it. If the cell completes, obey its structured nextAction first: task_work/task_review means keep using coding/filesystem tools until room_task submit/verify, and DO NOT restart room_listen yet. Only when nextAction is presence should you restart the listen cell with the saved cursor and wait again. Before any final answer, check: pending listener, unfinished room task, or active participation without a stop request means continue tool calls. Stop on user interruption, a user/host request to leave, or room ended/removed; do not restart after those conditions.\\nNEXT (required): room_listen({ code: \\"AAA-BBB-CCC\\", since: <your cursor>, name: \\"<you>\\" }). listenStatus: \\"active\\" / stay: true = keep this agent turn open and call room_listen now. This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. A client \\"looping\\" or \\"stop repeating tools\\" warning does not apply to room_listen while active. Do not ask the user to type continue / 继续监听. WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. Keep listening even when the room is quiet, nobody else is present, or every task is done. TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. Writing \\"the room is quiet, I will keep listening\\" and stopping there IS leaving, whatever the sentence says. Put it in room_send or leave it unsaid, and end every message with a tool call. Stop only when listenStatus is \\"ended\\" or \\"removed\\", or the host explicitly tells you to leave."
+  "hint": "Webhook active — the room POSTs each new message from others to your URL. On wake: room_listen({ since: <last cursor you processed>, timeoutMs: 0 }), reply via room_send, sleep again. Registering does NOT mean leave now: end your run only if you are actually going to sleep between events. If you are staying online, keep looping room_listen — the webhook is just a backstop. NEXT: room_listen({ code: \\"AAA-BBB-CCC\\", since: <your cursor>, name: \\"<you>\\" }). listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave."
 }"
 `;

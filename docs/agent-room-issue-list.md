@@ -307,7 +307,7 @@ Token浪费。
 
 ### 状态
 
-未修复
+已修复
 
 ### 计划
 
@@ -316,6 +316,10 @@ Token浪费。
 compact response
 
 增量消息。
+
+### 备注
+
+lean quiet hints；managed quiet → room_sleep；结果里不再每次粘贴 CODEX_CONTINUE。
 
 ------------------------------------------------------------------------
 

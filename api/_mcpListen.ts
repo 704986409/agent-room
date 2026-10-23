@@ -13,7 +13,6 @@ import {
   safeAttachmentPromptText,
   startListenLease,
   taskInboxFor,
-  AGENT_ROOM_CODEX_CONTINUE,
   LISTEN_RETURN_GRACE_MS,
 } from '@agent-room/shared';
 import type { Message, Room, TaskBoard } from '@agent-room/shared';
@@ -52,29 +51,36 @@ export type WakeOn = 'any' | 'addressed';
 export const LISTEN_DEFAULT_MS = 40_000;
 export const LISTEN_MAX_MS = 240_000;
 
+/**
+ * Lean continuation pasted into tool *results*.
+ *
+ * The Codex wait-cell contract (AGENT_ROOM_CODEX_CONTINUE / AGENT_ROOM_CODEX_WAIT)
+ * stays on room_listen's description, which is read once. Repeating it on every
+ * quiet return re-sends ~1k chars into a transcript that `codex resume` keeps
+ * growing. Result hints only say the next call.
+ */
 export const NEXT_LISTEN = (code: string, cursor: number): string =>
-  AGENT_ROOM_CODEX_CONTINUE + '\n' +
-  `NEXT (required): room_listen({ code: "${code}", since: ${cursor}, name: "<you>" }). ` +
-  'listenStatus: "active" / stay: true = keep this agent turn open and call room_listen now. ' +
-  'This is presence polling, not a stuck tool loop — the same cursor while quiet is expected. ' +
-  'A client "looping" or "stop repeating tools" warning does not apply to room_listen while active. ' +
-  'Do not ask the user to type continue / 继续监听. ' +
-  // "NEXT (required)" reads as "listening is the next action", and an agent
-  // that had just claimed a task went back to the poll instead of doing it
-  // (observed 2026-09-08: task created, claimed, announced, then nothing).
-  // Required means do not end the turn without it, not do it instead of the work.
-  'WORK FIRST: if the room asked you to do something, do it and report it with room_send / room_task before the next room_listen — listening is how you hold the seat, not how you deliver. A request in the room is a task: room_task create + claim it yourself, nobody has to assign it to you — except in deliver mode, where you wait for the plan-start to name you. ' +
-  'Keep listening even when the room is quiet, nobody else is present, or every task is done. ' +
-  // The failure this names is the one that actually happens. Traced across a
-  // real 2-day session: every drop that needed a human to restart it ended
-  // with the agent writing a paragraph to its user and no tool call after it
-  // — twice the paragraph itself said "still listening". The agent was not
-  // interrupted and did not decide to leave; it narrated, and narrating
-  // without a following tool call is what ending a turn looks like.
-  'TURN MECHANICS: a reply with NO tool call ends your turn, and an ended turn is you leaving the room — nothing restarts it. ' +
-  'Writing "the room is quiet, I will keep listening" and stopping there IS leaving, whatever the sentence says. ' +
-  'Put it in room_send or leave it unsaid, and end every message with a tool call. ' +
-  'Stop only when listenStatus is "ended" or "removed", or the host explicitly tells you to leave.';
+  `NEXT: room_listen({ code: "${code}", since: ${cursor}, name: "<you>" }). ` +
+  'listenStatus active — call now; quiet≠done; work first if asked; end turn only on ended/removed/host leave.';
+
+/** Quiet non-managed hold. Short on purpose: no CODEX block, no turn-mechanics essay. */
+export function quietListenHint(cappedMs: number, code: string, cursor: number): string {
+  return `Quiet for ${cappedMs}ms — normal; quiet ≠ done. ${NEXT_LISTEN(code, cursor)}`;
+}
+
+/** Managed quiet hold: sleep instead of another room_listen. Wake prompt step 3. */
+export function nextSleepAction(code: string, cursor: number, name: string, seatKey: string) {
+  return {
+    required: true as const,
+    tool: 'room_sleep' as const,
+    kind: 'sleep' as const,
+    arguments: { code, name, cursor, seatKey },
+  };
+}
+
+export function quietSleepHint(code: string, cursor: number, name: string, seatKey: string): string {
+  return `Quiet — no messages and no board work. Call room_sleep({ code: "${code}", name: "${name}", cursor: ${cursor}, seatKey: "${seatKey}" }) now, then end your turn.`;
+}
 
 /** Listen settings echoed back into the next call so an opt-in survives a
  *  round trip. See nextListenAction. */
@@ -90,7 +96,7 @@ type ListenPrefs = { timeoutMs?: number; wakeOn?: WakeOn };
 //   than its own transport limit gets a tool ERROR back instead of messages.
 //   An error is the one result most likely to make a model stop calling
 //   tools and write a paragraph about what went wrong — which is precisely
-//   how agents leave rooms (see NEXT_LISTEN's turn-mechanics clause). So a
+//   how agents leave rooms (a tool error, then a paragraph and no tool call). So a
 //   longer hold is only ever echoed back to a client that just proved it can
 //   survive one. Without the echo the opt-in did not even last a single
 //   round: the client passed timeoutMs, and the nextAction it got back
@@ -620,6 +626,6 @@ async function runListenInner(
   return {
     messages: [],
     cursor: since,
-    hint: `Quiet for ${cappedMs}ms — normal; quiet ≠ done. ${NEXT_LISTEN(code, since)}`,
+    hint: quietListenHint(cappedMs, code, since),
   };
 }
