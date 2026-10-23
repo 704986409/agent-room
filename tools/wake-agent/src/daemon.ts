@@ -240,8 +240,10 @@ export class WakeDaemon {
     });
     this.options.secrets?.add(joined.seatKey);
     await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
-    const prompt = firstRunPrompt({ code: input.code, name: seatName, readFrom: joined.cursor });
-    this.options.log?.(prompt);
+    const prompt = firstRunPrompt({
+      code: input.code, name: seatName, readFrom: joined.cursor, seatKey: joined.seatKey,
+    });
+    this.logLine(prompt);
     const launched = await adapter.launch({
       cwd: input.cwd,
       prompt,
@@ -272,6 +274,11 @@ export class WakeDaemon {
     const adapter = this.options.adapters.get(id);
     if (!adapter) throw new Error('launcher_unavailable');
     return adapter;
+  }
+
+  /** Prompt text contains the seatKey. Logs see the redacted copy; the child gets the original. */
+  private logLine(line: string): void {
+    this.options.log?.(this.options.secrets ? this.options.secrets.redact(line) : line);
   }
 
   private logFile(seatId: string): string | undefined {
@@ -348,8 +355,12 @@ export class WakeDaemon {
       await this.options.lock.release(seat.seatId);
       return;
     }
-    const prompt = wakePrompt({ code: seat.code, name: seat.name, readFrom: claimed.readFrom, gap: claimed.gap });
-    this.options.log?.(prompt);
+    const seatKey = await this.options.credentials?.get(`seat:${seat.seatId}`) ?? '';
+    if (seatKey) this.options.secrets?.add(seatKey);
+    const prompt = wakePrompt({
+      code: seat.code, name: seat.name, readFrom: claimed.readFrom, gap: claimed.gap, seatKey,
+    });
+    this.logLine(prompt);
     try {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
       const child = await this.adapter(seat.adapterId).resume({

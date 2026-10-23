@@ -8,6 +8,7 @@ import { FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } fro
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { wakePrompt } from './src/prompt.js';
+import { SecretRegistry } from './src/redact.js';
 import { readState, reconcileAfterRestart, setStateWriteBarrier, writeState, type DaemonState, type SeatRecord } from './src/state.js';
 
 const THREAD = '{"type":"thread.started","thread_id":"thr_9"}\n';
@@ -101,6 +102,7 @@ describe('wake daemon', () => {
       log: line => logs.push(line),
       persist: state => writeState(path, state),
       credentials: creds,
+      secrets: new SecretRegistry(),
       server: 'http://127.0.0.1:9',
       joinRoom: async () => { order.push('join'); return { seatKey: 'super-secret-key', cursor: 3, name: 'codex-a' }; },
     });
@@ -117,7 +119,8 @@ describe('wake daemon', () => {
     expect(seat.startedAt).toEqual(expect.any(String));
     expect(child.calls[0]!.args.slice(0, 2)).toEqual(['-m', 'gpt-6-sol']);
     expect(child.calls[0]!.args).toContain('mcp_servers.agent-room.default_tools_approval_mode="approve"');
-    expect(child.calls[0]!.args.at(-1)).toEqual(expect.stringContaining('AGENT_ROOM_SEAT_KEY'));
+    expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "super-secret-key"');
+    expect(child.calls[0]!.args.at(-1)).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
     expect(child.calls[0]!.env).toMatchObject({
       AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9',
@@ -131,7 +134,8 @@ describe('wake daemon', () => {
     expect(JSON.stringify(saved)).not.toContain('super-secret-key');
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(logs.join('\n')).not.toContain('super-secret-key');
-    expect(logs.join('\n')).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(logs.join('\n')).toContain('[redacted]');
+    expect(logs.join('\n')).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(client.calls).toEqual(['register']);
   });
 
@@ -161,7 +165,8 @@ describe('wake daemon', () => {
     expect(logs[0]).toContain('since: 183');
     expect(logs[0]).toContain('第 120–182 条');
     expect(logs[0]).not.toContain('secret body');
-    expect(logs[0]).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(logs[0]).toContain('seatKey: ""');
+    expect(logs[0]).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(logs[0]).not.toContain('super-secret');
     expect(client.calls).toContain('resume_started');
     expect(client.calls).not.toContain('SUCCEEDED');
@@ -186,11 +191,13 @@ describe('wake daemon', () => {
       : { alive: true, cmdline: 'nginx' }, 'codex');
     expect(reconciled.seats[0]).toMatchObject({ status: 'running', pid: 9 });
     expect(reconciled.seats[1]).toMatchObject({ status: 'idle', pid: undefined });
-    const prompt = wakePrompt({ code: 'ABC', name: 'codex-a', readFrom: 4 });
+    const prompt = wakePrompt({ code: 'ABC', name: 'codex-a', readFrom: 4, seatKey: 'seat-key-secret' });
     expect(prompt).toContain('since: 4');
     expect(prompt).toContain('MCP 工具已预先批准');
     expect(prompt).toContain('不要等用户在终端里逐个批准');
-    expect(prompt).not.toContain('seat-key');
+    expect(prompt).toContain('managed: { seatKey: "seat-key-secret" }');
+    expect(prompt).toContain('room_sleep({ code: "ABC", name: "codex-a", cursor: <最新 cursor>, seatKey: "seat-key-secret" })');
+    expect(prompt).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(seatLogPath('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs', 'st_a'))
       .toBe('C:\\Users\\a\\AppData\\Local\\Agent Room\\logs\\st_a.log');
     expect(seatLogPath('/home/me/.local/state/agent-room', 'st_b'))
@@ -276,6 +283,8 @@ describe('wake daemon', () => {
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       expect.any(String),
     ]);
+    expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "seat-key-secret"');
+    expect(child.calls[0]!.args.at(-1)).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(child.calls[0]!.env.AGENT_ROOM_SEAT_KEY).toBe('seat-key-secret');
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6-sol' });
   });
