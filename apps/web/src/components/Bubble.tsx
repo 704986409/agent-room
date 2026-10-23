@@ -1,5 +1,6 @@
 import { Avatar } from './Avatar.js';
 import { AudioReplyBar } from './AudioReplyBar.js';
+import { AGENT_VOICE_REPLIES_ENABLED } from '../lib/voiceReplies.js';
 import { useMemo, type ReactNode } from 'react';
 import type { Message, MessageAttachment } from '@agent-room/shared';
 import { normalizeEscapedWhitespace } from '@agent-room/shared';
@@ -57,7 +58,7 @@ export function Bubble({ message, self, ambiguousNames, speakingMessageId }: Pro
             Clicking the bar (re-)plays the text via /api/elevenlabs-tts
             from inside AudioReplyBar; the Room-level pipeline drives
             auto-play state. */}
-        {message.client === 'cc' && message.text.trim() && (
+        {AGENT_VOICE_REPLIES_ENABLED && message.client === 'cc' && message.text.trim() && (
           <AudioReplyBar
             text={message.text}
             active={speakingMessageId === message.id}

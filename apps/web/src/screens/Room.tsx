@@ -27,6 +27,7 @@ import { roomApi } from '../lib/roomWrites.js';
 import { CopyInviteButton } from '../components/CopyInviteButton.js';
 import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
+import { AGENT_VOICE_REPLIES_ENABLED } from '../lib/voiceReplies.js';
 import { deleteRoomBlobs } from '../lib/upload.js';
 
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long enough that humans + agents discussing intermittently don't trip it
@@ -120,6 +121,7 @@ export function Room() {
   const baselineMaxIdRef = useRef<number | null>(null);
 
   useEffect(() => {
+    if (!AGENT_VOICE_REPLIES_ENABLED) return;
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     if (messages.length === 0) return;
     if (baselineMaxIdRef.current === null) {
@@ -222,6 +224,7 @@ export function Room() {
   // silent utterance on the first pointerdown / keydown so subsequent
   // auto-plays land without a per-message manual click.
   useEffect(() => {
+    if (!AGENT_VOICE_REPLIES_ENABLED) return;
     if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
     let unlocked = false;
     const unlock = () => {
