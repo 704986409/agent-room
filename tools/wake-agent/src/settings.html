@@ -29,7 +29,7 @@
 <body>
   <header>
     <h1>Agent Room 本机设置</h1>
-    <p class="muted">只在这台电脑上使用。远端网页不能调用这里的接口。</p>
+    <p class="muted">只在这台电脑上使用。除已绑定服务器上的房间页外，其他网站不能调用这里的接口。</p>
   </header>
   <main>
     <section>
@@ -59,8 +59,16 @@
       </table>
       <h3>新建托管 Agent</h3>
       <form id="start-agent">
-        <label>房间码 <input name="code" required></label>
-        <label>邀请码 <input name="inviteCode" required></label>
+        <label>最近房间
+          <select id="room-pick">
+            <option value="">选择本机已知房间…</option>
+          </select>
+        </label>
+        <button type="button" class="quiet" id="manual-toggle">高级/手动输入</button>
+        <div id="manual-fields" hidden>
+          <label>房间码 <input name="code" autocomplete="off"></label>
+          <label>邀请码 <input name="inviteCode" autocomplete="off"></label>
+        </div>
         <label>名字 <input name="name" required></label>
         <label>适配器 <select name="adapterId" id="adapter" required></select></label>
         <label>模型 <select name="model" id="model" required></select></label>
@@ -89,6 +97,10 @@
     const modelSelect = document.getElementById('model');
     const startBtn = document.getElementById('start-agent-btn');
     const startStatus = document.getElementById('start-agent-status');
+    const roomPick = document.getElementById('room-pick');
+    const manualFields = document.getElementById('manual-fields');
+    const manualToggle = document.getElementById('manual-toggle');
+    const params = new URLSearchParams(location.search);
     let adapterModels = {};
     let adapterInstallBusy = false;
     let mcpInstallBusy = false;
@@ -183,6 +195,15 @@
         '</td><td>' + esc(seat.model) + '</td><td>' + esc(seat.status) + '</td><td>' + esc(shortId(seat.sessionId)) +
         '</td><td>' + esc(seat.pid) + '</td></tr>'
       ).join('');
+      const rooms = await api('/api/desktop/rooms');
+      const previous = roomPick.value;
+      roomPick.innerHTML = '<option value="">选择本机已知房间…</option>' + (rooms.rooms || []).map(room =>
+        '<option value="' + esc(room.code) + '" data-invite="' + esc(room.inviteCode || '') + '">' +
+        esc(room.code) + (room.names && room.names.length ? ' · ' + esc(room.names.join(', ')) : '') +
+        '</option>'
+      ).join('');
+      if (previous && [...roomPick.options].some(option => option.value === previous)) roomPick.value = previous;
+      applyRoomPrefill();
       const mcp = await api('/api/mcp');
       document.getElementById('mcp').innerHTML = (mcp.tools || []).map(tool => {
         if (!cliInstalled[tool.id]) {
@@ -217,10 +238,48 @@
       try { await api('/api/unpair', { method: 'POST', body: {} }); await refresh(); }
       catch (error) { showError(error); }
     });
+    function setManual(open) {
+      manualFields.hidden = !open;
+    }
+
+    function applyRoomPrefill() {
+      const form = document.getElementById('start-agent');
+      const fromQueryCode = params.get('code') || '';
+      const fromQueryInvite = params.get('invite') || '';
+      if (fromQueryCode && !form.code.value) form.code.value = fromQueryCode;
+      if (fromQueryInvite && !form.inviteCode.value) form.inviteCode.value = fromQueryInvite;
+      if (fromQueryCode) {
+        const match = [...roomPick.options].find(option => option.value === fromQueryCode);
+        if (match) roomPick.value = fromQueryCode;
+      }
+      const picked = roomPick.selectedOptions && roomPick.selectedOptions[0];
+      if (picked && picked.value) {
+        form.code.value = picked.value;
+        const invite = picked.getAttribute('data-invite') || '';
+        if (invite) form.inviteCode.value = invite;
+      }
+      setManual(!(form.code.value && form.inviteCode.value));
+    }
+
+    manualToggle.addEventListener('click', () => setManual(manualFields.hidden));
+    roomPick.addEventListener('change', () => {
+      const form = document.getElementById('start-agent');
+      const picked = roomPick.selectedOptions[0];
+      if (!picked || !picked.value) return;
+      form.code.value = picked.value;
+      const invite = picked.getAttribute('data-invite') || '';
+      if (invite) form.inviteCode.value = invite;
+      setManual(!(form.code.value && form.inviteCode.value));
+    });
     document.getElementById('start-agent').addEventListener('submit', async event => {
       event.preventDefault();
       if (startAgentBusy) return;
       const form = event.target;
+      if (!form.code.value.trim() || !form.inviteCode.value.trim()) {
+        setManual(true);
+        showError(new Error('请选择房间或手动填写房间码和邀请码'));
+        return;
+      }
       startAgentBusy = true;
       startBtn.disabled = true;
       startBtn.textContent = '创建中…';

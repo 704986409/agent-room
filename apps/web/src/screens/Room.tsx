@@ -8,6 +8,7 @@ import { DeliverPlanBar } from '../components/DeliverPlanBar.js';
 import { DeliverEventCard, isDeliverEvent } from '../components/DeliverEventCard.js';
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
+import { HostLocalButton } from '../components/HostLocalButton.js';
 import { InviteAgentDialog } from '../components/InviteAgentDialog.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
@@ -834,6 +835,7 @@ export function Room() {
                 className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20 disabled:opacity-60"
               />
               <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="panel" />
+              <HostLocalButton roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-[12px] font-semibold text-ink-muted">{t('room.whoReplies')}</span>

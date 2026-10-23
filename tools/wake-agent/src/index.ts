@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createDefaultAdapters, nodeSpawner, shouldDirectSpawn } from './adapter.js';
-import { startControlServer } from './control.js';
+import { DESKTOP_CONTROL_PORT, startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
 import { FileRunLock, WakeDaemon } from './daemon.js';
 import { createHttpWakeApi } from './http.js';
@@ -218,7 +218,7 @@ async function runDaemon(statePath: string, mode: {
       secrets,
       log,
       run: processRunner(),
-      port: portText ? Number(portText) : undefined,
+      port: portText ? Number(portText) : DESKTOP_CONTROL_PORT,
       getToken: tokenOf,
       setToken: value => {
         if (!envToken) holder = value;

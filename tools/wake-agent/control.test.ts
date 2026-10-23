@@ -127,6 +127,104 @@ describe('local control server', () => {
       expect(logBody).toContain('[redacted]');
       expect(logBody).not.toContain('control-secret-value');
       expect((await stat(join(directory, 'control.json'))).mode & 0o777).toBe(0o600);
+      expect(html).toContain('高级/手动输入');
+      expect(html).toContain('id="room-pick"');
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('creates a managed seat from the paired room origin and lists recent rooms', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-desktop-'));
+    const secrets = new SecretRegistry();
+    const adapters = adapterMap(async () => ({ installed: true }), ['codex']);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: {
+        seats: [{
+          seatId: 'st_old', code: 'OLD-ROOM', name: 'writer', adapterId: 'codex', cwd: directory,
+          status: 'running', startedAt: '2026-10-01T00:00:00.000Z',
+        }],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const started: { code: string; inviteCode: string; adapterId: string; model: string; name: string }[] = [];
+    daemon.startAgent = async input => {
+      started.push(input);
+      return {
+        seatId: 'st_host', code: input.code, name: input.name, adapterId: input.adapterId,
+        model: input.model, cwd: input.cwd, status: 'running',
+      };
+    };
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'https://room.example',
+      adapters,
+      secrets,
+      log: new DaemonLog(secrets),
+      home: directory,
+      run: async () => { throw new Error('unexpected command'); },
+      getToken: async () => '',
+      setToken: () => undefined,
+    });
+    const roomOrigin = 'https://room.example';
+    try {
+      const preflight = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'OPTIONS',
+        headers: {
+          origin: roomOrigin,
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe(roomOrigin);
+      expect(preflight.headers.get('access-control-allow-private-network')).toBe('true');
+
+      const anonymous = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({}),
+      });
+      expect(anonymous.status).toBe(400);
+
+      const foreign = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'https://evil.example', 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'ABC-DEF', inviteCode: 'AI-1' }),
+      });
+      expect(foreign.status).toBe(403);
+
+      const hosted = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'ABC-DEF', inviteCode: 'AI-1', name: '开发工程师' }),
+      });
+      expect(hosted.status).toBe(200);
+      expect(hosted.headers.get('access-control-allow-origin')).toBe(roomOrigin);
+      expect(started).toEqual([expect.objectContaining({
+        code: 'ABC-DEF', inviteCode: 'AI-1', name: '开发工程师', adapterId: 'codex', model: 'default',
+      })]);
+
+      const rooms = await fetch(`http://127.0.0.1:${control.port}/api/desktop/rooms?t=${control.token}`);
+      expect(rooms.status).toBe(200);
+      const listed = await rooms.json() as { rooms: { code: string; inviteCode?: string; names: string[] }[] };
+      expect(listed.rooms).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'ABC-DEF', inviteCode: 'AI-1', names: ['开发工程师'] }),
+        expect.objectContaining({ code: 'OLD-ROOM', names: ['writer'] }),
+      ]));
+      expect(listed.rooms.find(room => room.code === 'OLD-ROOM')?.inviteCode).toBeUndefined();
     } finally {
       await control.close();
     }

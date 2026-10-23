@@ -1,6 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { LauncherAdapter } from './adapter.js';
@@ -9,9 +10,21 @@ import type { WakeDaemon } from './daemon.js';
 import type { DaemonLog } from './log.js';
 import { adapterIdForMcp, cliRequiredHint, installAdapterCli } from './cliinstall.js';
 import { installMcp, mcpStatus } from './mcpconfig.js';
-import { deviceCredentialKey, pairComplete, pairWithLogin, unpair, whoami, type PairingDeps } from './pairing.js';
+import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
+
+/** Stable loopback port so the desktop webview can call the daemon without a Tauri rebuild. */
+export const DESKTOP_CONTROL_PORT = 17421;
+
+const DESKTOP_PATHS = new Set(['/api/desktop/ping', '/api/desktop/rooms', '/api/desktop/host']);
+
+export interface RecentRoom {
+  code: string;
+  names: string[];
+  inviteCode?: string;
+  at?: string;
+}
 
 const settingsHtml = await readFile(fileURLToPath(new URL('./settings.html', import.meta.url)), 'utf8');
 
@@ -66,10 +79,28 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function send(res: ServerResponse, status: number, body: unknown, type = 'application/json; charset=utf-8'): void {
+function send(
+  res: ServerResponse,
+  status: number,
+  body: unknown,
+  type = 'application/json; charset=utf-8',
+  extra?: Record<string, string>,
+): void {
   const payload = typeof body === 'string' ? body : JSON.stringify(body);
-  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' });
+  res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store', ...extra });
   res.end(payload);
+}
+
+function corsHeaders(allowOrigin: string | undefined): Record<string, string> {
+  if (!allowOrigin) return {};
+  return {
+    'access-control-allow-origin': allowOrigin,
+    vary: 'Origin',
+    'access-control-allow-methods': 'GET, POST, OPTIONS',
+    'access-control-allow-headers': 'content-type, x-agent-room-control, x-agent-room-desktop',
+    'access-control-allow-private-network': 'true',
+    'access-control-max-age': '600',
+  };
 }
 
 export async function startControlServer(options: ControlServerOptions): Promise<RunningControl> {
@@ -100,6 +131,52 @@ export async function startControlServer(options: ControlServerOptions): Promise
   if (!address || typeof address === 'string') throw new Error('control_bind_failed');
   const port = address.port;
   const origin = `http://127.0.0.1:${port}`;
+  const notedRooms: { code: string; inviteCode: string; name: string; at: string }[] = [];
+
+  function pairedOrigin(): string | undefined {
+    const serverUrl = options.server ?? options.daemon.state.device?.server;
+    if (!serverUrl) return undefined;
+    try { return serverOrigin(serverUrl); } catch { return undefined; }
+  }
+
+  function allowOrigin(requestOrigin: string | undefined): string | undefined {
+    if (!requestOrigin) return undefined;
+    if (requestOrigin === origin) return requestOrigin;
+    const paired = pairedOrigin();
+    if (paired && requestOrigin === paired) return requestOrigin;
+    return undefined;
+  }
+
+  function noteRoom(code: string, inviteCode: string, name: string): void {
+    const at = new Date().toISOString();
+    const existing = notedRooms.find(room => room.code === code);
+    if (existing) {
+      existing.inviteCode = inviteCode;
+      existing.name = name;
+      existing.at = at;
+      return;
+    }
+    notedRooms.unshift({ code, inviteCode, name, at });
+    if (notedRooms.length > 20) notedRooms.pop();
+  }
+
+  function recentRooms(): RecentRoom[] {
+    const byCode = new Map<string, RecentRoom>();
+    for (const seat of options.daemon.seats) {
+      const row = byCode.get(seat.code) ?? { code: seat.code, names: [] };
+      if (seat.name && !row.names.includes(seat.name)) row.names.push(seat.name);
+      if (seat.startedAt && (!row.at || seat.startedAt > row.at)) row.at = seat.startedAt;
+      byCode.set(seat.code, row);
+    }
+    for (const noted of notedRooms) {
+      const row = byCode.get(noted.code) ?? { code: noted.code, names: [] };
+      row.inviteCode = noted.inviteCode;
+      if (noted.name && !row.names.includes(noted.name)) row.names.push(noted.name);
+      row.at = noted.at;
+      byCode.set(noted.code, row);
+    }
+    return [...byCode.values()].sort((a, b) => (b.at ?? '').localeCompare(a.at ?? ''));
+  }
 
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
   try { await chmod(options.stateDir, 0o700); } catch { /* Windows may ignore mode */ }
@@ -109,15 +186,26 @@ export async function startControlServer(options: ControlServerOptions): Promise
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', origin);
-    const header = req.headers['x-agent-room-control'];
-    const presented = (Array.isArray(header) ? header[0] : header) || url.searchParams.get('t') || '';
-    if (!presented || !tokenMatches(presented, token)) {
-      send(res, 401, { error: 'control_unauthorized' });
+    const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+    const allow = allowOrigin(requestOrigin);
+    const cors = corsHeaders(allow);
+    if (req.method === 'OPTIONS') {
+      send(res, allow ? 204 : 403, allow ? '' : { error: 'origin_rejected' }, 'text/plain; charset=utf-8', cors);
       return;
     }
-    const requestOrigin = req.headers.origin;
-    if (requestOrigin && requestOrigin !== origin) {
-      send(res, 403, { error: 'origin_rejected' });
+    const paired = pairedOrigin();
+    if (requestOrigin && requestOrigin !== origin && requestOrigin !== paired) {
+      send(res, 403, { error: 'origin_rejected' }, undefined, cors);
+      return;
+    }
+    const header = req.headers['x-agent-room-control'];
+    const presented = (Array.isArray(header) ? header[0] : header) || url.searchParams.get('t') || '';
+    const tokenOk = !!presented && tokenMatches(presented, token);
+    const desktopHeader = req.headers['x-agent-room-desktop'];
+    const desktopMark = desktopHeader === '1' || (Array.isArray(desktopHeader) && desktopHeader[0] === '1');
+    const desktopOk = DESKTOP_PATHS.has(url.pathname) && desktopMark && !!paired && requestOrigin === paired;
+    if (!tokenOk && !desktopOk) {
+      send(res, 401, { error: 'control_unauthorized' }, undefined, cors);
       return;
     }
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
@@ -133,11 +221,19 @@ export async function startControlServer(options: ControlServerOptions): Promise
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/mcp') {
-      send(res, 200, { tools: await mcpStatus({ home: options.home, run: options.run }) });
+      send(res, 200, { tools: await mcpStatus({ home: options.home, run: options.run }) }, undefined, cors);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/desktop/ping') {
+      send(res, 200, { ok: true, paired: !!options.daemon.state.device }, undefined, cors);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/desktop/rooms') {
+      send(res, 200, { rooms: recentRooms() }, undefined, cors);
       return;
     }
     if (req.method !== 'POST') {
-      send(res, 404, { error: 'not_found' });
+      send(res, 404, { error: 'not_found' }, undefined, cors);
       return;
     }
     const raw = await readBody(req);
@@ -183,16 +279,25 @@ export async function startControlServer(options: ControlServerOptions): Promise
         send(res, 400, { error: 'no_server' });
         return;
       }
+      const code = String(body.code ?? '');
+      const inviteCode = String(body.inviteCode ?? '');
+      const name = String(body.name ?? '');
       const seat = await options.daemon.startAgent({
         server: serverUrl,
-        code: String(body.code ?? ''),
-        inviteCode: String(body.inviteCode ?? ''),
-        name: String(body.name ?? ''),
+        code,
+        inviteCode,
+        name,
         adapterId: String(body.adapterId ?? ''),
         model: String(body.model ?? ''),
         cwd: String(body.cwd ?? ''),
       });
-      send(res, 200, { ok: true, seat });
+      if (code && inviteCode) noteRoom(code, inviteCode, name);
+      send(res, 200, { ok: true, seat }, undefined, cors);
+      return;
+    }
+    if (url.pathname === '/api/desktop/host') {
+      const hosted = await hostFromRoom(body);
+      send(res, hosted.status, hosted.body, undefined, cors);
       return;
     }
     if (url.pathname === '/api/mcp/install') {
@@ -229,6 +334,34 @@ export async function startControlServer(options: ControlServerOptions): Promise
       return;
     }
     send(res, 404, { error: 'not_found' });
+  }
+
+  async function hostFromRoom(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    const serverUrl = options.server ?? options.daemon.state.device?.server;
+    if (!serverUrl) return { status: 400, body: { error: 'no_server' } };
+    const code = typeof body.code === 'string' ? body.code.trim() : '';
+    const inviteCode = typeof body.inviteCode === 'string' ? body.inviteCode.trim() : '';
+    if (!code || !inviteCode) return { status: 400, body: { error: 'host_input' } };
+    const requestedId = typeof body.adapterId === 'string' ? body.adapterId : '';
+    let chosen = requestedId ? options.adapters.get(requestedId) : undefined;
+    if (!chosen) {
+      const ready = [];
+      for (const adapter of options.adapters.values()) {
+        const detected = await adapter.detect();
+        if (detected.installed && adapter.models.length > 0) ready.push(adapter);
+      }
+      chosen = ready.find(adapter => adapter.id === 'codex') ?? ready[0];
+    }
+    if (!chosen || chosen.models.length === 0) return { status: 400, body: { error: 'launcher_unavailable' } };
+    const requestedModel = typeof body.model === 'string' ? body.model : '';
+    const model = chosen.models.includes(requestedModel) ? requestedModel : chosen.models[0]!;
+    const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : chosen.id;
+    const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : (options.home ?? homedir());
+    const seat = await options.daemon.startAgent({
+      server: serverUrl, code, inviteCode, name, adapterId: chosen.id, model, cwd,
+    });
+    noteRoom(code, inviteCode, name);
+    return { status: 200, body: { ok: true, seat } };
   }
 
   async function rememberCredential(serverUrl: string, credential: string): Promise<void> {
