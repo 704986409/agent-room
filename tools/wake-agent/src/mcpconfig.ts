@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, win32 } from 'node:path';
@@ -319,6 +320,100 @@ export function rewriteCursorStopHook(jsonText: string, invocation: string): str
   return changed ? `${JSON.stringify(data, null, 2)}\n` : jsonText;
 }
 
+const CODEX_HOOK_EVENTS = ['Stop', 'UserPromptSubmit', 'SessionStart'] as const;
+const CODEX_HOOK_EVENT_KEY = { Stop: 'stop', UserPromptSubmit: 'user_prompt_submit', SessionStart: 'session_start' } as const;
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value && typeof value === 'object') {
+    const source = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) sorted[key] = sortJson(source[key]);
+    return sorted;
+  }
+  return value;
+}
+
+/** Same bytes as agent-room-mcp init `codexHookTrustHash`. A mismatch makes Codex skip the hook. */
+export function codexHookTrustHash(event: (typeof CODEX_HOOK_EVENTS)[number], command: string): string {
+  const identity: Record<string, unknown> = {
+    event_name: CODEX_HOOK_EVENT_KEY[event],
+    hooks: [{ async: false, command, timeout: 600, type: 'command' }],
+  };
+  if (event === 'SessionStart') identity.matcher = '';
+  return `sha256:${createHash('sha256').update(JSON.stringify(sortJson(identity))).digest('hex')}`;
+}
+
+function unquoteTomlValue(raw: string): string {
+  const value = raw.trim();
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+  if (value.startsWith('"') && value.endsWith('"')) {
+    return value.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  }
+  return value;
+}
+
+function effectiveHookCommand(toml: string, event: (typeof CODEX_HOOK_EVENTS)[number], platform: NodeJS.Platform): string | undefined {
+  const lines = toml.split('\n');
+  const start = lines.findIndex(line => line.trim() === `[[hooks.${event}]]`);
+  if (start < 0) return undefined;
+  let command: string | undefined;
+  let windows: string | undefined;
+  const ours = (value: string) => /(?:agent-room-mcp|mcp[\\/]+dist[\\/]+index\.js|hook\.cmd)\b/.test(value) && /\bhook\b/.test(value);
+  for (let i = start + 1; i < lines.length; i++) {
+    const trimmed = lines[i]!.trim();
+    if (trimmed.startsWith('[[hooks.') && !trimmed.startsWith(`[[hooks.${event}.`)) break;
+    if (trimmed.startsWith('[') && !trimmed.startsWith('[[')) break;
+    const windowsMatch = trimmed.match(/^command_windows\s*=\s*(.+)$/);
+    const commandMatch = trimmed.match(/^command\s*=\s*(.+)$/);
+    if (windowsMatch) windows = unquoteTomlValue(windowsMatch[1]!);
+    else if (commandMatch) {
+      const parsed = unquoteTomlValue(commandMatch[1]!);
+      if (ours(parsed)) command = parsed;
+    }
+  }
+  if (platform === 'win32' && windows && ours(windows)) return windows;
+  return command;
+}
+
+function enableHooksFeature(toml: string): string {
+  let next = toml.replace(/^[ \t]*codex_hooks[ \t]*=[ \t]*\S+[ \t]*\r?\n?/gm, '');
+  if (/^[ \t]*hooks[ \t]*=[ \t]*true[ \t]*$/m.test(next)) return next;
+  if (/^\[features\]/m.test(next)) return next.replace(/^(\[features\][^\n]*\n)/m, '$1hooks = true\n');
+  return `${next.endsWith('\n') ? next : `${next}\n`}\n[features]\nhooks = true\n`;
+}
+
+/** After the hook command is rewritten, replace a stale trusted_hash so Codex does not skip it. */
+export function syncCodexHookTrust(toml: string, configPath: string, platform: NodeJS.Platform): string {
+  let next = enableHooksFeature(toml);
+  for (const event of CODEX_HOOK_EVENTS) {
+    const command = effectiveHookCommand(next, event, platform);
+    if (!command) continue;
+    const key = `${configPath}:${CODEX_HOOK_EVENT_KEY[event]}:0:0`;
+    const header = `[hooks.state.${tomlQuoteHook(key)}]`;
+    const hashLine = `trusted_hash = ${tomlQuoteHook(codexHookTrustHash(event, command))}`;
+    const lines = next.split('\n');
+    const index = lines.findIndex(line => line.trim() === header);
+    if (index < 0) {
+      next = `${next.endsWith('\n') ? next : `${next}\n`}\n${header}\n${hashLine}\n`;
+      continue;
+    }
+    let replaced = false;
+    for (let i = index + 1; i < lines.length; i++) {
+      const trimmed = lines[i]!.trim();
+      if (trimmed.startsWith('[')) break;
+      if (/^trusted_hash\s*=/.test(trimmed)) {
+        lines[i] = hashLine;
+        replaced = true;
+        break;
+      }
+    }
+    if (!replaced) lines.splice(index + 1, 0, hashLine);
+    next = lines.join('\n');
+  }
+  return next;
+}
+
 async function installWindowsStopHook(input: {
   home: string;
   nodePath: string;
@@ -352,7 +447,7 @@ async function installWindowsStopHook(input: {
   const tomlPath = join(input.home, '.codex', 'config.toml');
   const toml = await readFile(tomlPath, 'utf8').catch(() => '');
   if (toml) {
-    const next = rewriteHookCommandsInToml(toml, invocation);
+    const next = syncCodexHookTrust(rewriteHookCommandsInToml(toml, invocation), tomlPath, 'win32');
     if (next !== toml) await writeFile(tomlPath, next);
   }
   const hooksPath = join(input.home, '.cursor', 'hooks.json');
