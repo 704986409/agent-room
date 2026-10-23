@@ -106,6 +106,11 @@ describe('interactive launcher adapters', () => {
 
   it('auto-approves MCP tools only for managed seats, without yolo or full-auto', async () => {
     expect(managedApprovalArgs('codex')).toEqual(['-c', CODEX_MANAGED_MCP_APPROVAL]);
+    expect(managedApprovalArgs('codex', { AGENT_ROOM_SERVER: 'http://127.0.0.1:3300/' })).toEqual([
+      '-c', CODEX_MANAGED_MCP_APPROVAL,
+      '-c', 'mcp_servers.agent-room.url="http://127.0.0.1:3300/mcp"',
+    ]);
+    expect(managedApprovalArgs('codex', { AGENT_ROOM_SERVER: 'not a url' })).toEqual(['-c', CODEX_MANAGED_MCP_APPROVAL]);
     expect(managedApprovalArgs('cursor-agent')).toEqual(['--approve-mcps']);
     expect(CODEX_MANAGED_MCP_APPROVAL).not.toMatch(/yolo|full-auto|--force/);
 

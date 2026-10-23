@@ -158,9 +158,24 @@ export function shouldDirectSpawn(
 /** Session `-c` override. Approves agent-room MCP tools without `--yolo` / `--full-auto`. */
 export const CODEX_MANAGED_MCP_APPROVAL = 'mcp_servers.agent-room.default_tools_approval_mode="approve"';
 
+/**
+ * Point this process at the paired room server.
+ * `~/.codex/config.toml` often names a different host; a managed seat must not follow it.
+ */
+export function codexMcpUrlArg(server: string | undefined): string | undefined {
+  const base = server?.trim().replace(/\/+$/, '');
+  if (!base || !/^https?:\/\/[^\s"'\\]+$/i.test(base)) return undefined;
+  return `mcp_servers.agent-room.url="${base}/mcp"`;
+}
+
 /** Extra argv inserted before the prompt when `AGENT_ROOM_MANAGED=1`. */
-export function managedApprovalArgs(adapterId: string): readonly string[] {
-  if (adapterId === 'codex') return ['-c', CODEX_MANAGED_MCP_APPROVAL];
+export function managedApprovalArgs(adapterId: string, env?: Record<string, string>): readonly string[] {
+  if (adapterId === 'codex') {
+    const args = ['-c', CODEX_MANAGED_MCP_APPROVAL];
+    const url = codexMcpUrlArg(env?.AGENT_ROOM_SERVER || env?.AGENT_ROOM_BASE_URL);
+    if (url) args.push('-c', url);
+    return args;
+  }
   if (adapterId === 'cursor-agent') return ['--approve-mcps'];
   return [];
 }
@@ -473,7 +488,7 @@ export class CliAdapter implements LauncherAdapter {
   }
 
   private withManaged(args: readonly string[], env: Record<string, string>): string[] {
-    const extra = env.AGENT_ROOM_MANAGED === '1' ? managedApprovalArgs(this.id) : [];
+    const extra = env.AGENT_ROOM_MANAGED === '1' ? managedApprovalArgs(this.id, env) : [];
     if (extra.length === 0) return [...args];
     const prompt = args[args.length - 1] ?? '';
     return [...args.slice(0, -1), ...extra, prompt];

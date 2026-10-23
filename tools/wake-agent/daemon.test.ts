@@ -281,6 +281,7 @@ describe('wake daemon', () => {
     expect(child.calls[0]!.args).toEqual([
       'resume', 'thr_9', '-m', 'gpt-6-sol',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.agent-room.url="http://127.0.0.1:9/mcp"',
       expect.any(String),
     ]);
     expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "seat-key-secret"');
