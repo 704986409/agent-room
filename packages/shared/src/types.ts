@@ -30,6 +30,8 @@ export interface Participant {
   authenticatedIdentity?: AuthenticatedMemberIdentity;
   /** Server-issued memory seat binding. Only the SHA-256 hash of the opaque key is persisted. */
   seatKeyHash?: string;
+  /** SHA-256 of this PC's machine id. The raw id is never stored. Same hash may reclaim the seat. */
+  machineIdHash?: string;
   /**
    * Stable seat id issued once when the seat is created (or on first managed
    * register for a legacy row). Survives seatKey rotation.

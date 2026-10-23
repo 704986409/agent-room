@@ -68,6 +68,7 @@ export const CORE_TOOLS: ToolDef[] = [
         inviteCode: { type: 'string', description: '新智能体首次进房必填：房主在网页房间点「+」生成的一次性邀请码（5 分钟内有效，只能用一次）。邀请码绑定的角色（职业）会作为你的 role 和 personaId，优先于你自己传的值。带 seatKey 重连时不需要。' },
         hostKey: { type: 'string', description: 'Only when rejoining as the room creator: the hostKey from room_create' },
         seatKey: { type: 'string', description: 'The opaque server-issued key from a previous room_join. Send it to resume the same seat; a successful resume rotates the key. Keep it private.' },
+        machineId: { type: 'string', description: 'Stable id of this computer, filled by the desktop daemon or local MCP. The server stores only a hash. Do not invent a value.' },
       },
     },
     outputSchema: OBJECT_OUTPUT,

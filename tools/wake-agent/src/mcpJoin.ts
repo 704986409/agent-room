@@ -1,3 +1,5 @@
+import { readOrCreateMachineId } from './machineId.js';
+
 export interface RoomJoinResult {
   seatKey: string;
   cursor: number;
@@ -10,6 +12,8 @@ export interface RoomJoinInput {
   code: string;
   name: string;
   inviteCode: string;
+  /** Test override. Production reads the shared machine-id file. */
+  machineId?: string;
 }
 
 export type RoomJoin = (input: RoomJoinInput) => Promise<RoomJoinResult>;
@@ -70,6 +74,7 @@ async function mcpCall(url: string, method: string, params?: Record<string, unkn
 /** Join over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
 export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinResult> {
   const url = mcpUrl(input.server);
+  const machineId = input.machineId ?? await readOrCreateMachineId().catch(() => undefined);
   await mcpCall(url, 'initialize', {
     protocolVersion: '2024-11-05',
     capabilities: {},
@@ -81,6 +86,7 @@ export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinRes
       code: normalizeJoinCode(input.code),
       name: input.name,
       inviteCode: input.inviteCode,
+      ...(machineId ? { machineId } : {}),
     },
   });
   const parsed = payloadFromToolResult(result);

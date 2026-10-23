@@ -148,6 +148,42 @@ describe('joinRoom agent invite gate', () => {
     expect(resumed.agentInvite).toBeUndefined();
   });
 
+  it('lets the same seatKey replace an online session', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    room = {
+      ...room,
+      participants: room.participants.map(p => ({
+        ...p,
+        lastSeenAt: Date.now(),
+        listenLeases: { hold: Date.now() + 60_000 },
+      })),
+    };
+    const resumed = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, seatKey: first.seatKey });
+    expect(resumed.participant.seatId).toBe(first.participant.seatId);
+    expect(resumed.seatKey).not.toBe(first.seatKey);
+  });
+
+  it('lets the same machine reclaim its online seat and refuses a different machine', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), {
+      requireAgentInvite: true, inviteCode: invite.inviteCode, machineId: 'machine-a-1111',
+    });
+    expect(first.participant.machineIdHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(first.participant)).not.toContain('machine-a-1111');
+
+    const again = await joinRoom(client(), room.code, agent('Codex'), {
+      requireAgentInvite: true, personaId: '开发工程师', machineId: 'machine-a-1111',
+    });
+    expect(again).toMatchObject({ reclaimed: true });
+    expect(again.participant.seatId).toBe(first.participant.seatId);
+
+    const other = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    await expect(joinRoom(client(), room.code, agent('Codex'), {
+      requireAgentInvite: true, inviteCode: other.inviteCode, machineId: 'machine-b-2222',
+    })).rejects.toMatchObject({ code: 'SEAT_IN_USE', status: 409 });
+  });
+
   it('lets a seatKey resume through without a code', async () => {
     const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
     const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });

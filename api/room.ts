@@ -149,6 +149,7 @@ async function dispatchRoomHttpAction(
           ...(typeof p.seatKey === 'string' && p.seatKey ? { seatKey: p.seatKey } : {}),
           ...(typeof p.personaId === 'string' && p.personaId ? { personaId: p.personaId } : {}),
           ...(typeof p.sessionId === 'string' && p.sessionId ? { sessionId: p.sessionId } : {}),
+          ...(typeof p.machineId === 'string' && p.machineId.trim() ? { machineId: p.machineId } : {}),
           ...(inviteCode ? { inviteCode, requireAgentInvite: true } : {}),
         },
       );

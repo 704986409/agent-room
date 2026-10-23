@@ -295,6 +295,7 @@ async function dispatch(
         personaId: typeof a.personaId === 'string' ? a.personaId : undefined,
         sessionId: typeof a.sessionId === 'string' ? a.sessionId : undefined,
         inviteCode: typeof a.inviteCode === 'string' && a.inviteCode.trim() ? a.inviteCode : undefined,
+        machineId: typeof a.machineId === 'string' && a.machineId.trim() ? a.machineId : undefined,
         // New agent seats need the host's one-time invite; resume/reclaim/host seat do not.
         requireAgentInvite: true,
       });

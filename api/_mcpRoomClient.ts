@@ -380,6 +380,8 @@ export async function joinRoom(
   options: {
     hostKey?: string;
     seatKey?: string;
+    /** Stable id of the joining computer. Only its hash is stored. Same machine may reclaim its seat. */
+    machineId?: string;
     personaId?: string;
     /** Agent's current chat session ID; scopes the one-time Memory Brief. */
     sessionId?: string;
@@ -424,8 +426,18 @@ export async function joinRoom(
         inviteFailure = lookup.reason;
       }
     }
+    const machineHash = hashMachineId(options.machineId);
     let reclaimed = false;
-    if (!validResume && !isHostClaim && options.personaId !== undefined && options.personaId.trim()) {
+    // Same computer, same seat: a reconnect that lost its seatKey still replaces
+    // the stale session instead of SEAT_IN_USE. A different computer does not.
+    if (!validResume && !isHostClaim && machineHash) {
+      const owned = current.participants.find(p => p.client === participant.client
+        && !!p.seatKeyHash && hashesMatch(p.machineIdHash, machineHash)
+        && ((options.personaId !== undefined && options.personaId.trim() !== '' && p.memoryPersonaId === options.personaId)
+          || p.name === participant.name));
+      if (owned) { previous = owned; reclaimed = true; }
+    }
+    if (!validResume && !reclaimed && !isHostClaim && options.personaId !== undefined && options.personaId.trim()) {
       // Same Persona rejoining without a valid seatKey: never open a "(2)" seat.
       const samePersona = current.participants.filter(p => p.client === participant.client
         && p.seatKeyHash && p.memoryIdentityType === 'persona' && p.memoryPersonaId === options.personaId);
@@ -464,7 +476,9 @@ export async function joinRoom(
 
     const roomInstanceId = current.roomInstanceId ?? randomUUID();
     const seatKey = randomBytes(32).toString('base64url');
-    const personaId = validResume ? previous?.memoryPersonaId : options.personaId;
+    const personaId = validResume || (reclaimed && (options.personaId === undefined || !options.personaId.trim()))
+      ? previous?.memoryPersonaId
+      : options.personaId;
     if (personaId !== undefined && (!personaId.trim() || [...personaId].length > 128)) {
       throw new RemoteRoomApiError('Invalid Persona ID.', 400, 'invalid_persona_id');
     }
@@ -488,6 +502,9 @@ export async function joinRoom(
       ...((validResume || reclaimed) && previous ? { name: previous.name } : {}),
       seatId,
       seatKeyHash: hashSeatKey(seatKey),
+      ...(machineHash
+        ? { machineIdHash: machineHash }
+        : previous?.machineIdHash ? { machineIdHash: previous.machineIdHash } : {}),
       memoryIdentityType: identityType,
       memoryPrincipalId: principalId,
       ...(personaId ? { memoryPersonaId: personaId } : {}),
@@ -579,6 +596,21 @@ async function removeOrphanPersonaSeats(
 
 function hashSeatKey(seatKey: string): string {
   return createHash('sha256').update(seatKey, 'utf8').digest('hex');
+}
+
+/** Undefined when missing or not a stable id. Callers treat that as "no machine claim". */
+function hashMachineId(machineId: string | undefined): string | undefined {
+  if (typeof machineId !== 'string') return undefined;
+  const id = machineId.trim();
+  if (id.length < 8 || id.length > 128 || /[\u0000-\u001f\u007f]/.test(id)) return undefined;
+  return createHash('sha256').update(id, 'utf8').digest('hex');
+}
+
+function hashesMatch(stored: string | undefined, incoming: string | undefined): boolean {
+  if (!stored || !incoming || !/^[0-9a-f]{64}$/i.test(stored) || !/^[0-9a-f]{64}$/i.test(incoming)) return false;
+  const expected = Buffer.from(stored, 'hex');
+  const actual = Buffer.from(incoming, 'hex');
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 function seatKeyMatches(storedHash: string, seatKey: string): boolean {
