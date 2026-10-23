@@ -7,6 +7,7 @@ import { DESKTOP_CONTROL_PORT, startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
 import { FileRunLock, WakeDaemon } from './daemon.js';
 import { createHttpWakeApi } from './http.js';
+import { acquireDaemonLock } from './instanceLock.js';
 import { DaemonLog } from './log.js';
 import { pairComplete, pairWithLogin, serverOrigin, unpair, deviceCredentialKey } from './pairing.js';
 import { SecretRegistry } from './redact.js';
@@ -171,6 +172,24 @@ async function main(): Promise<void> {
 }
 
 async function runDaemon(statePath: string, mode: {
+  serve?: boolean;
+  once?: { code: string; inviteCode: string; name: string; adapterId: string; model: string; cwd: string };
+}): Promise<string | undefined> {
+  const stateDir = dirname(statePath);
+  const instance = await acquireDaemonLock(stateDir);
+  if (!instance) {
+    process.stderr.write('agent-room daemon is already running\n');
+    process.exitCode = 1;
+    return undefined;
+  }
+  try {
+    return await runDaemonLocked(statePath, mode);
+  } finally {
+    await instance.release();
+  }
+}
+
+async function runDaemonLocked(statePath: string, mode: {
   serve?: boolean;
   once?: { code: string; inviteCode: string; name: string; adapterId: string; model: string; cwd: string };
 }): Promise<string | undefined> {
