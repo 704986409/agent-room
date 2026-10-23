@@ -290,6 +290,41 @@ describe('wake daemon', () => {
     expect(daemon.seats.find(seat => seat.seatId === 'st_dead')).toMatchObject({ status: 'running', sessionId: 'thr_9', model: 'gpt-6-sol' });
   });
 
+  it('waits out a live listen, then stops that process before codex resume', async () => {
+    const child = spawner([THREAD]);
+    let alive = true;
+    const stopped: number[] = [];
+    let now = 1_000_000;
+    const creds = new MemoryCredentialStore();
+    await creds.set('seat:st_a', 'seat-key-secret');
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242,
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'xfce4-terminal --title Agent Room · codex' }),
+      now: () => now,
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+      server: 'http://127.0.0.1:9',
+      credentials: creds,
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    now += 8_000;
+    await daemon.tick();
+    expect(stopped).toEqual([4242]);
+    expect(child.calls).toHaveLength(1);
+    expect(child.calls[0]!.args[0]).toBe('resume');
+    expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "seat-key-secret"');
+    expect(daemon.seats[0]).toMatchObject({ status: 'running', sessionId: 'thr_9' });
+    expect(daemon.seats[0]!.pid).not.toBe(4242);
+  });
+
   it('marks a remotely revoked seat, and stops polling after device 401', async () => {
     const logs: string[] = [];
     const revoked = api();

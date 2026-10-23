@@ -113,6 +113,15 @@ export interface WakeDaemonOptions {
   stateDir?: string;
   joinRoom?: RoomJoin;
   secrets?: SecretRegistry;
+  /** Clock for the live-listen grace. Tests pin this; production uses Date.now. */
+  now?: () => number;
+  /**
+   * How long a still-open interactive turn may ack a new @ itself.
+   * After this, the previous process is stopped so `codex resume` can take the session.
+   */
+  resumeGraceMs?: number;
+  /** Test hook. Production signals the terminal process group. */
+  stopProcess?: (pid: number) => void;
 }
 
 export class WakeDaemon {
@@ -127,6 +136,8 @@ export class WakeDaemon {
   private readonly claimsBySeat = new Map<string, string[]>();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private wakeSleep: (() => void) | undefined;
+  /** When each still-pending event was first seen, so a live listen can ack it. */
+  private readonly pendingSeen = new Map<string, number>();
 
   constructor(options: WakeDaemonOptions) {
     this.options = options;
@@ -175,11 +186,16 @@ export class WakeDaemon {
         if (this.options.heartbeat?.blocks(seat)) continue;
         this.observeProcess(seat);
         if (!remote.pending.length) continue;
-        // Interactive TUIs stay "running" after first launch; attachRunning only
-        // claims and never injects a wake prompt. Always resume/spawn with the
-        // wake prompt unless this seat already has an in-flight wake run (merge).
-        if (seat.status === 'running' && seat.wakeRunId) await this.merge(seat, remote);
-        else await this.resumeSeat(seat, remote);
+        // A claimed run is already inside the live process. Anything else needs a
+        // new wake prompt. Interactive TUIs do not exit after room_sleep, and
+        // `codex resume` refuses while that process still holds the session.
+        if (seat.status === 'running' && seat.wakeRunId && remote.inFlight.length) {
+          await this.merge(seat, remote);
+          continue;
+        }
+        if (this.deferForLiveListen(seat, remote)) continue;
+        if (seat.pid && this.options.inspect(seat.pid).alive) await this.stopLiveProcess(seat);
+        await this.resumeSeat(seat, remote);
       }
     } catch {
       if (messageOf(failure) === 'unpaired') skipped = true;
@@ -346,6 +362,47 @@ export class WakeDaemon {
     });
   }
 
+  /**
+   * A process that is still inside room_listen will ack a new @ on its own.
+   * Give it one grace window before replacing it. An idle prompt after
+   * room_sleep will not ack, so the next poll starts a real resume.
+   */
+  private deferForLiveListen(seat: SeatRecord, remote: WakeSeatView): boolean {
+    if (seat.status !== 'running' || !seat.pid || !this.options.inspect(seat.pid).alive) return false;
+    const grace = this.options.resumeGraceMs ?? 8_000;
+    if (grace <= 0) return false;
+    const now = this.options.now?.() ?? Date.now();
+    let mature = false;
+    for (const event of remote.pending) {
+      let seen = this.pendingSeen.get(event.eventId);
+      if (seen === undefined) {
+        seen = now;
+        this.pendingSeen.set(event.eventId, now);
+      }
+      if (now - seen >= grace) mature = true;
+    }
+    return !mature;
+  }
+
+  /** End the previous terminal so the next `codex resume` can lock the session. */
+  private async stopLiveProcess(seat: SeatRecord): Promise<void> {
+    const pid = seat.pid;
+    const alive = !!pid && this.options.inspect(pid).alive;
+    if (pid && alive) {
+      const stop = this.options.stopProcess ?? stopProcessGroup;
+      stop(pid);
+      const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+      const deadline = Date.now() + 4_000;
+      while (Date.now() < deadline && this.options.inspect(pid).alive) await pause(50);
+      if (this.options.inspect(pid).alive) stop(pid);
+      await pause(300);
+    }
+    seat.status = 'idle';
+    seat.pid = undefined;
+    seat.wakeRunId = undefined;
+    await this.options.lock.release(seat.seatId);
+  }
+
   private async resumeSeat(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
     if (!seat.sessionId || !seat.model) return;
     if (!(await this.options.lock.tryAcquire(seat.seatId))) return;
@@ -395,6 +452,11 @@ export class WakeDaemon {
   private async merge(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
     await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId), wakeRunId: seat.wakeRunId });
   }
+}
+
+function stopProcessGroup(pid: number): void {
+  try { process.kill(-pid, 'SIGTERM'); }
+  catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ } }
 }
 
 function statusOf(error: unknown): number | undefined {
