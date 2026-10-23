@@ -4,7 +4,7 @@ import type {
   ReplyMode,
   ReplyModeConfig,
 } from '@agent-room/shared';
-import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, findSpeakerSeat, hasActiveListenLease, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
+import { AVATAR_PALETTE, DEFAULT_TURN_TIMEOUTS_MS, findSpeakerSeat, hasActiveListenLease, LISTEN_HOLD_COVER_MS, LISTEN_RETURN_GRACE_MS, PRESENCE_DISCONNECTED_MS, ROOM_TTL_SECONDS } from '@agent-room/shared';
 import type { UpstashClient } from './client.js';
 import { sha256Hex } from './sha256.js';
 import { RoomNotFoundError, ConcurrencyError } from './errors.js';
@@ -109,7 +109,7 @@ export async function getRoom(client: UpstashClient, code: string): Promise<Room
   return JSON.parse(raw) as Room;
 }
 
-const CAS_MAX_ATTEMPTS = 3;
+const CAS_MAX_ATTEMPTS = 8;
 const ROOM_CAS_MAX_ATTEMPTS = 25;
 
 // Presence must use an atomic compare-and-swap: overlapping listeners or a
@@ -785,7 +785,7 @@ export async function setListenUntil(
         // Listener presence belongs to an Agent seat, not merely a display
         // name. A late write must not mark a Web seat or recreate a removed one.
         if (p.name !== name || p.client !== 'cc') return p;
-        if (until !== null && (!Number.isFinite(until) || until <= now)) return p;
+        if (until !== null && !Number.isFinite(until)) return p;
         const leases: Record<string, number> = Object.fromEntries(
           Object.entries(p.listenLeases ?? {}).filter(([, expiresAt]) =>
             typeof expiresAt === 'number' && Number.isFinite(expiresAt) && expiresAt > now,
@@ -801,12 +801,22 @@ export async function setListenUntil(
         const leaseKey = leaseId ?? 'legacy';
         if (until === null) {
           delete leases[leaseKey];
+        } else if (until <= now) {
+          // CLI room_listen releases with until=Date.now(). That used to be a
+          // no-op, so a dropped renewal left the seat idle for the rest of the
+          // hold. A return we can see shortens the lease to a grace window.
+          leases[leaseKey] = now + LISTEN_RETURN_GRACE_MS;
+        } else if (!leaseId) {
+          // No per-call id: this is the CLI presence stamp (now+15s). Keep the
+          // seat listening for the whole long-poll; the release above cuts it.
+          leases[leaseKey] = Math.max(until, now + LISTEN_HOLD_COVER_MS);
         } else {
           leases[leaseKey] = until;
         }
         const activeUntil = Object.values(leases).reduce((max, expiresAt) => Math.max(max, expiresAt), 0);
-        // A release is not new activity. Keep lastSeenAt at the last live
-        // renewal so the UI moves through Not listening, Idle, Disconnected.
+        // null drops one lease id and is not a check-in. A numeric until,
+        // including a CLI return (until <= now), means the client is still
+        // there, so lastSeenAt moves and the seat does not age into idle.
         return {
           ...p,
           listenUntil: activeUntil > now ? activeUntil : now,

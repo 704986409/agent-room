@@ -148,6 +148,8 @@ describe('participantPresenceStatus', () => {
   });
 
   it('moves an inactive Agent from not listening to idle and then disconnected', () => {
+    const holding = participant({ lastSeenAt: NOW - PRESENCE_STALE_MS - 1, listenUntil: NOW + 240_000 });
+    expect(participantPresenceStatus(holding, NOW)).toBe('listening');
     const agent = participant({ lastSeenAt: NOW - PRESENCE_STALE_MS - 1, listenUntil: NOW });
     expect(participantPresenceStatus(agent, NOW)).toBe('idle');
     expect(participantPresenceStatus({ ...agent, lastSeenAt: NOW - PRESENCE_DISCONNECTED_MS - 1 }, NOW))

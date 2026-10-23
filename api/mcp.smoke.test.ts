@@ -26,6 +26,7 @@ import {
   PostgresMemoryRepository,
   RedisUrlCommandClient,
 } from '@agent-room/memory';
+import { LISTEN_RETURN_GRACE_MS } from '@agent-room/shared';
 import { createRemoteRoomClient } from './_mcpRoomClient.js';
 import { callTool, listTools } from './_mcpTools.js';
 import { createMemoryTestDependencies } from './_memoryTools.js';
@@ -387,8 +388,10 @@ describe('hosted MCP endpoint', () => {
       participants: { name: string; listenUntil?: number; listenLeases?: Record<string, number> }[];
     };
     const guest = storedRoom.participants.find(p => p.name === 'Guest')!;
-    expect(guest.listenUntil).toBeLessThanOrEqual(Date.now());
-    expect(guest.listenLeases).toBeUndefined();
+    const returnedAt = Date.now();
+    expect(guest.listenUntil).toBeGreaterThan(returnedAt);
+    expect(guest.listenUntil).toBeLessThanOrEqual(returnedAt + LISTEN_RETURN_GRACE_MS);
+    expect(Object.values(guest.listenLeases ?? {}).every(until => until <= returnedAt + LISTEN_RETURN_GRACE_MS)).toBe(true);
   }, 20_000);
 
   it('carries the room policy contract, which needs the ported shared module', async () => {

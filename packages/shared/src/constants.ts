@@ -38,6 +38,15 @@ export const PRESENCE_DISCONNECTED_MS = 5 * 60 * 1000;
 // lease instead of for the whole listen window it once intended to stay for.
 export const LISTEN_LEASE_MS = 15000;
 export const LISTEN_LEASE_RENEW_MS = 5000;
+// A CLI room_listen only reports a 15s lease, and that write can lose the
+// presence CAS while the call is still blocked. One accepted stamp has to
+// cover the long-poll (the hosted listen cap) or the seat falls through to
+// idle — lastSeen older than a minute, no live lease — and the member list
+// reads 空闲·未监听 for an agent that is still holding the tool.
+export const LISTEN_HOLD_COVER_MS = 240_000;
+// Observable return/timeout shortens that cover to a short grace so a chained
+// room_listen does not flicker, without leaving the rest of the hold behind.
+export const LISTEN_RETURN_GRACE_MS = 8_000;
 
 // Avatar palette — indigo/pink/amber/violet/emerald/rose/sky/fuchsia
 export const AVATAR_PALETTE: readonly string[] = [

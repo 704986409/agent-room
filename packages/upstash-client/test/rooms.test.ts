@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
-import { AVATAR_PALETTE, ROOM_TTL_SECONDS, type Room } from '@agent-room/shared';
+import { AVATAR_PALETTE, LISTEN_HOLD_COVER_MS, LISTEN_RETURN_GRACE_MS, ROOM_TTL_SECONDS, type Room } from '@agent-room/shared';
 import { createClient, createRoom, getRoom, RoomNotFoundError, casRoom, ConcurrencyError, joinRoom, InterviewRoomBusyError, setListenUntil, updatePresence, removeParticipant, endRoom, taskRoleSeatProblem } from '../src/index.js';
 
 const ENV = { url: 'https://example.upstash.io', token: 't' };
@@ -105,6 +105,35 @@ describe('setListenUntil', () => {
       listenUntil: now + 10_000,
       listenLeases: { legacy: now + 10_000 },
     });
+  });
+
+  it('covers a CLI long-poll from the first presence stamp and shortens a return to grace', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000);
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + LISTEN_HOLD_COVER_MS,
+      listenLeases: { legacy: now + LISTEN_HOLD_COVER_MS },
+      lastSeenAt: now,
+    });
+
+    vi.setSystemTime(now + 5_000);
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 5_000);
+    expect(redis.readRoom().participants[0]).toMatchObject({
+      listenUntil: now + 5_000 + LISTEN_RETURN_GRACE_MS,
+      listenLeases: { legacy: now + 5_000 + LISTEN_RETURN_GRACE_MS },
+      lastSeenAt: now + 5_000,
+    });
+  });
+
+  it('keeps an explicit lease at the requested end instead of the CLI hold cover', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    const redis = installRoomRedis(roomWith('active', [agent()]));
+    await setListenUntil(redis.client, 'ABC-DEF-GHJ', 'Codex', now + 15_000, 'hold:1');
+    expect(redis.readRoom().participants[0]!.listenLeases).toEqual({ 'hold:1': now + 15_000 });
   });
 
   it('updates only the Agent seat with the matching name', async () => {

@@ -14,6 +14,7 @@ import {
   startListenLease,
   taskInboxFor,
   AGENT_ROOM_CODEX_CONTINUE,
+  LISTEN_RETURN_GRACE_MS,
 } from '@agent-room/shared';
 import type { Message, Room, TaskBoard } from '@agent-room/shared';
 import { isDeliverLead, runDeliverSweep } from '@agent-room/upstash-client';
@@ -465,11 +466,10 @@ export async function listMessagesResilient(
 }
 
 /**
- * Owns the presence lease; the polling itself is runListenInner. Renewing while
- * we poll and releasing in `finally` means every exit path (message, quiet
- * timeout, throw, function instance torn down) stops advertising "Listening".
- * Stamping the whole intended window once up front — the old behaviour — left
- * a dead caller reading as live for the rest of it.
+ * Owns the presence lease; the polling itself is runListenInner. The hold is
+ * marked for its whole window at start so a missed short renewal cannot show
+ * the seat as idle while this call is still blocked. Return, timeout, and
+ * throw shorten that mark to a grace window instead of leaving the rest of it.
  */
 export async function runListen(
   client: RemoteRoomClient,
@@ -486,10 +486,26 @@ export async function runListen(
   const releaseLease = startListenLease(
     (until, leaseId) => setListenUntil(client, code, name, until, leaseId),
   );
+  // timeoutMs 0 is a history read, not a hold. A real hold is marked up front
+  // for its whole window so a missed 15s renewal cannot show the seat as idle
+  // while this call is still blocked. Return/timeout shortens it to grace.
+  const holding = timeoutMs > 0;
+  const holdLeaseId = holding ? `hold:${crypto.randomUUID()}` : undefined;
+  if (holdLeaseId) {
+    const cappedMs = Math.min(Math.max(1000, timeoutMs), LISTEN_MAX_MS);
+    try {
+      await setListenUntil(client, code, name, Date.now() + cappedMs, holdLeaseId);
+    } catch { /* presence must not break the listen */ }
+  }
   try {
     return await runListenInner(client, code, since, timeoutMs, selfName, wakeOn);
   } finally {
     await releaseLease();
+    if (holdLeaseId) {
+      try {
+        await setListenUntil(client, code, name, Date.now() + LISTEN_RETURN_GRACE_MS, holdLeaseId);
+      } catch { /* presence must not break the listen */ }
+    }
   }
 }
 
