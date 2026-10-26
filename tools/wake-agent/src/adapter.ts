@@ -52,7 +52,10 @@ export interface ProcessSpawner {
     logFile?: string;
     /** Full prompt. On Windows it is written to a file and is not placed on the cmd line. */
     prompt?: string;
-    /** When set, open the CLI inside a visible terminal emulator (interactive). */
+    /**
+     * When set, managed seats embed in the in-app PTY (any adapter id).
+     * AGENT_ROOM_TERMINAL=system keeps the system console / wrapInTerminal path.
+     */
     terminalTitle?: string;
   }): SpawnedProcess;
 }
@@ -791,7 +794,10 @@ function windowsSeatConsole(
  * stdout/stderr of the terminal (or CLI) still append to a 0600 log file.
  */
 
-/** Testable decision for managed interactive spawn path (no side effects). */
+/**
+ * Testable decision for managed interactive spawn (no side effects).
+ * Adapter-agnostic: a terminalTitle embeds unless AGENT_ROOM_TERMINAL=system.
+ */
 export type ManagedSpawnKind = 'embedded' | 'system-wrap' | 'direct';
 
 export function resolveManagedSpawnKind(

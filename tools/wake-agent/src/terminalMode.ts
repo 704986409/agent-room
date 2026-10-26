@@ -1,8 +1,8 @@
 /**
  * Managed-seat terminal mode.
  *
- * AGENT_ROOM_TERMINAL=system  → today's wrapInTerminal / Windows cmd /k console
- * unset / embedded / other   → in-app PTY (node-pty) streamed to settings xterm
+ * AGENT_ROOM_TERMINAL=system  → wrapInTerminal / Windows cmd /k console (every adapter)
+ * unset / embedded / other   → in-app PTY (node-pty) for Codex, cursor-agent, agy, …
  *
  * Pop-out/dock (P1) remounts the same seatId PTY session; do not kill on UI close.
  */

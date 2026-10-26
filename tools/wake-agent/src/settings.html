@@ -50,6 +50,8 @@
     body.popout #term-drag { display: none !important; }
     #term-drag { cursor: grab; user-select: none; touch-action: none; }
     #term-drag:active { cursor: grabbing; }
+    #term-seat-status { margin-left: auto; font-size: 12px; color: #5c616a; max-width: 48%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    body.popout #term-seat-status { color: #c4c7cc; }
   </style>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
@@ -113,7 +115,7 @@
     </section>
     <section class="term-section">
       <h2>终端（嵌入）</h2>
-      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。桌面端可「弹出」，或按住「拖出」移动超过约 48px 拖到独立窗口。关闭窗口或「收回」会回到本面板，不会结束进程。再次弹出同一座位会恢复上次窗口位置和大小。</p>
+      <p class="muted">默认用本机 PTY 嵌在页面里跑各托管 CLI（Codex、cursor-agent、agy），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可对所有适配器退回旧行为。桌面端可「弹出」，或按住「拖出」移动超过约 48px 拖到独立窗口。关闭窗口或「收回」会回到本面板，不会结束进程。再次弹出同一座位会恢复上次窗口位置和大小。</p>
       <div class="row">
         <label>座位
           <select id="term-seat">
@@ -128,6 +130,7 @@
       <div class="term-toolbar">
         <button type="button" class="quiet" id="term-drag" disabled title="按住并拖动超过约 48px，弹出到独立窗口（与「弹出」同一 PTY）">拖出</button>
         <strong id="term-popout-title">终端</strong>
+        <span id="term-seat-status" title="状态来自座位 runtime；细粒度监听中信号暂未暴露"></span>
         <button type="button" class="quiet" id="term-dock">收回 / 停靠</button>
       </div>
       <div id="term-wrap" hidden></div>
@@ -267,6 +270,8 @@
       }).join('');
       await refreshLogsOnly();
       await refreshTerminals();
+      seatSnapshots = status.seats || [];
+      renderSeatStatus();
     }
 
     adapterSelect.addEventListener('change', () => fillModels(adapterSelect.value));
@@ -407,6 +412,41 @@
     let poppedOutSeatId = null;
     let liveTerminalIds = [];
     let dockChannel = null;
+    let seatSnapshots = [];
+    let seatStatusTimer = null;
+    const SEAT_STATUS_HINT = '状态来自座位 runtime；细粒度监听中信号暂未暴露';
+
+    function renderSeatStatus() {
+      const el = document.getElementById('term-seat-status');
+      if (!el) return;
+      const seatId = isPopout ? popoutSeatParam : (document.getElementById('term-seat').value || '');
+      el.title = SEAT_STATUS_HINT;
+      if (!seatId) {
+        el.textContent = '';
+        return;
+      }
+      const seat = seatSnapshots.find(function (item) { return item.seatId === seatId; });
+      if (!seat) {
+        el.textContent = '未知';
+        return;
+      }
+      const adapter = seat.adapterId ? (' · ' + seat.adapterId) : '';
+      el.textContent = (seat.status || '未知') + adapter;
+    }
+
+    async function refreshSeatStatus() {
+      try {
+        const status = await api('/api/status');
+        seatSnapshots = status.seats || [];
+        renderSeatStatus();
+      } catch (e) { /* keep the last snapshot */ }
+    }
+
+    function startSeatStatusPoll() {
+      if (seatStatusTimer) return;
+      refreshSeatStatus();
+      seatStatusTimer = setInterval(function () { refreshSeatStatus(); }, 4000);
+    }
 
     function hasTauri() {
       return !!(window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core));
@@ -807,13 +847,17 @@
     document.getElementById('term-popout').addEventListener('click', function () {
       openPopout().catch(showError);
     });
-    document.getElementById('term-seat').addEventListener('change', updatePopoutButton);
+    document.getElementById('term-seat').addEventListener('change', function () {
+      updatePopoutButton();
+      renderSeatStatus();
+    });
 
     if (isPopout && popoutSeatParam) {
       refreshTerminals()
         .then(function () { connectTerm(popoutSeatParam); })
         .catch(showError);
     }
+    startSeatStatusPoll();
 
     document.getElementById('refresh').addEventListener('click', () => refresh().catch(showError));
     if (!isPopout) {

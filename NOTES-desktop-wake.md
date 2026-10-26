@@ -218,3 +218,13 @@ Default for managed interactive seats is an **in-app PTY** (`node-pty` via
   geometry. Pop-out page debounces `onMoved` / `onResized` and writes localStorage
   (logical px via scaleFactor). Capability adds `core:event` listen/unlisten and
   `core:window` outer-position / inner-size / scale-factor for localhost only.
+
+## Multi-adapter embed + seat status chrome (P3)
+
+- Embedded PTY is not Codex-only. `spawnInteractive` sets `terminalTitle` to
+  `Agent Room · ${adapterId}` for every adapter; `shouldEmbedTerminal` /
+  `resolveManagedSpawnKind` key off that title and `AGENT_ROOM_TERMINAL`.
+  `system` still wraps Codex, cursor-agent, and agy.
+- Terminal toolbar (`#term-seat-status`, docked and pop-out) polls `GET /api/status`
+  every 4s and shows `seat.status` plus `adapterId`. There is no listen boolean
+  on that payload; the tooltip says the fine-grained 监听中 signal is not exposed.
