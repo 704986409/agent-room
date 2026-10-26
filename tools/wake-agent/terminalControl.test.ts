@@ -107,3 +107,71 @@ describe('control terminal routes', () => {
     }
   }, 20_000);
 });
+
+describe('debug pty-spawn hatch', () => {
+  it('404s when AGENT_ROOM_DEBUG_PTY is unset and spawns when set to 1', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-debug-pty-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'http://127.0.0.1:9',
+      adapters,
+      secrets,
+      log,
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    const prev = process.env.AGENT_ROOM_DEBUG_PTY;
+    try {
+      delete process.env.AGENT_ROOM_DEBUG_PTY;
+      const gated = await fetch(`http://127.0.0.1:${control.port}/api/debug/pty-spawn?t=${control.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ seatId: 'qa-popout' }),
+      });
+      expect(gated.status).toBe(404);
+
+      if (!ptyAvailable()) return;
+
+      process.env.AGENT_ROOM_DEBUG_PTY = '1';
+      const spawned = await fetch(`http://127.0.0.1:${control.port}/api/debug/pty-spawn?t=${control.token}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ seatId: 'qa-popout' }),
+      });
+      expect(spawned.status).toBe(200);
+      const body = await spawned.json() as { ok: boolean; seatId: string; pid: number };
+      expect(body.ok).toBe(true);
+      expect(body.seatId).toBe('qa-popout');
+      expect(body.pid).toBeGreaterThan(0);
+
+      const listed = await fetch(`http://127.0.0.1:${control.port}/api/terminals?t=${control.token}`);
+      const listedBody = await listed.json() as { terminals: { seatId: string }[] };
+      expect(listedBody.terminals.some(t => t.seatId === 'qa-popout')).toBe(true);
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_ROOM_DEBUG_PTY;
+      else process.env.AGENT_ROOM_DEBUG_PTY = prev;
+      await control.close();
+    }
+  }, 20_000);
+});

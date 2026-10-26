@@ -13,7 +13,7 @@ import { installMcp, mcpStatus } from './mcpconfig.js';
 import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
-import { getPtySession, listPtySessions } from './pty.js';
+import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession } from './pty.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
 
@@ -422,6 +422,37 @@ export async function startControlServer(options: ControlServerOptions): Promise
         nodePath: options.nodePath,
       });
       send(res, 'error' in result ? 400 : 200, result);
+      return;
+    }
+
+    if (url.pathname === '/api/debug/pty-spawn') {
+      // QA / box-only hatch. Never enable AGENT_ROOM_DEBUG_PTY in product defaults.
+      if (process.env.AGENT_ROOM_DEBUG_PTY !== '1') {
+        send(res, 404, { error: 'not_found' }, undefined, cors);
+        return;
+      }
+      if (!ptyAvailable()) {
+        send(res, 503, { error: 'pty_unavailable' }, undefined, cors);
+        return;
+      }
+      const rawSeat = typeof body.seatId === 'string' ? body.seatId.trim() : '';
+      const seatId = (rawSeat || 'qa-popout').replace(/[^A-Za-z0-9._:-]/g, '_').slice(0, 96) || 'qa-popout';
+      const cwd = options.stateDir;
+      const env: Record<string, string> = {};
+      for (const [k, v] of Object.entries(process.env)) {
+        if (typeof v === 'string') env[k] = v;
+      }
+      // Long-lived interactive bash so settings xterm + 弹出/收回 can share one PTY.
+      const session = spawnPtySession({
+        seatId,
+        command: 'bash',
+        args: [],
+        cwd,
+        env,
+        cols: 100,
+        rows: 28,
+      });
+      send(res, 200, { ok: true, seatId: session.seatId, pid: session.pid, cols: session.cols, rows: session.rows }, undefined, cors);
       return;
     }
     send(res, 404, { error: 'not_found' });
