@@ -40,10 +40,16 @@
     body.popout #term-connect,
     body.popout #term-disconnect,
     body.popout #term-popout { display: none !important; }
-    body.popout .term-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+    body.popout .term-toolbar { margin: 0 0 6px; }
     body.popout #term-wrap { flex: 1; height: auto; min-height: 0; }
     body.popout #term-note { color: #9aa0a6; }
-    .term-toolbar { display: none; }
+    .term-toolbar { display: flex; gap: 8px; align-items: center; margin: 8px 0 6px; }
+    #term-popout-title, #term-dock { display: none; }
+    body.popout #term-popout-title { display: inline; }
+    body.popout #term-dock { display: inline-block; }
+    body.popout #term-drag { display: none !important; }
+    #term-drag { cursor: grab; user-select: none; touch-action: none; }
+    #term-drag:active { cursor: grabbing; }
   </style>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
@@ -107,7 +113,7 @@
     </section>
     <section class="term-section">
       <h2>终端（嵌入）</h2>
-      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。桌面端可「弹出」到独立窗口，关闭窗口或「收回」会回到本面板，不会结束进程。</p>
+      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。桌面端可「弹出」，或按住「拖出」移动超过约 48px 拖到独立窗口。关闭窗口或「收回」会回到本面板，不会结束进程。再次弹出同一座位会恢复上次窗口位置和大小。</p>
       <div class="row">
         <label>座位
           <select id="term-seat">
@@ -120,6 +126,7 @@
         <button type="button" class="quiet" id="term-popout" disabled title="仅桌面端可用">弹出</button>
       </div>
       <div class="term-toolbar">
+        <button type="button" class="quiet" id="term-drag" disabled title="按住并拖动超过约 48px，弹出到独立窗口（与「弹出」同一 PTY）">拖出</button>
         <strong id="term-popout-title">终端</strong>
         <button type="button" class="quiet" id="term-dock">收回 / 停靠</button>
       </div>
@@ -431,21 +438,71 @@
 
     function updatePopoutButton() {
       const btn = document.getElementById('term-popout');
+      const drag = document.getElementById('term-drag');
       const seatId = document.getElementById('term-seat').value;
       const live = seatId && liveTerminalIds.indexOf(seatId) >= 0;
       const inTauri = hasTauri();
+      function setDrag(disabled, title) {
+        if (!drag) return;
+        drag.disabled = disabled;
+        drag.title = title;
+      }
       if (!inTauri) {
         btn.disabled = true;
         btn.title = '仅 Agent Room 桌面端可弹出独立窗口（浏览器打开控制页时不可用）';
+        setDrag(true, '仅 Agent Room 桌面端可拖出独立窗口');
         return;
       }
       if (poppedOutSeatId && poppedOutSeatId === seatId) {
         btn.disabled = true;
         btn.title = '该座位已在独立窗口中';
+        setDrag(true, '该座位已在独立窗口中');
         return;
       }
       btn.disabled = !live;
       btn.title = live ? '弹出到独立窗口（同一 PTY；关闭窗口会收回）' : '请先选择有活动 PTY 的座位';
+      setDrag(!live, live
+        ? '按住并拖动超过约 48px，弹出到独立窗口（与「弹出」同一 PTY）'
+        : '请先选择有活动 PTY 的座位');
+    }
+
+    var TERM_GEOM_PREFIX = 'agent-room-term-geom:';
+    var TERM_MIN_W = 480;
+    var TERM_MIN_H = 320;
+    var TERM_MAX_W = 3840;
+    var TERM_MAX_H = 2160;
+    var UNDOCK_THRESHOLD_PX = 48;
+
+    function clampGeom(input) {
+      if (!input) return null;
+      var x = Number(input.x);
+      var y = Number(input.y);
+      var width = Number(input.width);
+      var height = Number(input.height);
+      if (![x, y, width, height].every(function (n) { return Number.isFinite(n); })) return null;
+      function clamp(n, min, max) { return Math.min(max, Math.max(min, n)); }
+      return {
+        x: Math.round(clamp(x, -8000, 16000)),
+        y: Math.round(clamp(y, -8000, 16000)),
+        width: Math.round(clamp(width, TERM_MIN_W, TERM_MAX_W)),
+        height: Math.round(clamp(height, TERM_MIN_H, TERM_MAX_H)),
+      };
+    }
+
+    function loadGeom(seatId) {
+      try {
+        return clampGeom(JSON.parse(localStorage.getItem(TERM_GEOM_PREFIX + seatId) || ''));
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function saveGeom(seatId, geom) {
+      var clamped = clampGeom(geom);
+      if (!clamped || !seatId) return;
+      try {
+        localStorage.setItem(TERM_GEOM_PREFIX + seatId, JSON.stringify(clamped));
+      } catch (e) { /* private mode / quota */ }
     }
 
     async function refreshTerminals() {
@@ -602,10 +659,15 @@
       updatePopoutButton();
       termNote('正在弹出 ' + seatId + '…');
       try {
-        await tauriInvoke('open_terminal_window', {
-          seatId: seatId,
-          url: buildPopoutUrl(seatId),
-        });
+        var geom = loadGeom(seatId);
+        var args = { seatId: seatId, url: buildPopoutUrl(seatId) };
+        if (geom) {
+          args.x = geom.x;
+          args.y = geom.y;
+          args.width = geom.width;
+          args.height = geom.height;
+        }
+        await tauriInvoke('open_terminal_window', args);
         termNote('座位 ' + seatId + ' 已弹出。关闭独立窗口或点窗口内「收回」会回到这里（不会结束进程）。');
       } catch (error) {
         poppedOutSeatId = null;
@@ -659,6 +721,70 @@
       dockChannel = null;
     }
 
+    function currentTauriWindow() {
+      var api = window.__TAURI__;
+      if (!api) return null;
+      var ns = api.window || api.webviewWindow;
+      if (!ns) return null;
+      var getCurrent = ns.getCurrentWindow || ns.getCurrentWebviewWindow;
+      if (typeof getCurrent !== 'function') return null;
+      try { return getCurrent(); } catch (e) { return null; }
+    }
+
+    async function readLogicalGeometry(win) {
+      var factor = typeof win.scaleFactor === 'function' ? await win.scaleFactor() : 1;
+      var scale = factor && factor > 0 ? factor : 1;
+      var pos = await win.outerPosition();
+      var size = await win.innerSize();
+      return {
+        x: pos.x / scale,
+        y: pos.y / scale,
+        width: size.width / scale,
+        height: size.height / scale,
+      };
+    }
+
+    function bindGeometryPersistence(seatId) {
+      var win = currentTauriWindow();
+      if (!win || !seatId) return;
+      var timer = null;
+      function persist() {
+        readLogicalGeometry(win).then(function (geom) { saveGeom(seatId, geom); }).catch(function () {});
+      }
+      function schedule() {
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(persist, 200);
+      }
+      try {
+        if (typeof win.onMoved === 'function') win.onMoved(schedule);
+        if (typeof win.onResized === 'function') win.onResized(schedule);
+      } catch (e) { /* capability missing until desktop rebuild */ }
+    }
+
+    var undockDrag = null;
+    var dragBtn = document.getElementById('term-drag');
+    if (dragBtn) {
+      dragBtn.addEventListener('pointerdown', function (ev) {
+        if (isPopout || dragBtn.disabled || (ev.button != null && ev.button !== 0)) return;
+        undockDrag = { id: ev.pointerId, x: ev.clientX, y: ev.clientY, fired: false };
+        try { dragBtn.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+      dragBtn.addEventListener('pointermove', function (ev) {
+        if (!undockDrag || undockDrag.id !== ev.pointerId || undockDrag.fired) return;
+        var dx = ev.clientX - undockDrag.x;
+        var dy = ev.clientY - undockDrag.y;
+        if (Math.hypot(dx, dy) < UNDOCK_THRESHOLD_PX) return;
+        undockDrag.fired = true;
+        openPopout().catch(showError);
+      });
+      function endUndockDrag(ev) {
+        if (!undockDrag || (ev && undockDrag.id !== ev.pointerId)) return;
+        undockDrag = null;
+      }
+      dragBtn.addEventListener('pointerup', endUndockDrag);
+      dragBtn.addEventListener('pointercancel', endUndockDrag);
+    }
+
     if (isPopout) {
       document.body.classList.add('popout');
       document.title = 'Agent Room · ' + (popoutSeatParam || '终端');
@@ -670,6 +796,7 @@
       document.getElementById('term-dock').addEventListener('click', function () {
         dockPopout(popoutSeatParam);
       });
+      bindGeometryPersistence(popoutSeatParam);
     }
 
     document.getElementById('term-refresh').addEventListener('click', function () {

@@ -205,4 +205,16 @@ Default for managed interactive seats is an **in-app PTY** (`node-pty` via
 - Dock signaling: `BroadcastChannel('agent-room-terminal-dock')` between settings and
   pop-out (same origin). Close ≡ dock.
 - Helpers: `tools/wake-agent/src/terminalWindow.ts`; Rust `terminal_window_label`.
-- P2 leftovers: drag-undock, remember window position, non-Codex polish.
+
+## Embedded terminal drag-undock + geometry (P2)
+
+- Docked Terminal chrome has a **拖出** handle (not HTML5 drag-and-drop). Pointer
+  capture; travel ≥48px calls the same `openPopout` path as **弹出**. Disabled
+  unless Tauri + a live PTY seat (same gates as 弹出). Pop-out page hides the handle.
+- Geometry `{x,y,width,height}` per seatId in localStorage key
+  `agent-room-term-geom:<seatId>` on the control origin. Mins 480×320, max 3840×2160.
+- `open_terminal_window` accepts optional logical `x`, `y`, `width`, `height`.
+  Existing window is focused only (no geometry rewrite). New window applies saved
+  geometry. Pop-out page debounces `onMoved` / `onResized` and writes localStorage
+  (logical px via scaleFactor). Capability adds `core:event` listen/unlisten and
+  `core:window` outer-position / inner-size / scale-factor for localhost only.

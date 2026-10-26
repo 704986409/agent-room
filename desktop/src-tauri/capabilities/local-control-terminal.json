@@ -8,6 +8,11 @@
   },
   "permissions": [
     "allow-open-terminal-window",
-    "allow-close-terminal-window"
+    "allow-close-terminal-window",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-outer-position",
+    "core:window:allow-inner-size",
+    "core:window:allow-scale-factor"
   ]
 }

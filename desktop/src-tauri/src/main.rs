@@ -503,38 +503,94 @@ fn terminal_window_label(seat_id: &str) -> String {
     format!("terminal-{safe}")
 }
 
-fn open_terminal_window_inner(app: &AppHandle, seat_id: &str, url: &str) -> Result<(), String> {
+const TERM_MIN_W: f64 = 480.0;
+const TERM_MIN_H: f64 = 320.0;
+const TERM_DEFAULT_W: f64 = 960.0;
+const TERM_DEFAULT_H: f64 = 640.0;
+const TERM_MAX_W: f64 = 3840.0;
+const TERM_MAX_H: f64 = 2160.0;
+
+/// Logical size used by `open_terminal_window`. Non-finite values fall back to defaults.
+fn clamp_terminal_size(width: f64, height: f64) -> (f64, f64) {
+    let width = if width.is_finite() {
+        width.clamp(TERM_MIN_W, TERM_MAX_W)
+    } else {
+        TERM_DEFAULT_W
+    };
+    let height = if height.is_finite() {
+        height.clamp(TERM_MIN_H, TERM_MAX_H)
+    } else {
+        TERM_DEFAULT_H
+    };
+    (width, height)
+}
+
+/// Logical origin. `None` when either coordinate is missing or non-finite.
+fn clamp_terminal_position(x: Option<f64>, y: Option<f64>) -> Option<(f64, f64)> {
+    match (x, y) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() => {
+            Some((x.clamp(-8000.0, 16000.0), y.clamp(-8000.0, 16000.0)))
+        }
+        _ => None,
+    }
+}
+
+fn open_terminal_window_inner(
+    app: &AppHandle,
+    seat_id: &str,
+    url: &str,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
     let label = terminal_window_label(seat_id);
     let parsed = url
         .parse()
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
     if let Some(w) = app.get_webview_window(&label) {
+        // Already open: focus only. Re-applying saved geometry would fight an in-progress move.
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
         return Ok(());
     }
+    let (width, height) =
+        clamp_terminal_size(width.unwrap_or(TERM_DEFAULT_W), height.unwrap_or(TERM_DEFAULT_H));
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed));
     if let Some(data_dir) = persistent_webview_data_directory(app)? {
         builder = builder.data_directory(data_dir);
     }
-    builder
+    builder = builder
         .title(format!("Agent Room · {seat_id}"))
-        .inner_size(960.0, 640.0)
+        .inner_size(width, height)
+        .min_inner_size(TERM_MIN_W, TERM_MIN_H);
+    if let Some((x, y)) = clamp_terminal_position(x, y) {
+        builder = builder.position(x, y);
+    }
+    builder
         .build()
         .map_err(|e| format!("无法打开终端窗口: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
-fn open_terminal_window(app: AppHandle, seat_id: String, url: String) -> Result<(), String> {
+fn open_terminal_window(
+    app: AppHandle,
+    seat_id: String,
+    url: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) -> Result<(), String> {
     if seat_id.trim().is_empty() {
         return Err("seatId required".into());
     }
     if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")) {
         return Err("terminal pop-out URL must be http://127.0.0.1 or http://localhost".into());
     }
-    open_terminal_window_inner(&app, &seat_id, &url)
+    open_terminal_window_inner(&app, &seat_id, &url, x, y, width, height)
 }
 
 #[tauri::command]
@@ -1031,6 +1087,19 @@ mod tests {
         assert_eq!(terminal_window_label("a/b c"), "terminal-a_b_c");
         assert_eq!(terminal_window_label("  "), "terminal-seat");
         assert!(terminal_window_label(&"x".repeat(200)).len() <= "terminal-".len() + 96);
+    }
+
+    #[test]
+    fn clamps_terminal_geometry() {
+        assert_eq!(clamp_terminal_size(100.0, 100.0), (480.0, 320.0));
+        assert_eq!(clamp_terminal_size(800.0, 500.0), (800.0, 500.0));
+        assert_eq!(clamp_terminal_size(9000.0, 9000.0), (3840.0, 2160.0));
+        assert_eq!(clamp_terminal_size(f64::NAN, 500.0), (960.0, 500.0));
+        assert_eq!(clamp_terminal_size(700.0, f64::INFINITY), (700.0, 640.0));
+        assert_eq!(clamp_terminal_position(Some(12.0), Some(-40.0)), Some((12.0, -40.0)));
+        assert_eq!(clamp_terminal_position(Some(-9000.0), Some(20000.0)), Some((-8000.0, 16000.0)));
+        assert_eq!(clamp_terminal_position(Some(1.0), None), None);
+        assert_eq!(clamp_terminal_position(Some(f64::NAN), Some(1.0)), None);
     }
 
 }
