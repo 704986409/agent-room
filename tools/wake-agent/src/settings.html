@@ -27,6 +27,23 @@
     #term-wrap { height: 320px; border-radius: 8px; overflow: hidden; background: #1e1e1e; }
     #term-wrap .xterm { height: 100%; padding: 4px; }
     #term-note { margin-top: 8px; }
+    body.popout { background: #1e1e1e; }
+    body.popout > header,
+    body.popout > main > section:not(.term-section) { display: none !important; }
+    body.popout > main { max-width: none; padding: 0; gap: 0; height: 100vh; }
+    body.popout .term-section { border: 0; border-radius: 0; background: #1e1e1e; color: #e8e8e8; height: 100vh; display: flex; flex-direction: column; padding: 8px 10px; }
+    body.popout .term-section h2,
+    body.popout .term-section .muted:not(#term-note),
+    body.popout #term-seat,
+    body.popout label[for="term-seat"],
+    body.popout #term-refresh,
+    body.popout #term-connect,
+    body.popout #term-disconnect,
+    body.popout #term-popout { display: none !important; }
+    body.popout .term-toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+    body.popout #term-wrap { flex: 1; height: auto; min-height: 0; }
+    body.popout #term-note { color: #9aa0a6; }
+    .term-toolbar { display: none; }
   </style>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
@@ -88,9 +105,9 @@
       <p class="muted">使用安装包内的 MCP 运行时。</p>
       <div id="mcp" class="muted">尚未检测</div>
     </section>
-    <section>
+    <section class="term-section">
       <h2>终端（嵌入）</h2>
-      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。弹出独立窗口是 P1。</p>
+      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。桌面端可「弹出」到独立窗口，关闭窗口或「收回」会回到本面板，不会结束进程。</p>
       <div class="row">
         <label>座位
           <select id="term-seat">
@@ -100,7 +117,11 @@
         <button type="button" class="quiet" id="term-refresh">刷新列表</button>
         <button type="button" class="quiet" id="term-connect">连接</button>
         <button type="button" class="quiet" id="term-disconnect" disabled>断开</button>
-        <button type="button" class="quiet" id="term-popout" disabled title="P1">弹出 · P1</button>
+        <button type="button" class="quiet" id="term-popout" disabled title="仅桌面端可用">弹出</button>
+      </div>
+      <div class="term-toolbar">
+        <strong id="term-popout-title">终端</strong>
+        <button type="button" class="quiet" id="term-dock">收回 / 停靠</button>
       </div>
       <div id="term-wrap" hidden></div>
       <p id="term-note" class="muted">尚未连接。先启动托管 Agent（嵌入模式），再在这里选座位连接。</p>
@@ -369,15 +390,62 @@
     });
 
     // --- Embedded terminal (xterm + daemon PTY WS) ---
+    const TERMINAL_DOCK_CHANNEL = 'agent-room-terminal-dock';
+    const isPopout = params.get('popout') === '1';
+    const popoutSeatParam = params.get('terminal') || '';
     let term = null;
     let fitAddon = null;
     let termSocket = null;
     let termResizeObserver = null;
+    let poppedOutSeatId = null;
+    let liveTerminalIds = [];
+    let dockChannel = null;
+
+    function hasTauri() {
+      return !!(window.__TAURI_INTERNALS__ || (window.__TAURI__ && window.__TAURI__.core));
+    }
+
+    async function tauriInvoke(cmd, args) {
+      if (window.__TAURI__ && window.__TAURI__.core && window.__TAURI__.core.invoke) {
+        return window.__TAURI__.core.invoke(cmd, args);
+      }
+      if (window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke) {
+        return window.__TAURI_INTERNALS__.invoke(cmd, args);
+      }
+      throw new Error('Tauri invoke unavailable');
+    }
+
+    function buildPopoutUrl(seatId) {
+      const q = new URLSearchParams();
+      q.set('t', token);
+      q.set('terminal', seatId);
+      q.set('popout', '1');
+      return location.origin + '/?' + q.toString();
+    }
 
     function termNote(text, isErr) {
       const el = document.getElementById('term-note');
       el.textContent = text || '';
       el.className = isErr ? 'err' : 'muted';
+    }
+
+    function updatePopoutButton() {
+      const btn = document.getElementById('term-popout');
+      const seatId = document.getElementById('term-seat').value;
+      const live = seatId && liveTerminalIds.indexOf(seatId) >= 0;
+      const inTauri = hasTauri();
+      if (!inTauri) {
+        btn.disabled = true;
+        btn.title = '仅 Agent Room 桌面端可弹出独立窗口（浏览器打开控制页时不可用）';
+        return;
+      }
+      if (poppedOutSeatId && poppedOutSeatId === seatId) {
+        btn.disabled = true;
+        btn.title = '该座位已在独立窗口中';
+        return;
+      }
+      btn.disabled = !live;
+      btn.title = live ? '弹出到独立窗口（同一 PTY；关闭窗口会收回）' : '请先选择有活动 PTY 的座位';
     }
 
     async function refreshTerminals() {
@@ -386,15 +454,20 @@
       try {
         const payload = await api('/api/terminals');
         const list = payload.terminals || [];
+        liveTerminalIds = list.map(function (t) { return t.seatId; });
         sel.innerHTML = '<option value="">选择活动终端…</option>' + list.map(function (t) {
           return '<option value="' + esc(t.seatId) + '">' + esc(t.seatId) + ' · pid ' + esc(t.pid) + '</option>';
         }).join('');
         if (previous && [...sel.options].some(function (o) { return o.value === previous; })) sel.value = previous;
+        if (isPopout && popoutSeatParam) sel.value = popoutSeatParam;
         if (!list.length) {
           termNote('没有嵌入终端会话（可能是 AGENT_ROOM_TERMINAL=system，或座位尚未启动）。');
+        } else if (poppedOutSeatId) {
+          termNote('座位 ' + poppedOutSeatId + ' 已弹出到独立窗口。关闭该窗口或点「收回」会回到这里（不会结束进程）。');
         } else if (!termSocket || termSocket.readyState !== WebSocket.OPEN) {
           termNote('有 ' + list.length + ' 个嵌入会话，选中后点「连接」。模式：' + (payload.mode || 'embedded'));
         }
+        updatePopoutButton();
       } catch (error) {
         termNote(error && error.message ? error.message : '无法列出终端', true);
       }
@@ -435,23 +508,32 @@
       return term;
     }
 
-    function disconnectTerm() {
+    function disconnectTerm(opts) {
+      const silent = opts && opts.silent;
       if (termSocket) {
         try { termSocket.close(); } catch (e) {}
         termSocket = null;
       }
       document.getElementById('term-disconnect').disabled = true;
       document.getElementById('term-connect').disabled = false;
-      termNote('已断开（PTY 仍在守护进程中，可再次连接；关闭本页不会杀进程）。');
+      if (!silent) {
+        termNote('已断开（PTY 仍在守护进程中，可再次连接；关闭本页不会杀进程）。');
+      }
+      updatePopoutButton();
     }
 
-    function connectTerm() {
-      const seatId = document.getElementById('term-seat').value;
+    function connectTerm(forcedSeatId) {
+      const seatId = forcedSeatId || document.getElementById('term-seat').value;
       if (!seatId) {
         termNote('请先选择座位', true);
         return;
       }
-      disconnectTerm();
+      if (!isPopout && poppedOutSeatId === seatId) {
+        termNote('该座位已在独立窗口中，请先收回或关闭弹出窗口。', true);
+        return;
+      }
+      document.getElementById('term-seat').value = seatId;
+      disconnectTerm({ silent: true });
       ensureTerm();
       term.clear();
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -461,11 +543,14 @@
       document.getElementById('term-connect').disabled = true;
       termSocket.onopen = function () {
         document.getElementById('term-disconnect').disabled = false;
-        termNote('已连接 ' + seatId + '（断开不会结束进程；弹出窗口 · P1）');
+        termNote(isPopout
+          ? ('弹出窗口已连接 ' + seatId + '（关闭窗口或点「收回」会停靠回本机设置，不会结束进程）')
+          : ('已连接 ' + seatId + '（断开不会结束进程；可弹出到独立窗口）'));
         if (fitAddon && term) {
           fitAddon.fit();
           termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
         }
+        updatePopoutButton();
       };
       termSocket.onmessage = function (event) {
         const data = typeof event.data === 'string'
@@ -477,22 +562,136 @@
         document.getElementById('term-disconnect').disabled = true;
         document.getElementById('term-connect').disabled = false;
         termSocket = null;
-        termNote('连接已关闭。PTY 默认仍保留，可重新连接。');
+        if (!isPopout && poppedOutSeatId) {
+          termNote('座位 ' + poppedOutSeatId + ' 已弹出到独立窗口。关闭该窗口会自动收回。');
+        } else {
+          termNote('连接已关闭。PTY 默认仍保留，可重新连接。');
+        }
+        updatePopoutButton();
       };
       termSocket.onerror = function () {
         termNote('WebSocket 错误', true);
       };
     }
 
+    function publishDock(type, seatId) {
+      try {
+        if (!dockChannel) dockChannel = new BroadcastChannel(TERMINAL_DOCK_CHANNEL);
+        dockChannel.postMessage({ type: type, seatId: seatId });
+      } catch (e) { /* BroadcastChannel unavailable */ }
+    }
+
+    async function openPopout() {
+      const seatId = document.getElementById('term-seat').value;
+      if (!seatId) {
+        termNote('请先选择座位', true);
+        return;
+      }
+      if (!hasTauri()) {
+        termNote('当前不是桌面端，无法弹出窗口。请用 Agent Room 应用打开本机设置。', true);
+        updatePopoutButton();
+        return;
+      }
+      if (liveTerminalIds.indexOf(seatId) < 0) {
+        termNote('该座位没有活动 PTY', true);
+        return;
+      }
+      disconnectTerm({ silent: true });
+      poppedOutSeatId = seatId;
+      publishDock('popout', seatId);
+      updatePopoutButton();
+      termNote('正在弹出 ' + seatId + '…');
+      try {
+        await tauriInvoke('open_terminal_window', {
+          seatId: seatId,
+          url: buildPopoutUrl(seatId),
+        });
+        termNote('座位 ' + seatId + ' 已弹出。关闭独立窗口或点窗口内「收回」会回到这里（不会结束进程）。');
+      } catch (error) {
+        poppedOutSeatId = null;
+        termNote(error && error.message ? error.message : String(error), true);
+        updatePopoutButton();
+      }
+    }
+
+    async function dockPopout(seatId) {
+      const id = seatId || popoutSeatParam;
+      publishDock('dock', id);
+      if (hasTauri() && id) {
+        try {
+          await tauriInvoke('close_terminal_window', { seatId: id });
+        } catch (e) {
+          // Closing via window X may already have destroyed the label.
+        }
+      }
+      // Pop-out page: closing the window is enough; main remounts via BroadcastChannel.
+      if (isPopout) {
+        try { window.close(); } catch (e) {}
+      }
+    }
+
+    function onDockMessage(msg) {
+      if (!msg || !msg.seatId) return;
+      if (msg.type === 'popout') {
+        if (isPopout) return;
+        if (termSocket && document.getElementById('term-seat').value === msg.seatId) {
+          disconnectTerm({ silent: true });
+        }
+        poppedOutSeatId = msg.seatId;
+        termNote('座位 ' + msg.seatId + ' 已弹出到独立窗口。关闭该窗口会自动收回。');
+        updatePopoutButton();
+        return;
+      }
+      if (msg.type === 'dock') {
+        if (isPopout) return;
+        if (poppedOutSeatId === msg.seatId) poppedOutSeatId = null;
+        updatePopoutButton();
+        const sel = document.getElementById('term-seat');
+        if (sel.value !== msg.seatId) sel.value = msg.seatId;
+        connectTerm(msg.seatId);
+      }
+    }
+
+    try {
+      dockChannel = new BroadcastChannel(TERMINAL_DOCK_CHANNEL);
+      dockChannel.onmessage = function (ev) { onDockMessage(ev.data); };
+    } catch (e) {
+      dockChannel = null;
+    }
+
+    if (isPopout) {
+      document.body.classList.add('popout');
+      document.title = 'Agent Room · ' + (popoutSeatParam || '终端');
+      const titleEl = document.getElementById('term-popout-title');
+      if (titleEl) titleEl.textContent = '终端 · ' + (popoutSeatParam || '');
+      window.addEventListener('beforeunload', function () {
+        if (popoutSeatParam) publishDock('dock', popoutSeatParam);
+      });
+      document.getElementById('term-dock').addEventListener('click', function () {
+        dockPopout(popoutSeatParam);
+      });
+    }
+
     document.getElementById('term-refresh').addEventListener('click', function () {
       refreshTerminals().catch(showError);
     });
-    document.getElementById('term-connect').addEventListener('click', connectTerm);
-    document.getElementById('term-disconnect').addEventListener('click', disconnectTerm);
+    document.getElementById('term-connect').addEventListener('click', function () { connectTerm(); });
+    document.getElementById('term-disconnect').addEventListener('click', function () { disconnectTerm(); });
+    document.getElementById('term-popout').addEventListener('click', function () {
+      openPopout().catch(showError);
+    });
+    document.getElementById('term-seat').addEventListener('change', updatePopoutButton);
 
+    if (isPopout && popoutSeatParam) {
+      refreshTerminals()
+        .then(function () { connectTerm(popoutSeatParam); })
+        .catch(showError);
+    }
 
     document.getElementById('refresh').addEventListener('click', () => refresh().catch(showError));
-    refresh().catch(showError);
+    if (!isPopout) {
+      refresh().catch(showError);
+    }
   </script>
 </body>
 </html>

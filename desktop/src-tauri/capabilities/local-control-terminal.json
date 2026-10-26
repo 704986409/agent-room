@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "local-control-terminal",
+  "description": "Daemon settings + terminal pop-out pages on 127.0.0.1 may open/close terminal child windows. Remote web app stays denied.",
+  "windows": ["settings", "terminal-*"],
+  "remote": {
+    "urls": ["http://127.0.0.1:*/*", "http://localhost:*/*"]
+  },
+  "permissions": [
+    "allow-open-terminal-window",
+    "allow-close-terminal-window"
+  ]
+}

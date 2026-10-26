@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "No IPC permissions: neither the remote web app nor the local settings page may call native commands.",
+  "description": "Main/remote webview has no IPC. Terminal pop-out IPC is granted only via local-control-terminal for localhost control pages.",
   "windows": [],
   "permissions": []
 }

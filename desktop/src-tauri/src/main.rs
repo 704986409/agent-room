@@ -1,7 +1,7 @@
 // Agent Room Desktop shell (design §2): window + tray + local settings page.
 // The shell owns no business logic. It starts/stops the Node daemon and shows
-// two webviews: the remote web app (no IPC) and the daemon's 127.0.0.1
-// settings page (token-protected, no IPC either).
+// webviews: the remote web app (no IPC), the daemon's 127.0.0.1 settings page,
+// and optional terminal-<seatId> pop-out windows (localhost IPC only).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::fs::OpenOptions;
@@ -472,6 +472,81 @@ fn close_labeled_window(app: &AppHandle, label: &str) {
     }
 }
 
+/// Sanitize seat id into a Tauri window label (`terminal-<safe>`).
+/// Mirrors `tools/wake-agent/src/terminalWindow.ts`.
+fn terminal_window_label(seat_id: &str) -> String {
+    let mut safe = String::new();
+    let mut last_underscore = false;
+    for c in seat_id.trim().chars() {
+        let ok = c.is_ascii_alphanumeric() || c == '-' || c == '_';
+        let next = if ok { c } else { '_' };
+        if next == '_' {
+            if last_underscore || safe.is_empty() {
+                continue;
+            }
+            last_underscore = true;
+            safe.push('_');
+        } else {
+            last_underscore = false;
+            safe.push(next);
+        }
+        if safe.len() >= 96 {
+            break;
+        }
+    }
+    while safe.ends_with('_') {
+        safe.pop();
+    }
+    if safe.is_empty() {
+        safe.push_str("seat");
+    }
+    format!("terminal-{safe}")
+}
+
+fn open_terminal_window_inner(app: &AppHandle, seat_id: &str, url: &str) -> Result<(), String> {
+    let label = terminal_window_label(seat_id);
+    let parsed = url
+        .parse()
+        .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed));
+    if let Some(data_dir) = persistent_webview_data_directory(app)? {
+        builder = builder.data_directory(data_dir);
+    }
+    builder
+        .title(format!("Agent Room · {seat_id}"))
+        .inner_size(960.0, 640.0)
+        .build()
+        .map_err(|e| format!("无法打开终端窗口: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_terminal_window(app: AppHandle, seat_id: String, url: String) -> Result<(), String> {
+    if seat_id.trim().is_empty() {
+        return Err("seatId required".into());
+    }
+    if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")) {
+        return Err("terminal pop-out URL must be http://127.0.0.1 or http://localhost".into());
+    }
+    open_terminal_window_inner(&app, &seat_id, &url)
+}
+
+#[tauri::command]
+fn close_terminal_window(app: AppHandle, seat_id: String) -> Result<(), String> {
+    if seat_id.trim().is_empty() {
+        return Err("seatId required".into());
+    }
+    let label = terminal_window_label(&seat_id);
+    close_labeled_window(&app, &label);
+    Ok(())
+}
+
 fn open_daemon_loading_window(app: &AppHandle) -> Result<(), String> {
     if app.get_webview_window("daemon-loading").is_some() {
         return Ok(());
@@ -795,6 +870,10 @@ fn main() {
     let daemon_for_exit = daemon.clone();
     tauri::Builder::default()
         .manage(daemon.clone())
+        .invoke_handler(tauri::generate_handler![
+            open_terminal_window,
+            close_terminal_window
+        ])
         .on_menu_event({
             let menu_daemon = daemon.clone();
             move |app, event| {
@@ -946,4 +1025,12 @@ mod tests {
             assert_eq!(for_node_argv(plain.clone()), plain);
         }
     }
+    #[test]
+    fn terminal_window_label_sanitizes() {
+        assert_eq!(terminal_window_label("seat-1"), "terminal-seat-1");
+        assert_eq!(terminal_window_label("a/b c"), "terminal-a_b_c");
+        assert_eq!(terminal_window_label("  "), "terminal-seat");
+        assert!(terminal_window_label(&"x".repeat(200)).len() <= "terminal-".len() + 96);
+    }
+
 }

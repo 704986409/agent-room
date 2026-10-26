@@ -190,4 +190,19 @@ Default for managed interactive seats is an **in-app PTY** (`node-pty` via
     **not** kill the PTY (supports later pop-out remount). `?kill=1` to kill.
 - Code: `tools/wake-agent/src/terminalMode.ts`, `pty.ts`; `nodeSpawner` in
   `adapter.ts`; routes in `control.ts`; Terminal section in `settings.html`.
-- P1 leftover: Tauri/child-window pop-out + dock back to the same `seatId` PTY.
+- P1: see section below (pop-out / dock).
+
+
+## Embedded terminal pop-out / dock (P1)
+
+- Settings Terminal panel **弹出** opens a Tauri child `WebviewWindow` labeled
+  `terminal-<safeSeatId>` loading `/?t=…&terminal=<seatId>&popout=1` (xterm only).
+- Same seatId PTY: main panel disconnects its WS before pop-out; closing the child
+  or **收回/停靠** remounts in settings. WS close never kills the PTY (unless `?kill=1`).
+- IPC (localhost control pages only): `open_terminal_window` / `close_terminal_window`.
+  Capability `local-control-terminal` + `app.withGlobalTauri`. Plain browser against
+  the control port hides/disables pop-out.
+- Dock signaling: `BroadcastChannel('agent-room-terminal-dock')` between settings and
+  pop-out (same origin). Close ≡ dock.
+- Helpers: `tools/wake-agent/src/terminalWindow.ts`; Rust `terminal_window_label`.
+- P2 leftovers: drag-undock, remember window position, non-Codex polish.
