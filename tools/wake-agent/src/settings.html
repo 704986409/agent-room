@@ -24,7 +24,13 @@
     .muted { color: #5c616a; font-size: 13px; }
     .err { color: #9b1c1c; }
     .ok { color: #0f6b3a; font-size: 13px; }
+    #term-wrap { height: 320px; border-radius: 8px; overflow: hidden; background: #1e1e1e; }
+    #term-wrap .xterm { height: 100%; padding: 4px; }
+    #term-note { margin-top: 8px; }
   </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
 </head>
 <body>
   <header>
@@ -81,6 +87,23 @@
       <h2>MCP 一键配置</h2>
       <p class="muted">使用安装包内的 MCP 运行时。</p>
       <div id="mcp" class="muted">尚未检测</div>
+    </section>
+    <section>
+      <h2>终端（嵌入）</h2>
+      <p class="muted">默认用本机 PTY 嵌在页面里跑托管 Agent（Codex 等），不再弹出系统 CMD。设置 <code>AGENT_ROOM_TERMINAL=system</code> 可退回旧行为。弹出独立窗口是 P1。</p>
+      <div class="row">
+        <label>座位
+          <select id="term-seat">
+            <option value="">选择活动终端…</option>
+          </select>
+        </label>
+        <button type="button" class="quiet" id="term-refresh">刷新列表</button>
+        <button type="button" class="quiet" id="term-connect">连接</button>
+        <button type="button" class="quiet" id="term-disconnect" disabled>断开</button>
+        <button type="button" class="quiet" id="term-popout" disabled title="P1">弹出 · P1</button>
+      </div>
+      <div id="term-wrap" hidden></div>
+      <p id="term-note" class="muted">尚未连接。先启动托管 Agent（嵌入模式），再在这里选座位连接。</p>
     </section>
     <section>
       <h2>日志</h2>
@@ -215,6 +238,7 @@
           ' <button type="button" data-target="' + esc(tool.id) + '">' + label + '</button></div>';
       }).join('');
       await refreshLogsOnly();
+      await refreshTerminals();
     }
 
     adapterSelect.addEventListener('change', () => fillModels(adapterSelect.value));
@@ -343,6 +367,130 @@
         mcpInstallBusy = false;
       }
     });
+
+    // --- Embedded terminal (xterm + daemon PTY WS) ---
+    let term = null;
+    let fitAddon = null;
+    let termSocket = null;
+    let termResizeObserver = null;
+
+    function termNote(text, isErr) {
+      const el = document.getElementById('term-note');
+      el.textContent = text || '';
+      el.className = isErr ? 'err' : 'muted';
+    }
+
+    async function refreshTerminals() {
+      const sel = document.getElementById('term-seat');
+      const previous = sel.value;
+      try {
+        const payload = await api('/api/terminals');
+        const list = payload.terminals || [];
+        sel.innerHTML = '<option value="">选择活动终端…</option>' + list.map(function (t) {
+          return '<option value="' + esc(t.seatId) + '">' + esc(t.seatId) + ' · pid ' + esc(t.pid) + '</option>';
+        }).join('');
+        if (previous && [...sel.options].some(function (o) { return o.value === previous; })) sel.value = previous;
+        if (!list.length) {
+          termNote('没有嵌入终端会话（可能是 AGENT_ROOM_TERMINAL=system，或座位尚未启动）。');
+        } else if (!termSocket || termSocket.readyState !== WebSocket.OPEN) {
+          termNote('有 ' + list.length + ' 个嵌入会话，选中后点「连接」。模式：' + (payload.mode || 'embedded'));
+        }
+      } catch (error) {
+        termNote(error && error.message ? error.message : '无法列出终端', true);
+      }
+    }
+
+    function ensureTerm() {
+      const wrap = document.getElementById('term-wrap');
+      wrap.hidden = false;
+      if (term) {
+        fitAddon && fitAddon.fit();
+        return term;
+      }
+      term = new Terminal({
+        cursorBlink: true,
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+        fontSize: 13,
+        theme: { background: '#1e1e1e' },
+      });
+      fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(wrap);
+      fitAddon.fit();
+      term.onData(function (data) {
+        if (termSocket && termSocket.readyState === WebSocket.OPEN) {
+          termSocket.send(JSON.stringify({ type: 'stdin', data: data }));
+        }
+      });
+      if (typeof ResizeObserver !== 'undefined') {
+        termResizeObserver = new ResizeObserver(function () {
+          if (!fitAddon || !term) return;
+          fitAddon.fit();
+          if (termSocket && termSocket.readyState === WebSocket.OPEN) {
+            termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          }
+        });
+        termResizeObserver.observe(wrap);
+      }
+      return term;
+    }
+
+    function disconnectTerm() {
+      if (termSocket) {
+        try { termSocket.close(); } catch (e) {}
+        termSocket = null;
+      }
+      document.getElementById('term-disconnect').disabled = true;
+      document.getElementById('term-connect').disabled = false;
+      termNote('已断开（PTY 仍在守护进程中，可再次连接；关闭本页不会杀进程）。');
+    }
+
+    function connectTerm() {
+      const seatId = document.getElementById('term-seat').value;
+      if (!seatId) {
+        termNote('请先选择座位', true);
+        return;
+      }
+      disconnectTerm();
+      ensureTerm();
+      term.clear();
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = proto + '//' + location.host + '/api/terminals/' + encodeURIComponent(seatId) + '/ws?t=' + encodeURIComponent(token);
+      termSocket = new WebSocket(url);
+      termSocket.binaryType = 'arraybuffer';
+      document.getElementById('term-connect').disabled = true;
+      termSocket.onopen = function () {
+        document.getElementById('term-disconnect').disabled = false;
+        termNote('已连接 ' + seatId + '（断开不会结束进程；弹出窗口 · P1）');
+        if (fitAddon && term) {
+          fitAddon.fit();
+          termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+        }
+      };
+      termSocket.onmessage = function (event) {
+        const data = typeof event.data === 'string'
+          ? event.data
+          : new TextDecoder().decode(event.data);
+        if (term) term.write(data);
+      };
+      termSocket.onclose = function () {
+        document.getElementById('term-disconnect').disabled = true;
+        document.getElementById('term-connect').disabled = false;
+        termSocket = null;
+        termNote('连接已关闭。PTY 默认仍保留，可重新连接。');
+      };
+      termSocket.onerror = function () {
+        termNote('WebSocket 错误', true);
+      };
+    }
+
+    document.getElementById('term-refresh').addEventListener('click', function () {
+      refreshTerminals().catch(showError);
+    });
+    document.getElementById('term-connect').addEventListener('click', connectTerm);
+    document.getElementById('term-disconnect').addEventListener('click', disconnectTerm);
+
+
     document.getElementById('refresh').addEventListener('click', () => refresh().catch(showError));
     refresh().catch(showError);
   </script>

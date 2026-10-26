@@ -3,6 +3,8 @@ import { accessSync, chmodSync, closeSync, constants, mkdirSync, openSync, readd
 import { open } from 'node:fs/promises';
 import { basename, delimiter, dirname, join } from 'node:path';
 import { prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleSpawn } from './winlaunch.js';
+import { shouldEmbedTerminal } from './terminalMode.js';
+import { seatIdFromLogFile, spawnPtySession } from './pty.js';
 import { homedir, tmpdir } from 'node:os';
 
 /** Launcher adapter. Arguments below are the interactive CLI contracts (2026-10-21). */
@@ -788,6 +790,23 @@ function windowsSeatConsole(
  * is available, opens a visible window so the user can approve tool permissions.
  * stdout/stderr of the terminal (or CLI) still append to a 0600 log file.
  */
+
+/** Testable decision for managed interactive spawn path (no side effects). */
+export type ManagedSpawnKind = 'embedded' | 'system-wrap' | 'direct';
+
+export function resolveManagedSpawnKind(
+  opts: { terminalTitle?: string },
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ManagedSpawnKind {
+  if (!opts.terminalTitle) return 'direct';
+  if (shouldEmbedTerminal(opts, env)) return 'embedded';
+  // Mirror nodeSpawner system path: wrap when title set (Windows always; Linux if display).
+  if (platform === 'win32') return 'system-wrap';
+  if (shouldDirectSpawn(env, platform)) return 'direct';
+  return 'system-wrap';
+}
+
 export function nodeSpawner(): ProcessSpawner {
   return {
     spawn(command, args, opts) {
@@ -795,6 +814,49 @@ export function nodeSpawner(): ProcessSpawner {
       const logDir = dirname(logFile);
       mkdirSync(logDir, { recursive: true, mode: 0o700 });
       if (opts.logFile) chmodSync(logDir, 0o700);
+
+      // Embedded managed seat: real PTY (Unix / ConPTY), not system CMD / xfce4-terminal.
+      if (shouldEmbedTerminal(opts)) {
+        const seatId = seatIdFromLogFile(opts.logFile) ?? `seat-${process.pid}-${Date.now()}`;
+        const session = spawnPtySession({
+          seatId,
+          command,
+          args,
+          cwd: opts.cwd,
+          env: opts.env,
+          logFile,
+        });
+        return {
+          pid: session.pid,
+          stdout: {
+            async *[Symbol.asyncIterator]() {
+              const queue: string[] = [];
+              let wake: (() => void) | undefined;
+              let done = false;
+              const unsub = session.onData(chunk => {
+                queue.push(chunk);
+                wake?.();
+              });
+              void session.exited.then(() => { done = true; wake?.(); });
+              try {
+                for (;;) {
+                  if (queue.length === 0) {
+                    if (done) return;
+                    await new Promise<void>(resolve => { wake = resolve; });
+                    wake = undefined;
+                    continue;
+                  }
+                  yield queue.shift()!;
+                }
+              } finally {
+                unsub();
+              }
+            },
+          },
+          exited: session.exited,
+        };
+      }
+
       const fd = openSync(logFile, 'a', 0o600);
       chmodSync(logFile, 0o600);
       // Interactive Windows consoles must not be CREATE_NO_WINDOW, and must not

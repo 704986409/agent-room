@@ -173,3 +173,21 @@ send-path hook.
 - 失败系统消息去掉了 `@`，避免 mention 再生成事件。文案是否还要带座位名，等产品确认。
 - Codex `thread_id` 正则和 `codex exec` 参数是临时的，M0 可能改。
 - `serve` 只轮询状态文件里已有的座位，直到 SIGTERM / SIGINT。首次启动（`startAgent`：launch + register）还没有 CLI 参数。seatKey 不进状态文件，也没有托盘。
+
+## Embedded managed-seat terminal (P0)
+
+Default for managed interactive seats is an **in-app PTY** (`node-pty` via
+`@homebridge/node-pty-prebuilt-multiarch`) streamed to the desktop settings page
+(`settings.html` xterm.js panel) over the local control server WebSocket.
+
+- Env: `AGENT_ROOM_TERMINAL=system` keeps the previous `wrapInTerminal` /
+  Windows `cmd /k` console path. Unset or any other value → `embedded`.
+- Control API (token auth, same as other control routes):
+  - `GET /api/terminals` — active PTY sessions
+  - `GET /api/terminals/:seatId` — one session
+  - `WS /api/terminals/:seatId/ws?t=<token>` — stdout frames; client JSON
+    `{type:"stdin",data}` / `{type:"resize",cols,rows}`. Closing the socket does
+    **not** kill the PTY (supports later pop-out remount). `?kill=1` to kill.
+- Code: `tools/wake-agent/src/terminalMode.ts`, `pty.ts`; `nodeSpawner` in
+  `adapter.ts`; routes in `control.ts`; Terminal section in `settings.html`.
+- P1 leftover: Tauri/child-window pop-out + dock back to the same `seatId` PTY.

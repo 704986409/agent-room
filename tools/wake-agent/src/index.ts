@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createDefaultAdapters, nodeSpawner, shouldDirectSpawn } from './adapter.js';
+import { resolveTerminalMode } from './terminalMode.js';
 import { DESKTOP_CONTROL_PORT, startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
 import { FileRunLock, WakeDaemon } from './daemon.js';
@@ -204,7 +205,12 @@ async function runDaemonLocked(statePath: string, mode: {
   if (holder) secrets.add(holder);
   const tokenOf = async () => holder;
   const log = new DaemonLog(secrets, join(stateDir, 'daemon.log'));
-  const direct = shouldDirectSpawn();
+  // Embedded mode uses an in-app PTY even without DISPLAY; only force direct
+  // spawn when system mode would (or AGENT_ROOM_DIRECT_SPAWN=1).
+  const terminalMode = resolveTerminalMode();
+  const direct = terminalMode === 'embedded'
+    ? process.env.AGENT_ROOM_DIRECT_SPAWN === '1'
+    : shouldDirectSpawn();
   const adapters = createDefaultAdapters(nodeSpawner(), { directSpawn: direct });
   const daemon = new WakeDaemon({
     api: createHttpWakeApi(server, tokenOf),

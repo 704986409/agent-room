@@ -13,6 +13,9 @@ import { installMcp, mcpStatus } from './mcpconfig.js';
 import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
+import { getPtySession, listPtySessions } from './pty.js';
+import { WebSocketServer, type WebSocket } from 'ws';
+import type { Duplex } from 'node:stream';
 
 /** Stable loopback port so the desktop webview can call the daemon without a Tauri rebuild. */
 export const DESKTOP_CONTROL_PORT = 17421;
@@ -133,6 +136,77 @@ export async function startControlServer(options: ControlServerOptions): Promise
   const origin = `http://127.0.0.1:${port}`;
   const notedRooms: { code: string; inviteCode: string; name: string; at: string }[] = [];
 
+  const terminalsWss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    void handleUpgrade(req, socket as Duplex, head).catch(() => {
+      try { socket.destroy(); } catch { /* ignore */ }
+    });
+  });
+
+  async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
+    const url = new URL(req.url ?? '/', origin);
+    const match = /^\/api\/terminals\/([^/]+)\/ws$/.exec(url.pathname);
+    if (!match) {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const presented = (typeof req.headers['x-agent-room-control'] === 'string'
+      ? req.headers['x-agent-room-control']
+      : Array.isArray(req.headers['x-agent-room-control'])
+        ? req.headers['x-agent-room-control'][0]
+        : '') || url.searchParams.get('t') || '';
+    if (!presented || !tokenMatches(presented, token)) {
+      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const seatId = decodeURIComponent(match[1]!);
+    const session = getPtySession(seatId);
+    if (!session) {
+      socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      socket.destroy();
+      return;
+    }
+    const killOnClose = url.searchParams.get('kill') === '1';
+    terminalsWss.handleUpgrade(req, socket, head, ws => {
+      terminalsWss.emit('connection', ws, req);
+      attachTerminalSocket(ws, session.seatId, killOnClose);
+    });
+  }
+
+  function attachTerminalSocket(ws: WebSocket, seatId: string, killOnClose: boolean): void {
+    const session = getPtySession(seatId);
+    if (!session) {
+      ws.close(1011, 'no_session');
+      return;
+    }
+    const unsub = session.onData(data => {
+      if (ws.readyState === ws.OPEN) ws.send(data);
+    });
+    ws.on('message', raw => {
+      const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+      let msg: { type?: string; data?: string; cols?: number; rows?: number };
+      try { msg = JSON.parse(text) as typeof msg; }
+      catch {
+        // Treat non-JSON as raw stdin (paste-friendly).
+        session.write(text);
+        return;
+      }
+      if (msg.type === 'stdin' && typeof msg.data === 'string') session.write(msg.data);
+      else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+        session.resize(msg.cols, msg.rows);
+      }
+    });
+    ws.on('close', () => {
+      unsub();
+      if (killOnClose) {
+        try { getPtySession(seatId)?.kill(); } catch { /* ignore */ }
+      }
+    });
+  }
+
+
   function pairedOrigin(): string | undefined {
     const serverUrl = options.server ?? options.daemon.state.device?.server;
     if (!serverUrl) return undefined;
@@ -231,6 +305,23 @@ export async function startControlServer(options: ControlServerOptions): Promise
     if (req.method === 'GET' && url.pathname === '/api/desktop/rooms') {
       send(res, 200, { rooms: recentRooms() }, undefined, cors);
       return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/terminals') {
+      send(res, 200, { terminals: listPtySessions(), mode: process.env.AGENT_ROOM_TERMINAL ?? 'embedded' }, undefined, cors);
+      return;
+    }
+    {
+      const termMatch = /^\/api\/terminals\/([^/]+)$/.exec(url.pathname);
+      if (req.method === 'GET' && termMatch) {
+        const seatId = decodeURIComponent(termMatch[1]!);
+        const session = getPtySession(seatId);
+        if (!session) {
+          send(res, 404, { error: 'terminal_not_found' }, undefined, cors);
+          return;
+        }
+        send(res, 200, { seatId: session.seatId, pid: session.pid, cols: session.cols, rows: session.rows }, undefined, cors);
+        return;
+      }
     }
     if (req.method !== 'POST') {
       send(res, 404, { error: 'not_found' }, undefined, cors);
@@ -414,6 +505,9 @@ export async function startControlServer(options: ControlServerOptions): Promise
   return {
     port,
     token,
-    close: () => new Promise(resolve => server.close(() => resolve())),
+    close: () => new Promise(resolve => {
+      terminalsWss.close();
+      server.close(() => resolve());
+    }),
   };
 }
