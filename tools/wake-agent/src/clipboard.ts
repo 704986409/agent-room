@@ -47,6 +47,20 @@ function runCommand(command: string, args: readonly string[], timeoutMs = CLIPBO
 }
 
 /**
+ * Linux clipboard command attempts in order.
+ * Prefer X11 atom CLIPBOARD (uppercase): box mini-xclip and some builds reject lowercase.
+ * Keep lowercase `clipboard` as a fallback for real xclip which accepts both.
+ * xsel uses the `--clipboard` / `-b` flags (not a selection atom); both map to CLIPBOARD.
+ */
+export const linuxClipboardAttempts: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ['xclip', ['-selection', 'CLIPBOARD', '-o']],
+  ['xclip', ['-selection', 'clipboard', '-o']],
+  ['xsel', ['--clipboard', '--output']],
+  ['xsel', ['-b', '-o']],
+  ['wl-paste', []],
+];
+
+/**
  * Read the OS clipboard as text. Missing tools and non-zero exits are skipped.
  * Never throws — callers get '' when nothing can be read.
  */
@@ -60,13 +74,8 @@ export async function readOsClipboardText(): Promise<string> {
       ]);
       return result.ok ? result.text : '';
     }
-    const attempts: Array<[string, string[]]> = [
-      ['xclip', ['-selection', 'clipboard', '-o']],
-      ['xsel', ['--clipboard', '--output']],
-      ['wl-paste', []],
-    ];
-    for (const [command, args] of attempts) {
-      const result = await runCommand(command, args);
+    for (const [command, args] of linuxClipboardAttempts) {
+      const result = await runCommand(command, [...args]);
       if (result.ok) return result.text;
     }
     return '';
