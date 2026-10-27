@@ -8,6 +8,11 @@ const state = vi.hoisted(() => ({
   reveal: vi.fn(),
 }));
 
+const termIo = vi.hoisted(() => ({
+  writes: [] as string[],
+  clears: 0,
+}));
+
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     cols = 80;
@@ -15,8 +20,8 @@ vi.mock('@xterm/xterm', () => ({
     loadAddon() {}
     open() {}
     onData() { return { dispose() {} }; }
-    write() {}
-    clear() {}
+    write(data: string) { termIo.writes.push(String(data)); }
+    clear() { termIo.clears += 1; }
     dispose() {}
   },
 }));
@@ -108,6 +113,8 @@ describe('DesktopSeatTerminal', () => {
     state.list.mockResolvedValue(live);
     state.reveal.mockResolvedValue(null);
     FakeSocket.latest = null;
+    termIo.writes = [];
+    termIo.clears = 0;
     vi.stubGlobal('WebSocket', FakeSocket);
   });
 
@@ -163,11 +170,18 @@ describe('DesktopSeatTerminal', () => {
     await act(async () => {
       renderer = create(
         <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_1" focusToken={1} />,
+        { createNodeMock: () => ({}) },
       );
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     mounted = renderer;
     expect(FakeSocket.latest?.url).toContain('/st_1/ws');
+    const previous = FakeSocket.latest!;
+    const staleOpen = previous.onopen!;
+    const staleMessage = previous.onmessage!;
+    const staleClose = previous.onclose!;
+    const staleError = previous.onerror!;
+    const clearsBeforeSwitch = termIo.clears;
 
     await act(async () => {
       renderer.update(
@@ -176,7 +190,34 @@ describe('DesktopSeatTerminal', () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(FakeSocket.latest?.url).toContain('/st_2/ws');
+    expect(FakeSocket.latest).not.toBe(previous);
+    expect(previous.onopen).toBeNull();
+    expect(previous.onmessage).toBeNull();
+    expect(previous.onclose).toBeNull();
+    expect(previous.onerror).toBeNull();
+    expect(termIo.clears).toBeGreaterThan(clearsBeforeSwitch);
     expect(state.reveal).not.toHaveBeenCalled();
+
+    await act(async () => {
+      FakeSocket.latest!.onopen?.();
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain('已连接 st_2');
+
+    termIo.writes = [];
+    await act(async () => {
+      staleMessage({ data: 'Ask Codex to do anything' });
+      staleOpen();
+      staleClose();
+      staleError();
+    });
+    expect(termIo.writes).toEqual([]);
+    expect(JSON.stringify(renderer.toJSON())).toContain('已连接 st_2');
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('终端连接失败');
+
+    await act(async () => {
+      FakeSocket.latest!.onmessage?.({ data: 'cursor prompt' });
+    });
+    expect(termIo.writes).toEqual(['cursor prompt']);
   });
 
   it('renders a sub-tab per live seat and does not pop out on its own', async () => {

@@ -14,6 +14,15 @@ import {
 const DOCK_CHANNEL = 'agent-room-terminal-dock';
 const DOCK_EVENT = 'managed-terminal-docked';
 
+function detachSocket(ws: WebSocket | null) {
+  if (!ws) return;
+  ws.onopen = null;
+  ws.onmessage = null;
+  ws.onclose = null;
+  ws.onerror = null;
+  try { ws.close(); } catch { /* ignore */ }
+}
+
 /**
  * Docked xterm for this machine's embedded PTY. Rendered only inside the desktop shell.
  * Pop-out uses the shell command so the control token stays in Rust. Closing that window
@@ -53,6 +62,7 @@ export function DesktopSeatTerminal({
   const channelRef = useRef<BroadcastChannel | null>(null);
   const connectRef = useRef<(id: string) => void>(() => {});
   const disconnectRef = useRef<(silent?: boolean) => void>(() => {});
+  const generationRef = useRef(0);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
   seatRef.current = seatId;
@@ -64,13 +74,10 @@ export function DesktopSeatTerminal({
   const popped = poppedRef.current === seatId && seatId !== '';
 
   disconnectRef.current = (silent = false) => {
+    generationRef.current += 1;
     const ws = socketRef.current;
     socketRef.current = null;
-    if (ws) {
-      ws.onclose = null;
-      ws.onerror = null;
-      try { ws.close(); } catch { /* ignore */ }
-    }
+    detachSocket(ws);
     setConnected(false);
     if (!silent) {
       setNoteErr(false);
@@ -131,14 +138,16 @@ export function DesktopSeatTerminal({
       return;
     }
     disconnectRef.current(true);
+    const generation = ++generationRef.current;
     setSeatId(next);
     const term = ensureTerm();
     term?.clear();
     const ws = new WebSocket(desktopTerminalWsUrl(next));
     socketRef.current = ws;
     ws.binaryType = 'arraybuffer';
+    const current = () => generationRef.current === generation && socketRef.current === ws;
     ws.onopen = () => {
-      if (socketRef.current !== ws) return;
+      if (!current()) return;
       setConnected(true);
       setNoteErr(false);
       setNote(tRef.current('desktopTerminal.connected', { seat: next }));
@@ -148,18 +157,21 @@ export function DesktopSeatTerminal({
       }
     };
     ws.onmessage = event => {
+      if (!current()) return;
       const data = typeof event.data === 'string'
         ? event.data
         : new TextDecoder().decode(event.data as ArrayBuffer);
       term?.write(data);
     };
     ws.onclose = () => {
-      if (socketRef.current === ws) socketRef.current = null;
+      if (!current()) return;
+      socketRef.current = null;
       setConnected(false);
       setNoteErr(false);
       setNote(poppedRef.current ? tRef.current('desktopTerminal.popped') : tRef.current('desktopTerminal.disconnected'));
     };
     ws.onerror = () => {
+      if (!current()) return;
       setNoteErr(true);
       setNote(tRef.current('desktopTerminal.wsError'));
     };
@@ -200,6 +212,9 @@ export function DesktopSeatTerminal({
     if (!desktop || !preferredSeatId) return;
     let cancelled = false;
     setSeatId(preferredSeatId);
+    // Drop the previous socket before the list round-trip. connect() clears again.
+    disconnectRef.current(true);
+    termRef.current?.clear();
     void (async () => {
       for (let attempt = 0; attempt < 8 && !cancelled; attempt++) {
         try {
@@ -262,13 +277,10 @@ export function DesktopSeatTerminal({
       channelRef.current?.close();
       channelRef.current = null;
       unlisten?.();
+      generationRef.current += 1;
       const ws = socketRef.current;
       socketRef.current = null;
-      if (ws) {
-        ws.onclose = null;
-        ws.onerror = null;
-        try { ws.close(); } catch { /* ignore */ }
-      }
+      detachSocket(ws);
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
