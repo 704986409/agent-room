@@ -819,6 +819,89 @@ fn for_node_argv(path: PathBuf) -> PathBuf {
     path
 }
 
+/// `{ "port", "token" }` from the daemon's `control.json` →
+/// `http://127.0.0.1:<port>/?t=<token>` (same shape as stdout `control: `).
+/// `None` when a field is missing, the port is out of range, or the token is empty.
+fn control_url_from_json(text: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(text).ok()?;
+    let port = value.get("port")?.as_u64()?;
+    if !(1..=65535).contains(&port) {
+        return None;
+    }
+    let token = value.get("token")?.as_str()?.trim();
+    if token.is_empty() || token.len() > 256 {
+        return None;
+    }
+    if token.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return None;
+    }
+    Some(format!(
+        "http://127.0.0.1:{port}/?t={}",
+        query_encode(token)
+    ))
+}
+
+fn persisted_control_url(dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(dir.join("control.json")).ok()?;
+    control_url_from_json(&text)
+}
+
+fn control_loopback_addr(origin: &str) -> Option<std::net::SocketAddr> {
+    let hostport = origin.strip_prefix("http://")?;
+    let (host, port) = hostport.rsplit_once(':')?;
+    if host != "127.0.0.1" && host != "localhost" {
+        return None;
+    }
+    let port: u16 = port.parse().ok()?;
+    if port == 0 {
+        return None;
+    }
+    Some(std::net::SocketAddr::from((
+        std::net::Ipv4Addr::LOCALHOST,
+        port,
+    )))
+}
+
+fn http_status_is_ok(head: &str) -> bool {
+    let line = head.lines().next().unwrap_or("");
+    let mut parts = line.split_whitespace();
+    let version = parts.next().unwrap_or("");
+    let status = parts.next().unwrap_or("");
+    version.starts_with("HTTP/1.") && status == "200"
+}
+
+/// GET `/api/terminals?t=` on the control URL. That route already exists and
+/// rejects a bad token with 401. Only HTTP 200 counts as a live daemon.
+fn probe_control_alive(control_url: &str) -> bool {
+    let Ok((origin, token)) = control_origin_and_token(control_url) else {
+        return false;
+    };
+    let Some(addr) = control_loopback_addr(&origin) else {
+        return false;
+    };
+    let path = format!("/api/terminals?t={}", query_encode(&token));
+    let host = origin.trim_start_matches("http://");
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nAccept: application/json\r\n\r\n"
+    );
+    let timeout = Duration::from_secs(2);
+    let mut stream = match std::net::TcpStream::connect_timeout(&addr, timeout) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let _ = stream.set_write_timeout(Some(timeout));
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 256];
+    let n = match stream.read(&mut buf) {
+        Ok(n) if n > 0 => n,
+        _ => return false,
+    };
+    http_status_is_ok(&String::from_utf8_lossy(&buf[..n]))
+}
+
 /// `\\?\D:\rest` → `D:\rest`; `\\?\UNC\server\share\rest` → `\\server\share\rest`.
 /// `None` when `path` has no verbatim prefix, or the prefix would strip to empty.
 #[cfg(any(windows, test))]
@@ -846,8 +929,42 @@ impl Daemon {
         }
     }
 
+    /// Use a daemon that already holds this state dir. Keeps its token in-process
+    /// and does not spawn or kill. `false` when `control.json` is missing or the
+    /// endpoint does not answer 200.
+    fn adopt_live_control(&self) -> bool {
+        if let Some(url) = self.control_url() {
+            if probe_control_alive(&url) {
+                return true;
+            }
+        }
+        let Some(url) = persisted_control_url(&daemon_log_dir()) else {
+            return false;
+        };
+        if !probe_control_alive(&url) {
+            return false;
+        }
+        self.0.lock().unwrap().control_url = Some(url.clone());
+        if let Ok(mut log) = open_daemon_log() {
+            let origin = control_origin_and_token(&url)
+                .map(|(origin, _)| origin)
+                .unwrap_or_else(|_| "http://127.0.0.1".into());
+            let _ = writeln!(
+                log,
+                "----- {} adopt existing daemon {origin} -----",
+                log_stamp()
+            );
+        }
+        true
+    }
+
     fn start(&self, app: &AppHandle) -> Result<(), String> {
         if self.running() {
+            return Ok(());
+        }
+        // Another process already serves this state dir (lock + port). Adopt it
+        // instead of spawning a second node that exits 1 on the lock.
+        if self.adopt_live_control() {
             return Ok(());
         }
         // Strip before log and spawn so daemon.log matches the argv Node receives.
@@ -991,11 +1108,17 @@ impl Daemon {
     fn wait_control_url(&self, timeout: Duration) -> Option<String> {
         let deadline = Instant::now() + timeout;
         loop {
-            if let Some(u) = self.0.lock().unwrap().control_url.clone() {
-                return Some(u);
+            if let Some(url) = self.control_url() {
+                return Some(url);
             }
-            if Instant::now() > deadline || !self.running() {
-                return None;
+            // Child never started, or it exited because the lock was already held.
+            // Adopting here is what keeps autostart and 本机设置 from alerting.
+            if !self.running() || Instant::now() > deadline {
+                return if self.adopt_live_control() {
+                    self.control_url()
+                } else {
+                    None
+                };
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -1344,5 +1467,105 @@ mod tests {
         assert!(managed_terminal_popout_url("http://127.0.0.1:1/?t=abc", " ").is_err());
         assert!(managed_terminal_popout_url("http://127.0.0.1:1/?t=abc", "../x").is_err());
         assert!(managed_terminal_popout_url("http://127.0.0.1:1/?x=1", "st_1").is_err());
+    }
+
+    #[test]
+    fn control_json_builds_daemon_control_url() {
+        let url = control_url_from_json(r#"{"port":17421,"token":"abc"}"#).unwrap();
+        assert_eq!(url, "http://127.0.0.1:17421/?t=abc");
+        let pretty =
+            control_url_from_json("{\n  \"port\": 17421,\n  \"token\": \"deadbeef\"\n}\n").unwrap();
+        assert_eq!(pretty, "http://127.0.0.1:17421/?t=deadbeef");
+        let pop = open_managed_terminal_url(Some(&url), "st_1").unwrap();
+        assert_eq!(pop, "http://127.0.0.1:17421/?t=abc&terminal=st_1&popout=1");
+    }
+
+    #[test]
+    fn control_json_rejects_unusable_payloads() {
+        assert!(control_url_from_json("").is_none());
+        assert!(control_url_from_json("{}").is_none());
+        assert!(control_url_from_json("not-json").is_none());
+        assert!(control_url_from_json(r#"{"port":0,"token":"abc"}"#).is_none());
+        assert!(control_url_from_json(r#"{"port":65536,"token":"abc"}"#).is_none());
+        assert!(control_url_from_json(r#"{"port":17421,"token":""}"#).is_none());
+        assert!(control_url_from_json(r#"{"port":17421}"#).is_none());
+        assert!(control_url_from_json(r#"{"port":"17421","token":"abc"}"#).is_none());
+        assert!(control_url_from_json(r#"{"port":17421,"token":"has space"}"#).is_none());
+    }
+
+    #[test]
+    fn control_json_round_trips_encoded_token() {
+        let url = control_url_from_json(r#"{"port":9,"token":"a/b"}"#).unwrap();
+        assert_eq!(url, "http://127.0.0.1:9/?t=a%2Fb");
+        let (origin, token) = control_origin_and_token(&url).unwrap();
+        assert_eq!(origin, "http://127.0.0.1:9");
+        assert_eq!(token, "a/b");
+    }
+
+    #[test]
+    fn persisted_control_url_reads_state_dir() {
+        let dir = std::env::temp_dir().join(format!(
+            "agent-room-control-{}-{}",
+            std::process::id(),
+            "json"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("control.json"),
+            b"{\"port\":17421,\"token\":\"abc\"}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            persisted_control_url(&dir).as_deref(),
+            Some("http://127.0.0.1:17421/?t=abc")
+        );
+        assert!(persisted_control_url(&dir.join("missing")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn http_status_ok_only_200() {
+        assert!(http_status_is_ok(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json"
+        ));
+        assert!(http_status_is_ok("HTTP/1.0 200 OK"));
+        assert!(!http_status_is_ok("HTTP/1.1 401 Unauthorized"));
+        assert!(!http_status_is_ok("HTTP/1.1 500"));
+        assert!(!http_status_is_ok("not http"));
+    }
+
+    fn serve_status(status: &str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let status = status.to_string();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let _ = sock.read(&mut buf);
+            let body =
+                format!("HTTP/1.1 {status}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}");
+            let _ = sock.write_all(body.as_bytes());
+        });
+        port
+    }
+
+    #[test]
+    fn probe_accepts_live_terminals_and_rejects_dead_or_unauthorized() {
+        let port = serve_status("200 OK");
+        assert!(probe_control_alive(&format!(
+            "http://127.0.0.1:{port}/?t=abc"
+        )));
+        let denied = serve_status("401 Unauthorized");
+        assert!(!probe_control_alive(&format!(
+            "http://127.0.0.1:{denied}/?t=abc"
+        )));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let closed = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert!(!probe_control_alive(&format!(
+            "http://127.0.0.1:{closed}/?t=abc"
+        )));
+        assert!(!probe_control_alive("http://127.0.0.1:1/"));
     }
 }
