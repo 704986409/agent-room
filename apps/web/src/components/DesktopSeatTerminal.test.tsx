@@ -11,16 +11,8 @@ const state = vi.hoisted(() => ({
 const termIo = vi.hoisted(() => ({
   writes: [] as string[],
   resets: 0,
-  keyHandler: null as ((event: {
-    type?: string;
-    key: string;
-    ctrlKey?: boolean;
-    metaKey?: boolean;
-    altKey?: boolean;
-    shiftKey?: boolean;
-    preventDefault: () => void;
-  }) => boolean) | null,
   onDataHandler: null as ((data: string) => void) | null,
+  pasteListeners: [] as Array<(event: Event) => void>,
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -29,7 +21,6 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24;
     loadAddon() {}
     open() {}
-    attachCustomKeyEventHandler(handler: NonNullable<typeof termIo.keyHandler>) { termIo.keyHandler = handler; }
     onData(handler: (data: string) => void) { termIo.onDataHandler = handler; return { dispose() {} }; }
     write(data: string) { termIo.writes.push(String(data)); }
     clear() {}
@@ -108,12 +99,20 @@ function button(renderer: ReactTestRenderer, label: string) {
 
 let mounted: ReactTestRenderer | null = null;
 
+function mockHost() {
+  return {
+    addEventListener(type: string, listener: (event: Event) => void, options?: boolean | AddEventListenerOptions) {
+      if (type === 'paste' && options === true) termIo.pasteListeners.push(listener);
+    },
+  };
+}
+
 async function renderPanel(preferredSeatId?: string): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(
       <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId={preferredSeatId} />,
-      { createNodeMock: () => ({}) },
+      { createNodeMock: () => mockHost() },
     );
     await new Promise(resolve => setTimeout(resolve, 0));
   });
@@ -131,8 +130,8 @@ describe('DesktopSeatTerminal', () => {
     FakeSocket.latest = null;
     termIo.writes = [];
     termIo.resets = 0;
-    termIo.keyHandler = null;
     termIo.onDataHandler = null;
+    termIo.pasteListeners = [];
     vi.stubGlobal('WebSocket', FakeSocket);
   });
 
@@ -188,7 +187,7 @@ describe('DesktopSeatTerminal', () => {
     await act(async () => {
       renderer = create(
         <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_1" focusToken={1} />,
-        { createNodeMock: () => ({}) },
+        { createNodeMock: () => mockHost() },
       );
       await new Promise(resolve => setTimeout(resolve, 0));
     });
@@ -262,38 +261,75 @@ describe('DesktopSeatTerminal', () => {
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
   });
 
-  it('pastes clipboard text on Ctrl+V and does not forward the image-paste control character', async () => {
-    const readText = vi.fn(async () => 'INVITE-TEXT');
+  it('pastes clipboardData text from the paste event and drops the image-paste control character', async () => {
+    const readText = vi.fn(async () => 'SHOULD-NOT-USE');
     vi.stubGlobal('navigator', { clipboard: { readText } });
     await renderPanel('st_1');
     const socket = FakeSocket.latest!;
     socket.readyState = FakeSocket.OPEN;
-    expect(termIo.keyHandler).toBeTypeOf('function');
+    expect(termIo.pasteListeners.length).toBeGreaterThan(0);
+
     const prevented = { current: false };
-    let handled = true;
+    const stopped = { current: false };
     await act(async () => {
-      handled = termIo.keyHandler!({
-        type: 'keydown',
-        key: 'v',
-        ctrlKey: true,
-        metaKey: false,
-        altKey: false,
-        shiftKey: false,
+      termIo.pasteListeners[0]!({
         preventDefault() { prevented.current = true; },
-      });
-      await Promise.resolve();
+        stopPropagation() { stopped.current = true; },
+        clipboardData: {
+          getData(type: string) { return type === 'text/plain' ? 'INVITE-TEXT' : ''; },
+        },
+      } as unknown as ClipboardEvent);
     });
-    expect(handled).toBe(false);
     expect(prevented.current).toBe(true);
-    expect(readText).toHaveBeenCalledTimes(1);
+    expect(stopped.current).toBe(true);
+    expect(readText).not.toHaveBeenCalled();
     expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'INVITE-TEXT' })]);
+
     termIo.onDataHandler?.('\x16');
     expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'INVITE-TEXT' })]);
-    expect(termIo.keyHandler!({
-      type: 'keydown',
-      key: 'a',
-      ctrlKey: false,
-      preventDefault() {},
-    })).toBe(true);
   });
+
+  it('falls back to navigator.clipboard.readText when paste has no text/plain', async () => {
+    const readText = vi.fn(async () => 'FALLBACK-TEXT');
+    vi.stubGlobal('navigator', { clipboard: { readText } });
+    await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    await act(async () => {
+      termIo.pasteListeners[0]!({
+        preventDefault() {},
+        stopPropagation() {},
+        clipboardData: {
+          getData() { return ''; },
+        },
+      } as unknown as ClipboardEvent);
+      await Promise.resolve();
+    });
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'FALLBACK-TEXT' })]);
+  });
+
+  it('sends paste text via the host onPaste prop', async () => {
+    await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    const renderer = mounted!;
+    const host = renderer.root.findAllByType('div').find(node =>
+      String(node.props.className || '').includes('bg-[#1e1e1e]'),
+    );
+    expect(host?.props.onPaste).toBeTypeOf('function');
+    await act(async () => {
+      host!.props.onPaste({
+        nativeEvent: {
+          preventDefault() {},
+          stopPropagation() {},
+          clipboardData: {
+            getData(type: string) { return type === 'text/plain' ? 'FROM-REACT' : ''; },
+          },
+        },
+      });
+    });
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'FROM-REACT' })]);
+  });
+
 });

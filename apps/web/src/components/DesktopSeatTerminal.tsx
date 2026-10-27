@@ -69,29 +69,41 @@ export function DesktopSeatTerminal({
   const generationRef = useRef(0);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
-  const pasteRef = useRef<() => void>(() => {});
   seatRef.current = seatId;
 
-  pasteRef.current = () => { void pasteClipboardText(); };
-
-  async function pasteClipboardText() {
-    let text = '';
-    try {
-      text = await navigator.clipboard.readText();
-    } catch {
-      setNoteErr(true);
-      setNote(tRef.current('desktopTerminal.pasteFailed'));
-      return;
-    }
-    if (!text) {
-      setNoteErr(true);
-      setNote(tRef.current('desktopTerminal.pasteFailed'));
-      return;
-    }
+  function sendStdinText(text: string) {
+    if (!text) return;
     const ws = socketRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'stdin', data: text }));
     }
+  }
+
+  function pasteFromEvent(event: ClipboardEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const text = event.clipboardData?.getData('text/plain') ?? '';
+    if (text) {
+      sendStdinText(text);
+      return;
+    }
+    // Fallback only when the paste event carried no text (some webviews).
+    void (async () => {
+      let fallback = '';
+      try {
+        fallback = await navigator.clipboard.readText();
+      } catch {
+        setNoteErr(true);
+        setNote(tRef.current('desktopTerminal.pasteFailed'));
+        return;
+      }
+      if (!fallback) {
+        setNoteErr(true);
+        setNote(tRef.current('desktopTerminal.pasteFailed'));
+        return;
+      }
+      sendStdinText(fallback);
+    })();
   }
 
   const visible = terminalsForRoom(rows, roomCode);
@@ -129,16 +141,14 @@ export function DesktopSeatTerminal({
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
-    term.attachCustomKeyEventHandler(event => {
-      if (event.type && event.type !== 'keydown') return true;
-      const key = event.key.toLowerCase();
-      const pasteKey = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'v';
-      const shiftInsert = event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'Insert';
-      if (!pasteKey && !shiftInsert) return true;
-      event.preventDefault();
-      pasteRef.current();
-      return false;
-    });
+    // Do not intercept Ctrl/Cmd+V on keydown: preventDefault kills the paste
+    // event (clipboardData) in Tauri webviews. Capture paste on the host so we
+    // read text/plain before xterm handles it.
+    if (typeof host.addEventListener === 'function') {
+      host.addEventListener('paste', (event: Event) => {
+        pasteFromEvent(event as ClipboardEvent);
+      }, true);
+    }
     term.onData(data => {
       // Ctrl+V is 0x16. Codex treats that byte as image paste.
       if (data === '\x16') return;
@@ -416,7 +426,11 @@ export function DesktopSeatTerminal({
       {note && (
         <p className={`mt-1 shrink-0 px-3 text-[11px] ${noteErr ? 'text-red-700' : 'text-ink-muted'}`}>{note}</p>
       )}
-      <div ref={hostRef} className="mx-3 mb-3 mt-2 min-h-[180px] flex-1 overflow-hidden rounded-md bg-[#1e1e1e]" />
+      <div
+        ref={hostRef}
+        className="mx-3 mb-3 mt-2 min-h-[180px] flex-1 overflow-hidden rounded-md bg-[#1e1e1e]"
+        onPaste={event => { pasteFromEvent(event.nativeEvent); }}
+      />
     </section>
   );
 }
