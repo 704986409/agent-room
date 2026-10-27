@@ -11,6 +11,16 @@ const state = vi.hoisted(() => ({
 const termIo = vi.hoisted(() => ({
   writes: [] as string[],
   resets: 0,
+  keyHandler: null as ((event: {
+    type?: string;
+    key: string;
+    ctrlKey?: boolean;
+    metaKey?: boolean;
+    altKey?: boolean;
+    shiftKey?: boolean;
+    preventDefault: () => void;
+  }) => boolean) | null,
+  onDataHandler: null as ((data: string) => void) | null,
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -19,7 +29,8 @@ vi.mock('@xterm/xterm', () => ({
     rows = 24;
     loadAddon() {}
     open() {}
-    onData() { return { dispose() {} }; }
+    attachCustomKeyEventHandler(handler: NonNullable<typeof termIo.keyHandler>) { termIo.keyHandler = handler; }
+    onData(handler: (data: string) => void) { termIo.onDataHandler = handler; return { dispose() {} }; }
     write(data: string) { termIo.writes.push(String(data)); }
     clear() {}
     reset() { termIo.resets += 1; }
@@ -77,11 +88,12 @@ class FakeSocket {
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: string[] = [];
   constructor(url: string) {
     this.url = url;
     FakeSocket.latest = this;
   }
-  send() {}
+  send(data: string) { this.sent.push(String(data)); }
   close() { this.readyState = 3; }
 }
 
@@ -99,7 +111,10 @@ let mounted: ReactTestRenderer | null = null;
 async function renderPanel(preferredSeatId?: string): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
-    renderer = create(<DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId={preferredSeatId} />);
+    renderer = create(
+      <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId={preferredSeatId} />,
+      { createNodeMock: () => ({}) },
+    );
     await new Promise(resolve => setTimeout(resolve, 0));
   });
   mounted = renderer;
@@ -116,6 +131,8 @@ describe('DesktopSeatTerminal', () => {
     FakeSocket.latest = null;
     termIo.writes = [];
     termIo.resets = 0;
+    termIo.keyHandler = null;
+    termIo.onDataHandler = null;
     vi.stubGlobal('WebSocket', FakeSocket);
   });
 
@@ -243,5 +260,40 @@ describe('DesktopSeatTerminal', () => {
     expect(state.reveal).not.toHaveBeenCalled();
     await act(async () => { button(renderer, '展开')!.props.onClick(); });
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('pastes clipboard text on Ctrl+V and does not forward the image-paste control character', async () => {
+    const readText = vi.fn(async () => 'INVITE-TEXT');
+    vi.stubGlobal('navigator', { clipboard: { readText } });
+    await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    expect(termIo.keyHandler).toBeTypeOf('function');
+    const prevented = { current: false };
+    let handled = true;
+    await act(async () => {
+      handled = termIo.keyHandler!({
+        type: 'keydown',
+        key: 'v',
+        ctrlKey: true,
+        metaKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault() { prevented.current = true; },
+      });
+      await Promise.resolve();
+    });
+    expect(handled).toBe(false);
+    expect(prevented.current).toBe(true);
+    expect(readText).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'INVITE-TEXT' })]);
+    termIo.onDataHandler?.('\x16');
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'INVITE-TEXT' })]);
+    expect(termIo.keyHandler!({
+      type: 'keydown',
+      key: 'a',
+      ctrlKey: false,
+      preventDefault() {},
+    })).toBe(true);
   });
 });

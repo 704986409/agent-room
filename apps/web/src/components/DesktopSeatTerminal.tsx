@@ -69,7 +69,30 @@ export function DesktopSeatTerminal({
   const generationRef = useRef(0);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
+  const pasteRef = useRef<() => void>(() => {});
   seatRef.current = seatId;
+
+  pasteRef.current = () => { void pasteClipboardText(); };
+
+  async function pasteClipboardText() {
+    let text = '';
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pasteFailed'));
+      return;
+    }
+    if (!text) {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pasteFailed'));
+      return;
+    }
+    const ws = socketRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'stdin', data: text }));
+    }
+  }
 
   const visible = terminalsForRoom(rows, roomCode);
   const options = seatId && !visible.some(row => row.seatId === seatId)
@@ -106,7 +129,19 @@ export function DesktopSeatTerminal({
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
+    term.attachCustomKeyEventHandler(event => {
+      if (event.type && event.type !== 'keydown') return true;
+      const key = event.key.toLowerCase();
+      const pasteKey = (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && key === 'v';
+      const shiftInsert = event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && event.key === 'Insert';
+      if (!pasteKey && !shiftInsert) return true;
+      event.preventDefault();
+      pasteRef.current();
+      return false;
+    });
     term.onData(data => {
+      // Ctrl+V is 0x16. Codex treats that byte as image paste.
+      if (data === '\x16') return;
       const ws = socketRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'stdin', data }));
