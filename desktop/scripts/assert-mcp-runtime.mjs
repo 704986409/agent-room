@@ -1,5 +1,5 @@
 // Package scripts call this after bundle-mcp. Deleting mcp-runtime must fail the build.
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,4 +18,21 @@ if (!existsSync(ptyPkg) || !existsSync(ptyPrebuilds)) {
   console.error(`node-pty prebuilds missing (${ptyPkg}). Run: node scripts/bundle-daemon.mjs`);
   process.exit(1);
 }
-console.log(`node-pty ok: ${ptyPkg}`);
+
+// bundle-daemon prunes to host glibc only; musl leftovers break linuxdeploy AppImage.
+function listMusl(dir) {
+  const hits = [];
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    if (statSync(path).isDirectory()) hits.push(...listMusl(path));
+    else if (name.includes('musl')) hits.push(path);
+  }
+  return hits;
+}
+const musl = listMusl(ptyPrebuilds);
+if (musl.length) {
+  console.error(`node-pty musl prebuilds still present (re-run bundle-daemon.mjs): ${musl[0]}`);
+  process.exit(1);
+}
+const kept = readdirSync(ptyPrebuilds).filter((n) => statSync(join(ptyPrebuilds, n)).isDirectory());
+console.log(`node-pty ok: ${ptyPkg} (prebuilds: ${kept.join(', ') || '(none)'})`);

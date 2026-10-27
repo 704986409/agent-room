@@ -2,7 +2,7 @@
 // node-pty stays external: the daemon does createRequire(import.meta.url), so the
 // prebuilt package must sit in daemon-dist/node_modules next to the .mjs.
 import { build } from 'esbuild';
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -32,6 +32,39 @@ function hasNodeBinary(dir) {
     }
   }
   return false;
+}
+
+/** Host arch dir name under prebuilds/ (e.g. linux-x64, win32-x64). */
+function hostPrebuildDir() {
+  return `${process.platform}-${process.arch}`;
+}
+
+/**
+ * Keep only the pack-host glibc (non-musl) prebuild tree so linuxdeploy does
+ * not scan arm/musl binaries and demand libc.musl-*.so.1.
+ */
+function pruneHostPrebuilds(prebuildsRoot) {
+  const keep = hostPrebuildDir();
+  for (const name of readdirSync(prebuildsRoot)) {
+    const path = join(prebuildsRoot, name);
+    if (!statSync(path).isDirectory()) continue;
+    if (name !== keep) {
+      rmSync(path, { recursive: true, force: true });
+    }
+  }
+  const keptDir = join(prebuildsRoot, keep);
+  if (existsSync(keptDir) && statSync(keptDir).isDirectory()) {
+    for (const name of readdirSync(keptDir)) {
+      if (name.includes('musl') || name.endsWith('.musl.node')) {
+        unlinkSync(join(keptDir, name));
+      }
+    }
+  }
+  const remaining = existsSync(prebuildsRoot)
+    ? readdirSync(prebuildsRoot).filter((n) => statSync(join(prebuildsRoot, n)).isDirectory())
+    : [];
+  console.log(`node-pty prebuilds kept: ${remaining.length ? remaining.join(', ') : '(none)'}`);
+  return remaining;
 }
 
 const ptySrc = findPtyPackage();
@@ -64,6 +97,11 @@ const ptyPkg = join(ptyDest, 'package.json');
 const ptyPrebuilds = join(ptyDest, 'prebuilds');
 if (!existsSync(ptyPkg) || !existsSync(ptyPrebuilds) || !hasNodeBinary(ptyPrebuilds)) {
   console.error(`node-pty prebuilds missing after copy (${ptyPrebuilds}). Refusing to package daemon-dist.`);
+  process.exit(1);
+}
+pruneHostPrebuilds(ptyPrebuilds);
+if (!existsSync(ptyPrebuilds) || !hasNodeBinary(ptyPrebuilds)) {
+  console.error(`node-pty prebuilds missing after host prune (${ptyPrebuilds}). Refusing to package daemon-dist.`);
   process.exit(1);
 }
 console.log(`node-pty bundled: ${ptyDest}`);
