@@ -213,6 +213,10 @@ export async function startControlServer(options: ControlServerOptions): Promise
       ws.close(1011, 'no_session');
       return;
     }
+    // Snapshot first, then subscribe. Live chunks already in the ring are not
+    // emitted again; bytes that arrive after this point go only through onData.
+    const prior = session.scrollback();
+    if (prior && ws.readyState === ws.OPEN) ws.send(prior);
     const unsub = session.onData(data => {
       if (ws.readyState === ws.OPEN) ws.send(data);
     });

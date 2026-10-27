@@ -10,6 +10,7 @@ import { DaemonLog } from './src/log.js';
 import { SecretRegistry } from './src/redact.js';
 import {
   clearPtyRegistryForTests,
+  getPtySession,
   ptyAvailable,
   spawnPtySession,
 } from './src/pty.js';
@@ -68,13 +69,19 @@ describe('control terminal routes', () => {
       if (!ptyAvailable()) return;
 
       const seatId = `ctrl-pty-${Date.now()}`;
-      spawnPtySession({
+      const session = spawnPtySession({
         seatId,
         command: 'bash',
-        args: ['-lc', 'exec cat'],
+        args: ['-lc', 'printf "prior-scroll\\n"; exec cat'],
         cwd: directory,
         env: {},
       });
+      const priorDeadline = Date.now() + 5000;
+      while (!session.scrollback().includes('prior-scroll') && Date.now() < priorDeadline) {
+        await new Promise(r => setTimeout(r, 30));
+      }
+      expect(session.scrollback()).toContain('prior-scroll');
+      expect(getPtySession(seatId)?.scrollback()).toContain('prior-scroll');
 
       const listed = await fetch(`http://127.0.0.1:${control.port}/api/terminals?t=${control.token}`);
       const listedBody = await listed.json() as { terminals: { seatId: string; pid: number }[] };
@@ -86,21 +93,28 @@ describe('control terminal routes', () => {
       const missing = await fetch(`http://127.0.0.1:${control.port}/api/terminals/nope?t=${control.token}`);
       expect(missing.status).toBe(404);
 
-      // WS stdin/stdout smoke
+      // WS stdin/stdout smoke. Listen before open so the attach replay is not missed.
       const ws = new WebSocket(`ws://127.0.0.1:${control.port}/api/terminals/${encodeURIComponent(seatId)}/ws?t=${control.token}`);
+      const got: string[] = [];
+      ws.on('message', data => { got.push(String(data)); });
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('ws timeout')), 5000);
         ws.once('open', () => { clearTimeout(timer); resolve(); });
         ws.once('error', reject);
       });
-      const got: string[] = [];
-      ws.on('message', data => { got.push(String(data)); });
+      const replayDeadline = Date.now() + 5000;
+      while (!got.join('').includes('prior-scroll') && Date.now() < replayDeadline) {
+        await new Promise(r => setTimeout(r, 30));
+      }
+      expect(got.join('')).toContain('prior-scroll');
       ws.send(JSON.stringify({ type: 'stdin', data: 'ping-ws\n' }));
       const deadline = Date.now() + 5000;
       while (!got.join('').includes('ping-ws') && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 50));
       }
-      expect(got.join('')).toContain('ping-ws');
+      const transcript = got.join('');
+      expect(transcript).toContain('ping-ws');
+      expect(transcript.indexOf('prior-scroll')).toBeLessThan(transcript.indexOf('ping-ws'));
       ws.close();
     } finally {
       await control.close();

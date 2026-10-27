@@ -14,6 +14,10 @@ import {
 const DOCK_CHANNEL = 'agent-room-terminal-dock';
 const DOCK_EVENT = 'managed-terminal-docked';
 
+function resetTerm(term: Terminal | null | undefined) {
+  term?.reset();
+}
+
 function detachSocket(ws: WebSocket | null) {
   if (!ws) return;
   ws.onopen = null;
@@ -141,7 +145,7 @@ export function DesktopSeatTerminal({
     const generation = ++generationRef.current;
     setSeatId(next);
     const term = ensureTerm();
-    term?.clear();
+    resetTerm(term);
     const ws = new WebSocket(desktopTerminalWsUrl(next));
     socketRef.current = ws;
     ws.binaryType = 'arraybuffer';
@@ -212,9 +216,9 @@ export function DesktopSeatTerminal({
     if (!desktop || !preferredSeatId) return;
     let cancelled = false;
     setSeatId(preferredSeatId);
-    // Drop the previous socket before the list round-trip. connect() clears again.
+    // Drop the previous socket before the list round-trip. connect() resets again.
     disconnectRef.current(true);
-    termRef.current?.clear();
+    resetTerm(termRef.current);
     void (async () => {
       for (let attempt = 0; attempt < 8 && !cancelled; attempt++) {
         try {

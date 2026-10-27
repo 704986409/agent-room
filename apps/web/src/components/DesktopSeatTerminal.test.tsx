@@ -10,7 +10,7 @@ const state = vi.hoisted(() => ({
 
 const termIo = vi.hoisted(() => ({
   writes: [] as string[],
-  clears: 0,
+  resets: 0,
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -21,7 +21,8 @@ vi.mock('@xterm/xterm', () => ({
     open() {}
     onData() { return { dispose() {} }; }
     write(data: string) { termIo.writes.push(String(data)); }
-    clear() { termIo.clears += 1; }
+    clear() {}
+    reset() { termIo.resets += 1; }
     dispose() {}
   },
 }));
@@ -114,7 +115,7 @@ describe('DesktopSeatTerminal', () => {
     state.reveal.mockResolvedValue(null);
     FakeSocket.latest = null;
     termIo.writes = [];
-    termIo.clears = 0;
+    termIo.resets = 0;
     vi.stubGlobal('WebSocket', FakeSocket);
   });
 
@@ -181,7 +182,7 @@ describe('DesktopSeatTerminal', () => {
     const staleMessage = previous.onmessage!;
     const staleClose = previous.onclose!;
     const staleError = previous.onerror!;
-    const clearsBeforeSwitch = termIo.clears;
+    const resetsBeforeSwitch = termIo.resets;
 
     await act(async () => {
       renderer.update(
@@ -195,7 +196,7 @@ describe('DesktopSeatTerminal', () => {
     expect(previous.onmessage).toBeNull();
     expect(previous.onclose).toBeNull();
     expect(previous.onerror).toBeNull();
-    expect(termIo.clears).toBeGreaterThan(clearsBeforeSwitch);
+    expect(termIo.resets).toBeGreaterThan(resetsBeforeSwitch);
     expect(state.reveal).not.toHaveBeenCalled();
 
     await act(async () => {

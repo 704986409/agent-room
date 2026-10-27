@@ -9,6 +9,8 @@ export interface PtySession {
   rows: number;
   write(data: string): void;
   resize(cols: number, rows: number): void;
+  /** UTF-8 output retained for a later attach. Capped at ~256 KiB. */
+  scrollback(): string;
   onData(listener: (data: string) => void): () => void;
   kill(): void;
   readonly exited: Promise<number>;
@@ -48,6 +50,68 @@ type PtyModule = {
 
 const registry = new Map<string, PtySession>();
 let ptyModule: PtyModule | null | undefined;
+
+/** Bytes of UTF-8 PTY output kept so a docked terminal can replay after idle. */
+const SCROLLBACK_MAX_BYTES = 256 * 1024;
+
+function utf8Bytes(value: string): number {
+  return Buffer.byteLength(value, 'utf8');
+}
+
+/** Keep the tail of `value` whose UTF-8 size is at most `maxBytes`, on a code-point boundary. */
+function trimUtf8Tail(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  if (utf8Bytes(value) <= maxBytes) return value;
+  let bytes = 0;
+  let index = value.length;
+  while (index > 0) {
+    let prev = index - 1;
+    const code = value.charCodeAt(prev);
+    if (code >= 0xDC00 && code <= 0xDFFF && prev > 0) {
+      const lead = value.charCodeAt(prev - 1);
+      if (lead >= 0xD800 && lead <= 0xDBFF) prev -= 1;
+    }
+    const size = utf8Bytes(value.slice(prev, index));
+    if (bytes + size > maxBytes) break;
+    bytes += size;
+    index = prev;
+  }
+  return value.slice(index);
+}
+
+function createScrollback(maxBytes = SCROLLBACK_MAX_BYTES) {
+  const chunks: string[] = [];
+  let bytes = 0;
+  return {
+    append(data: string) {
+      if (!data) return;
+      chunks.push(data);
+      bytes += utf8Bytes(data);
+      while (bytes > maxBytes && chunks.length > 0) {
+        const head = chunks[0]!;
+        const headBytes = utf8Bytes(head);
+        const overflow = bytes - maxBytes;
+        if (headBytes <= overflow) {
+          chunks.shift();
+          bytes -= headBytes;
+          continue;
+        }
+        const trimmed = trimUtf8Tail(head, headBytes - overflow);
+        if (!trimmed) {
+          chunks.shift();
+          bytes -= headBytes;
+          continue;
+        }
+        chunks[0] = trimmed;
+        bytes -= headBytes - utf8Bytes(trimmed);
+        break;
+      }
+    },
+    text() {
+      return chunks.join('');
+    },
+  };
+}
 
 export function ptyAvailable(): boolean {
   return loadPty() !== null;
@@ -130,6 +194,7 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
   });
 
   const listeners = new Set<(data: string) => void>();
+  const scrollback = createScrollback();
   let exitCode: number | undefined;
   const exited = new Promise<number>(resolve => {
     term.onExit(({ exitCode: code }) => {
@@ -144,6 +209,7 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
   });
 
   term.onData(data => {
+    scrollback.append(data);
     if (logFd !== undefined) {
       try { appendFileSync(logFd, data); } catch { /* best-effort */ }
     }
@@ -168,6 +234,9 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
       term.resize(c, r);
       session.cols = c;
       session.rows = r;
+    },
+    scrollback() {
+      return scrollback.text();
     },
     onData(listener) {
       listeners.add(listener);
