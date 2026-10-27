@@ -117,6 +117,53 @@ export interface DesktopHostInput {
   code: string;
   inviteCode: string;
   name: string;
+  adapterId?: string;
+  model?: string;
+}
+
+export interface DesktopAdapterChoice {
+  id: string;
+  models: string[];
+}
+
+/** Installed adapters that can actually launch (have a model list). */
+export function installedAdapterChoices(payload: unknown): DesktopAdapterChoice[] {
+  const adapters = payload && typeof payload === 'object' && 'adapters' in payload
+    ? (payload as { adapters?: unknown }).adapters
+    : undefined;
+  if (!Array.isArray(adapters)) return [];
+  const choices: DesktopAdapterChoice[] = [];
+  for (const row of adapters) {
+    if (!row || typeof row !== 'object') continue;
+    const item = row as { id?: unknown; installed?: unknown; models?: unknown };
+    if (item.installed !== true || typeof item.id !== 'string' || !item.id.trim()) continue;
+    const models = Array.isArray(item.models)
+      ? item.models.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
+      : [];
+    if (models.length === 0) continue;
+    choices.push({ id: item.id, models });
+  }
+  return choices;
+}
+
+/** Installed CLI adapters from the local daemon status payload. */
+export async function listInstalledDesktopAdapters(
+  fetchImpl: typeof fetch = fetch,
+): Promise<DesktopAdapterChoice[]> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/status`, {
+      headers: { 'x-agent-room-desktop': '1' },
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  }
+  const body = await response.json().catch(() => ({})) as { error?: string; hint?: string };
+  if (!response.ok) {
+    throw new Error(body.hint || body.error || `无法读取本机 CLI（HTTP ${response.status}）`);
+  }
+  return installedAdapterChoices(body);
 }
 
 export interface DesktopHostResult {

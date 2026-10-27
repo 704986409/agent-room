@@ -217,6 +217,18 @@ describe('local control server', () => {
         code: 'ABC-DEF', inviteCode: 'AI-1', name: '开发工程师', adapterId: 'codex', model: 'default',
       })]);
 
+      const status = await fetch(`http://127.0.0.1:${control.port}/api/status`, {
+        headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+      });
+      expect(status.status).toBe(200);
+      expect(status.headers.get('access-control-allow-origin')).toBe(roomOrigin);
+      const statusBody = await status.json() as { adapters: { id: string; installed: boolean; models: string[] }[] };
+      expect(statusBody.adapters.some(adapter => adapter.id === 'codex' && adapter.installed && adapter.models.length > 0)).toBe(true);
+      const statusForeign = await fetch(`http://127.0.0.1:${control.port}/api/status`, {
+        headers: { origin: 'https://evil.example', 'x-agent-room-desktop': '1' },
+      });
+      expect(statusForeign.status).toBe(403);
+
       const rooms = await fetch(`http://127.0.0.1:${control.port}/api/desktop/rooms?t=${control.token}`);
       expect(rooms.status).toBe(200);
       const listed = await rooms.json() as { rooms: { code: string; inviteCode?: string; names: string[] }[] };

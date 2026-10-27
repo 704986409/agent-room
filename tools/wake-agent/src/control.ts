@@ -25,6 +25,7 @@ const DESKTOP_PATHS = new Set([
   '/api/desktop/rooms',
   '/api/desktop/host',
   '/api/desktop/terminals',
+  '/api/status',
 ]);
 
 export interface RecentRoom {
@@ -323,7 +324,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/status') {
-      send(res, 200, await statusPayload());
+      send(res, 200, await statusPayload(), 'application/json; charset=utf-8', cors);
       return;
     }
     if (req.method === 'GET' && url.pathname === '/api/logs') {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, isDesktopShell, listenDesktopEvent, revealManagedTerminal } from './desktopHost.js';
+import { DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, installedAdapterChoices, isDesktopShell, listInstalledDesktopAdapters, listenDesktopEvent, revealManagedTerminal } from './desktopHost.js';
 
 describe('isDesktopShell', () => {
   it('is false in a normal browser window', () => {
@@ -29,12 +29,54 @@ describe('hostOnThisMachine', () => {
     expect(JSON.parse(String(init.body))).toEqual({ code: 'ABC-DEF-GHJ', inviteCode: 'AI-ONE', name: '开发工程师' });
   });
 
+  it('posts the chosen adapter and model', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, seat: { name: '测试工程师' } }), { status: 200 }));
+    await hostOnThisMachine(
+      { code: 'ABC-DEF-GHJ', inviteCode: 'AI-ONE', name: '测试工程师', adapterId: 'cursor-agent', model: 'grok-4.7' },
+      fetchImpl as unknown as typeof fetch,
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      code: 'ABC-DEF-GHJ', inviteCode: 'AI-ONE', name: '测试工程师', adapterId: 'cursor-agent', model: 'grok-4.7',
+    });
+  });
+
   it('explains a missing daemon', async () => {
     const fetchImpl = vi.fn(async () => { throw new Error('Failed to fetch'); });
     await expect(hostOnThisMachine(
       { code: 'ABC', inviteCode: 'AI', name: '开发工程师' },
       fetchImpl as unknown as typeof fetch,
     )).rejects.toThrow('本机后台没有响应');
+  });
+});
+
+describe('installed adapters', () => {
+  it('keeps only installed adapters that list models', () => {
+    expect(installedAdapterChoices({
+      adapters: [
+        { id: 'codex', installed: true, models: ['default', 'gpt-6-sol'] },
+        { id: 'cursor-agent', installed: false, models: ['grok-4.7'] },
+        { id: 'claude', installed: true, models: [] },
+        { id: 'agy', installed: true, models: ['gemini-3.8-flash-high'] },
+        { id: '', installed: true, models: ['x'] },
+      ],
+    })).toEqual([
+      { id: 'codex', models: ['default', 'gpt-6-sol'] },
+      { id: 'agy', models: ['gemini-3.8-flash-high'] },
+    ]);
+    expect(installedAdapterChoices({})).toEqual([]);
+  });
+
+  it('reads adapters from the loopback status endpoint', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      adapters: [{ id: 'codex', installed: true, models: ['default'] }],
+    }), { status: 200 }));
+    await expect(listInstalledDesktopAdapters(fetchImpl as unknown as typeof fetch)).resolves.toEqual([
+      { id: 'codex', models: ['default'] },
+    ]);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/status`);
+    expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
   });
 });
 
