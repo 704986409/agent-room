@@ -9,7 +9,10 @@ import { DeliverEventCard, isDeliverEvent } from '../components/DeliverEventCard
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
 import { HostLocalButton } from '../components/HostLocalButton.js';
+import { RoomRightColumn, type RightRailTab } from '../components/RightRail.js';
 import { isDesktopShell } from '../lib/desktopHost.js';
+import { rosterWithActiveSeats, terminalSeatIdFor } from '../lib/activeRoster.js';
+import type { DesktopTerminalRow } from '../lib/desktopTerminal.js';
 import { InviteAgentDialog } from '../components/InviteAgentDialog.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
@@ -460,6 +463,37 @@ export function Room() {
 
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'tasks' | 'people'>('chat');
   const [hostedSeatId, setHostedSeatId] = useState<string | undefined>(undefined);
+  const [rightTab, setRightTab] = useState<RightRailTab>('tasks');
+  const [terminalExpanded, setTerminalExpanded] = useState(false);
+  const [terminalRows, setTerminalRows] = useState<DesktopTerminalRow[]>([]);
+  const [terminalFocus, setTerminalFocus] = useState(0);
+  const onTerminals = useCallback((rows: DesktopTerminalRow[]) => {
+    setTerminalRows(prev => {
+      const same = prev.length === rows.length && prev.every((row, index) =>
+        row.seatId === rows[index]?.seatId && row.name === rows[index]?.name && row.code === rows[index]?.code);
+      return same ? prev : rows;
+    });
+  }, []);
+  const openSeatTerminal = useCallback((seatId: string) => {
+    setHostedSeatId(seatId);
+    setTerminalFocus(n => n + 1);
+    setRightTab('terminal');
+    setMobilePanel('tasks');
+  }, []);
+  const speakerRefreshRef = useRef(new Set<string>());
+  useEffect(() => {
+    if (!room) return;
+    const missing: string[] = [];
+    for (const message of messages) {
+      if (message.client !== 'cc' || message.type === 'sys' || !message.name) continue;
+      if (room.participants.some(p => p.client === 'cc' && p.name === message.name)) continue;
+      if (speakerRefreshRef.current.has(message.name)) continue;
+      missing.push(message.name);
+    }
+    if (missing.length === 0) return;
+    for (const name of missing) speakerRefreshRef.current.add(name);
+    void refreshRoom();
+  }, [room, messages, refreshRoom]);
   const [reportBusy, setReportBusy] = useState(false);
   const artifacts = extractArtifacts(messages);
   // Board lives here, not inside TaskBoard, so the tab strip can badge how
@@ -583,7 +617,11 @@ export function Room() {
   const replyMode = activeRoom.replyMode ?? 'open';
   const replyModeConfig = activeRoom.modeConfig;
   const canConfigureReplyMode = isHost && !ended;
-  const roomAgents = activeRoom.participants.filter(p => p.client === 'cc');
+  const desktopShell = isDesktopShell();
+  // Stored participants can omit a managed seat that is already speaking or
+  // already has a live PTY. The list below is what the member column renders.
+  const roster = rosterWithActiveSeats(activeRoom.participants, messages, terminalRows, code, now);
+  const roomAgents = roster.filter(p => p.client === 'cc');
   const activeRoomAgents = roomAgents.filter(p => p.canSpeak !== false);
   const fallbackAgent = activeRoomAgents[0] ?? roomAgents[0];
   const selectedLeadAgentName = replyModeConfig?.leadAgentName ?? fallbackAgent?.name ?? '';
@@ -753,7 +791,7 @@ export function Room() {
                 ) : (
                   <>
                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                    <span>{t('room.participantsCount', { count: room.participants.length })}</span>
+                    <span>{t('room.participantsCount', { count: roster.length })}</span>
                     <span className="hidden lg:inline">· {t('room.messagesCount', { count: messages.length })}</span>
                   </>
                 )}
@@ -762,7 +800,7 @@ export function Room() {
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <div className="hidden sm:flex">
-              {room.participants.slice(0, 5).map((p, i) => (
+              {roster.slice(0, 5).map((p, i) => (
                 <div key={p.name} style={{ marginLeft: i === 0 ? 0 : -6 }} className="ring-2 ring-white rounded-full">
                   <Avatar initials={p.initials} color={p.color} size="sm" />
                 </div>
@@ -793,7 +831,7 @@ export function Room() {
           {([
             ['chat', t('room.chat'), messages.length, false],
             ['tasks', t('room.tasks'), openTaskCount, reviewTaskCount > 0],
-            ['people', t('room.people'), room.participants.length, false],
+            ['people', t('room.people'), roster.length, false],
           ] as const).map(([key, label, count, alert]) => {
             const active = mobilePanel === key;
             return (
@@ -825,7 +863,11 @@ export function Room() {
           })}
         </div>
 
-        <div className="min-h-0 min-w-0 overflow-x-hidden grid lg:grid-cols-[260px_minmax(0,1fr)_340px] bg-surface-soft">
+        <div className={`min-h-0 min-w-0 overflow-x-hidden grid bg-surface-soft ${
+          desktopShell && terminalExpanded
+            ? 'lg:grid-cols-[220px_minmax(0,240px)_minmax(0,1fr)]'
+            : 'lg:grid-cols-[260px_minmax(0,1fr)_340px]'
+        }`}>
           <aside className={`${mobilePanel === 'people' ? 'flex' : 'hidden'} lg:flex min-h-0 min-w-0 flex-col border-r border-border-faint bg-surface`}>
             <div className="p-4 border-b border-border-faint">
               <h2 className="hidden lg:block text-sm font-semibold leading-snug">{room.topic}</h2>
@@ -843,13 +885,11 @@ export function Room() {
                 roomCode={code}
                 isHost={room.createdBy === self?.name}
                 ended={ended}
-                onHosted={seat => { if (seat.seatId) setHostedSeatId(seat.seatId); }}
+                onHosted={seat => {
+                  if (seat.seatId) openSeatTerminal(seat.seatId);
+                  void refreshRoom();
+                }}
               />
-              {isDesktopShell() && (
-                <Suspense fallback={null}>
-                  <DesktopSeatTerminal roomCode={code} preferredSeatId={hostedSeatId} />
-                </Suspense>
-              )}
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-[12px] font-semibold text-ink-muted">{t('room.whoReplies')}</span>
@@ -933,12 +973,14 @@ export function Room() {
             <div className="flex-1 overflow-y-auto p-4">
               <div className="mb-2.5 text-[13px] font-semibold text-ink">{t('room.inRoom')}</div>
               <div className="space-y-2">
-                {room.participants.map(p => {
+                {roster.map(p => {
                   const isMeHost = room.createdBy === self.name;
                   const isSelf = p.name === self.name && p.client === 'web';
-                  const canKick = isMeHost && !isSelf && !ended;
+                  const storedSeat = activeRoom.participants.some(s => s.name === p.name && s.client === p.client);
+                  const canKick = isMeHost && !isSelf && !ended && storedSeat;
                   const isMuted = p.canSpeak === false;
-                  const canMuteToggle = isMeHost && !isSelf && !ended;
+                  const canMuteToggle = isMeHost && !isSelf && !ended && storedSeat;
+                  const ptySeat = desktopShell ? terminalSeatIdFor(p, terminalRows, code) : null;
                   const canAsk = canConfigureReplyMode && p.client === 'cc' && !isMuted;
     const presence = participantPresence(p, now, t);
                   // Whole-row visual fade for participants who haven't been
@@ -979,8 +1021,22 @@ export function Room() {
                         but always discoverable, and only render at all when
                         the viewer is actually the host.
                       */}
-                      {(canAsk || canMuteToggle || canKick) && (
+                      {(ptySeat || canAsk || canMuteToggle || canKick) && (
                         <div className="flex items-center gap-1">
+                          {ptySeat && (
+                            <button
+                              type="button"
+                              onClick={() => openSeatTerminal(ptySeat)}
+                              title={t('room.openSeatTerminal', { name: p.name })}
+                              aria-label={t('room.openSeatTerminal', { name: p.name })}
+                              className="flex h-10 w-10 sm:h-8 sm:w-8 items-center justify-center rounded-lg border border-border-faint bg-surface text-ink-soft transition active:scale-[0.98] hover:border-accent/40 hover:text-accent"
+                            >
+                              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                                <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
+                                <path d="M4.25 6.25 6.25 8 4.25 9.75M8 10.25h3.5" />
+                              </svg>
+                            </button>
+                          )}
                           {canAsk && (
                             <button
                               onClick={() => { void handleAskAgent(p); }}
@@ -1286,20 +1342,41 @@ export function Room() {
               a different verifier, evidence, verdicts) but the web client
               never rendered. Before this, a host on a phone could only infer
               agent progress from chat prose and regex-scraped [TODO] markers.
+              Desktop adds a 终端 tab beside 任务. Expand squeezes the discussion
+              column to 240px and gives the remaining width to this rail.
             */}
-            <TaskBoard
-              code={code}
-              room={activeRoom}
-              me={me}
-              isHost={isHost}
-              ended={ended}
-              agents={roomAgents}
-              artifacts={artifacts}
-              canExport={messages.length > 0}
-              reportBusy={reportBusy}
-              onExportReport={handleExportReport}
-              onMention={appendText}
-              taskBoard={taskBoard}
+            <RoomRightColumn
+              desktop={desktopShell}
+              tab={rightTab}
+              onTab={setRightTab}
+              tasks={(
+                <TaskBoard
+                  code={code}
+                  room={activeRoom}
+                  me={me}
+                  isHost={isHost}
+                  ended={ended}
+                  agents={roomAgents}
+                  artifacts={artifacts}
+                  canExport={messages.length > 0}
+                  reportBusy={reportBusy}
+                  onExportReport={handleExportReport}
+                  onMention={appendText}
+                  taskBoard={taskBoard}
+                />
+              )}
+              terminal={desktopShell ? (
+                <Suspense fallback={null}>
+                  <DesktopSeatTerminal
+                    roomCode={code}
+                    preferredSeatId={hostedSeatId}
+                    focusToken={terminalFocus}
+                    expanded={terminalExpanded}
+                    onToggleExpand={() => setTerminalExpanded(value => !value)}
+                    onTerminals={onTerminals}
+                  />
+                </Suspense>
+              ) : null}
             />
           </aside>
         </div>

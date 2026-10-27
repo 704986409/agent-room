@@ -14,19 +14,26 @@ import {
 const DOCK_CHANNEL = 'agent-room-terminal-dock';
 const DOCK_EVENT = 'managed-terminal-docked';
 
-function seatLabel(row: DesktopTerminalRow): string {
-  const name = row.name?.trim();
-  return name ? `${name} · ${row.seatId}` : row.seatId;
-}
-
 /**
  * Docked xterm for this machine's embedded PTY. Rendered only inside the desktop shell.
  * Pop-out uses the shell command so the control token stays in Rust. Closing that window
  * emits `managed-terminal-docked` and this panel attaches to the same PTY again.
  */
-export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
+export function DesktopSeatTerminal({
+  roomCode,
+  preferredSeatId,
+  focusToken = 0,
+  expanded = false,
+  onToggleExpand,
+  onTerminals,
+}: {
   roomCode: string;
   preferredSeatId?: string;
+  /** Bumps when the member list asks for this seat again, so the same id reconnects. */
+  focusToken?: number;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  onTerminals?: (rows: DesktopTerminalRow[]) => void;
 }) {
   const { t } = useLocale();
   const tRef = useRef(t);
@@ -46,6 +53,8 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
   const channelRef = useRef<BroadcastChannel | null>(null);
   const connectRef = useRef<(id: string) => void>(() => {});
   const disconnectRef = useRef<(silent?: boolean) => void>(() => {});
+  const onTerminalsRef = useRef(onTerminals);
+  onTerminalsRef.current = onTerminals;
   seatRef.current = seatId;
 
   const visible = terminalsForRoom(rows, roomCode);
@@ -164,6 +173,7 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
         const payload = await listDesktopTerminals();
         if (stopped) return;
         setRows(payload.terminals);
+        onTerminalsRef.current?.(payload.terminals);
         setSeatId(current => {
           if (current && payload.terminals.some(row => row.seatId === current)) return current;
           const roomRows = terminalsForRoom(payload.terminals, roomCode);
@@ -196,6 +206,7 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
           const payload = await listDesktopTerminals();
           if (cancelled) return;
           setRows(payload.terminals);
+          onTerminalsRef.current?.(payload.terminals);
           if (payload.terminals.some(row => row.seatId === preferredSeatId)) {
             connectRef.current(preferredSeatId);
             return;
@@ -211,7 +222,7 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
       if (!cancelled) connectRef.current(preferredSeatId);
     })();
     return () => { cancelled = true; };
-  }, [desktop, preferredSeatId]);
+  }, [desktop, preferredSeatId, focusToken]);
 
   useEffect(() => {
     if (!desktop) return;
@@ -288,21 +299,37 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
 
   if (!desktop) return null;
 
+  function selectSeat(id: string) {
+    if (seatRef.current === id && socketRef.current?.readyState === WebSocket.OPEN) return;
+    connectRef.current(id);
+  }
+
   return (
-    <section className="mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5" aria-label={t('desktopTerminal.title')}>
-      <h3 className="text-[12px] font-semibold text-ink">{t('desktopTerminal.title')}</h3>
-      <select
-        value={seatId}
-        onChange={event => { setSeatId(event.target.value); }}
-        className="mt-2 h-9 w-full rounded-lg border border-border bg-white px-2 text-xs font-semibold text-ink outline-none focus:border-accent"
-        aria-label={t('desktopTerminal.seatLabel')}
-      >
-        <option value="">{t('desktopTerminal.seatPlaceholder')}</option>
-        {options.map(row => (
-          <option key={row.seatId} value={row.seatId}>{seatLabel(row)}</option>
-        ))}
-      </select>
-      <div className="mt-2 grid grid-cols-3 gap-1">
+    <section className="flex min-h-0 flex-1 flex-col" aria-label={t('desktopTerminal.title')}>
+      <h3 className="sr-only">{t('desktopTerminal.title')}</h3>
+      <div role="tablist" aria-label={t('desktopTerminal.seatLabel')} className="flex shrink-0 gap-1 overflow-x-auto px-3 pt-2">
+        {options.length === 0 ? (
+          <p className="text-[12px] text-ink-soft">{t('desktopTerminal.noSeats')}</p>
+        ) : options.map(row => {
+          const active = row.seatId === seatId;
+          const label = row.name?.trim() || row.seatId;
+          return (
+            <button
+              key={row.seatId}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => { selectSeat(row.seatId); }}
+              className={`shrink-0 min-h-8 rounded-md px-2.5 text-[12px] font-semibold ${
+                active ? 'bg-accent text-white' : 'bg-surface-softer text-ink-muted hover:text-ink'
+              }`}
+            >
+              {label}
+            </button>
+          );
+        })}
+      </div>
+      <div className="mt-2 grid shrink-0 grid-cols-4 gap-1 px-3">
         <button
           type="button"
           disabled={!seatId || connected || popped}
@@ -327,11 +354,18 @@ export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
         >
           {t('desktopTerminal.popout')}
         </button>
+        <button
+          type="button"
+          onClick={() => { onToggleExpand?.(); }}
+          className="min-h-8 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink"
+        >
+          {expanded ? t('desktopTerminal.collapse') : t('desktopTerminal.expand')}
+        </button>
       </div>
       {note && (
-        <p className={`mt-1 text-[11px] ${noteErr ? 'text-red-700' : 'text-ink-muted'}`}>{note}</p>
+        <p className={`mt-1 shrink-0 px-3 text-[11px] ${noteErr ? 'text-red-700' : 'text-ink-muted'}`}>{note}</p>
       )}
-      <div ref={hostRef} className="mt-2 h-[200px] overflow-hidden rounded-md bg-[#1e1e1e]" />
+      <div ref={hostRef} className="mx-3 mb-3 mt-2 min-h-[180px] flex-1 overflow-hidden rounded-md bg-[#1e1e1e]" />
     </section>
   );
 }

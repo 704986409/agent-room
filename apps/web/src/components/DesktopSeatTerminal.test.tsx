@@ -150,4 +150,28 @@ describe('DesktopSeatTerminal', () => {
     expect(FakeSocket.latest?.url).toBe('ws://127.0.0.1:17421/api/desktop/terminals/st_1/ws?desktop=1');
     expect(state.reveal).not.toHaveBeenCalled();
   });
+
+  it('renders a sub-tab per live seat and does not pop out on its own', async () => {
+    state.list.mockResolvedValue({
+      mode: 'embedded',
+      terminals: [
+        { seatId: 'st_1', pid: 3, cols: 80, rows: 24, name: '测试333', code: 'ABC-DEF-GHJ' },
+        { seatId: 'st_2', pid: 4, cols: 80, rows: 24, name: 'Codex', code: 'ABC-DEF-GHJ' },
+      ],
+    });
+    const onToggleExpand = vi.fn();
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" onToggleExpand={onToggleExpand} />,
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    mounted = renderer;
+    expect(button(renderer, '测试333')).toBeTruthy();
+    expect(button(renderer, 'Codex')).toBeTruthy();
+    expect(state.reveal).not.toHaveBeenCalled();
+    await act(async () => { button(renderer, '展开')!.props.onClick(); });
+    expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
 });
