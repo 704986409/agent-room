@@ -11,6 +11,9 @@ export function firstRunPrompt(input: {
 }): string {
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
+    '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
+    '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
+    '接下来只调用 room_listen 读取并处理消息、完成房间里交给你的工作，没有新的 @ 时调用 room_sleep。',
     '下面示例里的 seatKey 就是本座位的值。调用房间 MCP 工具时直接照填（不要用 shell/cat/printenv 去读，也不要打印或写进回复）。',
     'MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）。',
     wakePrompt(input),
