@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { lazy, Suspense, useRef, useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useRoom } from '../hooks/useRoom.js';
 import { useTaskBoard } from '../hooks/useTaskBoard.js';
@@ -9,6 +9,7 @@ import { DeliverEventCard, isDeliverEvent } from '../components/DeliverEventCard
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
 import { HostLocalButton } from '../components/HostLocalButton.js';
+import { isDesktopShell } from '../lib/desktopHost.js';
 import { InviteAgentDialog } from '../components/InviteAgentDialog.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
 import { useDocumentTitle, useLocale } from '../i18n/LocaleProvider.js';
@@ -30,6 +31,8 @@ import { copyText } from '../lib/copy.js';
 import { localizedTemplate, templateById } from '../lib/templates.js';
 import { AGENT_VOICE_REPLIES_ENABLED } from '../lib/voiceReplies.js';
 import { deleteRoomBlobs } from '../lib/upload.js';
+
+const DesktopSeatTerminal = lazy(() => import('../components/DesktopSeatTerminal.js').then(mod => ({ default: mod.DesktopSeatTerminal })));
 
 const IDLE_TIMEOUT_MS = 60 * 60 * 1000; // 1 hour — long enough that humans + agents discussing intermittently don't trip it
 const AUTO_CLOSE_COUNTDOWN = 5;          // seconds
@@ -456,6 +459,7 @@ export function Room() {
   }
 
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'tasks' | 'people'>('chat');
+  const [hostedSeatId, setHostedSeatId] = useState<string | undefined>(undefined);
   const [reportBusy, setReportBusy] = useState(false);
   const artifacts = extractArtifacts(messages);
   // Board lives here, not inside TaskBoard, so the tab strip can badge how
@@ -835,7 +839,17 @@ export function Room() {
                 className="mt-3 w-full min-h-10 sm:min-h-8 text-[13px] sm:text-xs font-semibold text-accent bg-accent-tint px-3 rounded-lg transition active:scale-[0.98] hover:bg-accent/20 disabled:opacity-60"
               />
               <InviteAgentDialog roomCode={code} isHost={room.createdBy === self?.name} ended={ended} variant="panel" />
-              <HostLocalButton roomCode={code} isHost={room.createdBy === self?.name} ended={ended} />
+              <HostLocalButton
+                roomCode={code}
+                isHost={room.createdBy === self?.name}
+                ended={ended}
+                onHosted={seat => { if (seat.seatId) setHostedSeatId(seat.seatId); }}
+              />
+              {isDesktopShell() && (
+                <Suspense fallback={null}>
+                  <DesktopSeatTerminal roomCode={code} preferredSeatId={hostedSeatId} />
+                </Suspense>
+              )}
               <div className="mt-3 lg:mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5">
                 <div className="mb-2 flex items-center justify-between gap-2">
                   <span className="text-[12px] font-semibold text-ink-muted">{t('room.whoReplies')}</span>

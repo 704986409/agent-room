@@ -4,16 +4,17 @@
 // and optional terminal-<seatId> pop-out windows (localhost IPC only).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -33,18 +34,22 @@ struct Daemon(Arc<Mutex<DaemonInner>>);
 fn config_dir() -> PathBuf {
     #[cfg(windows)]
     {
-        let base = std::env::var("APPDATA").map(PathBuf::from).unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
-                .join("AppData")
-                .join("Roaming")
-        });
+        let base = std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into()))
+                    .join("AppData")
+                    .join("Roaming")
+            });
         return base.join("agent-room");
     }
     #[cfg(not(windows))]
     {
-        let base = std::env::var("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
-        });
+        let base = std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".config")
+            });
         base.join("agent-room")
     }
 }
@@ -75,9 +80,10 @@ fn daemon_script(app: &AppHandle) -> Option<PathBuf> {
             .resource_dir()
             .ok()
             .map(|d| d.join("daemon").join("agent-room-daemon.mjs")),
-        std::env::current_exe()
-            .ok()
-            .and_then(|e| e.parent().map(|p| p.join("daemon").join("agent-room-daemon.mjs"))),
+        std::env::current_exe().ok().and_then(|e| {
+            e.parent()
+                .map(|p| p.join("daemon").join("agent-room-daemon.mjs"))
+        }),
     ];
     candidates.into_iter().flatten().find(|p| p.exists())
 }
@@ -226,7 +232,12 @@ fn ensure_writable_dir(dir: &Path) -> bool {
         return false;
     }
     let probe = dir.join(".write-probe");
-    match OpenOptions::new().create(true).write(true).truncate(true).open(&probe) {
+    match OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&probe)
+    {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
             true
@@ -253,13 +264,25 @@ fn choose_log_dir(candidates: &[Option<PathBuf>]) -> PathBuf {
 fn fallback_log_dir() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        let base = std::env::var("LOCALAPPDATA").ok().filter(|value| !value.is_empty())?;
-        return Some(for_node_argv(PathBuf::from(base).join("agent-room").join("logs")));
+        let base = std::env::var("LOCALAPPDATA")
+            .ok()
+            .filter(|value| !value.is_empty())?;
+        return Some(for_node_argv(
+            PathBuf::from(base).join("agent-room").join("logs"),
+        ));
     }
     #[cfg(not(windows))]
     {
-        let base = std::env::var("HOME").ok().filter(|value| !value.is_empty())?;
-        Some(PathBuf::from(base).join(".local").join("state").join("agent-room").join("logs"))
+        let base = std::env::var("HOME")
+            .ok()
+            .filter(|value| !value.is_empty())?;
+        Some(
+            PathBuf::from(base)
+                .join(".local")
+                .join("state")
+                .join("agent-room")
+                .join("logs"),
+        )
     }
 }
 
@@ -436,8 +459,8 @@ fn persistent_webview_data_directory(app: &AppHandle) -> Result<Option<PathBuf>,
 fn main_window_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, String> {
     let settings = MenuItem::with_id(app, "window-settings", "本机设置", true, None::<&str>)
         .map_err(|e| e.to_string())?;
-    let app_menu = Submenu::with_items(app, "Agent Room", true, &[&settings])
-        .map_err(|e| e.to_string())?;
+    let app_menu =
+        Submenu::with_items(app, "Agent Room", true, &[&settings]).map_err(|e| e.to_string())?;
     Menu::with_items(app, &[&app_menu]).map_err(|e| e.to_string())
 }
 
@@ -470,6 +493,18 @@ fn close_labeled_window(app: &AppHandle, label: &str) {
     if let Some(w) = app.get_webview_window(label) {
         let _ = w.close();
     }
+}
+
+static TERMINAL_SEAT_BY_LABEL: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn remember_terminal_seat(label: &str, seat_id: &str) {
+    if let Ok(mut map) = TERMINAL_SEAT_BY_LABEL.lock() {
+        map.insert(label.to_string(), seat_id.to_string());
+    }
+}
+
+fn take_terminal_seat(label: &str) -> Option<String> {
+    TERMINAL_SEAT_BY_LABEL.lock().ok()?.remove(label)
 }
 
 /// Sanitize seat id into a Tauri window label (`terminal-<safe>`).
@@ -535,6 +570,127 @@ fn clamp_terminal_position(x: Option<f64>, y: Option<f64>) -> Option<(f64, f64)>
     }
 }
 
+/// Seat ids that can be placed in the pop-out query. Same alphabet as
+/// `terminal_window_label`, but rejected instead of rewritten so the PTY id stays exact.
+fn validate_managed_seat_id(seat_id: &str) -> Result<&str, String> {
+    let seat_id = seat_id.trim();
+    if seat_id.is_empty() {
+        return Err("seatId required".into());
+    }
+    if seat_id.len() > 128 {
+        return Err("seatId too long".into());
+    }
+    if !seat_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("seatId has invalid characters".into());
+    }
+    Ok(seat_id)
+}
+
+fn query_encode(value: &str) -> String {
+    let mut out = String::new();
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(v) = u8::from_str_radix(&input[i + 1..i + 3], 16) {
+                out.push(v);
+                i += 3;
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn form_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (raw_key, raw_value) = pair.split_once('=').unwrap_or((pair, ""));
+        if percent_decode(raw_key) == key {
+            return Some(percent_decode(raw_value));
+        }
+    }
+    None
+}
+
+/// Origin + `t` token from daemon stdout `control: <url>`.
+/// Only loopback http is accepted, matching `open_terminal_window`.
+fn control_origin_and_token(control_url: &str) -> Result<(String, String), String> {
+    let control_url = control_url.trim();
+    let (prefix, rest) = if let Some(rest) = control_url.strip_prefix("http://127.0.0.1:") {
+        ("http://127.0.0.1:", rest)
+    } else if let Some(rest) = control_url.strip_prefix("http://localhost:") {
+        ("http://localhost:", rest)
+    } else {
+        return Err("控制页地址必须是 http://127.0.0.1 或 http://localhost".into());
+    };
+    let port_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if port_len == 0 {
+        return Err("控制页地址缺少端口".into());
+    }
+    let port = &rest[..port_len];
+    let after = &rest[port_len..];
+    let query = if let Some((path, query)) = after.split_once('?') {
+        if !(path.is_empty() || path.starts_with('/')) {
+            return Err("控制页地址无效".into());
+        }
+        query.split('#').next().unwrap_or("")
+    } else {
+        return Err("控制页地址缺少令牌".into());
+    };
+    let token = form_param(query, "t")
+        .filter(|token| !token.is_empty())
+        .ok_or_else(|| "控制页地址缺少令牌".to_string())?;
+    Ok((format!("{prefix}{port}"), token))
+}
+
+/// Same query shape as `buildPopoutControlUrl` / settings.html `buildPopoutUrl`.
+fn managed_terminal_popout_url(control_url: &str, seat_id: &str) -> Result<String, String> {
+    let seat_id = validate_managed_seat_id(seat_id)?;
+    let (origin, token) = control_origin_and_token(control_url)?;
+    Ok(format!(
+        "{origin}/?t={}&terminal={}&popout=1",
+        query_encode(&token),
+        query_encode(seat_id),
+    ))
+}
+
+fn open_managed_terminal_url(control_url: Option<&str>, seat_id: &str) -> Result<String, String> {
+    let control_url = control_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| {
+            "本机后台尚未就绪（没有控制页地址）。请确认桌面端已打开并稍后再试。".to_string()
+        })?;
+    managed_terminal_popout_url(control_url, seat_id)
+}
+
 fn open_terminal_window_inner(
     app: &AppHandle,
     seat_id: &str,
@@ -549,14 +705,17 @@ fn open_terminal_window_inner(
         .parse()
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
     if let Some(w) = app.get_webview_window(&label) {
+        remember_terminal_seat(&label, seat_id);
         // Already open: focus only. Re-applying saved geometry would fight an in-progress move.
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
         return Ok(());
     }
-    let (width, height) =
-        clamp_terminal_size(width.unwrap_or(TERM_DEFAULT_W), height.unwrap_or(TERM_DEFAULT_H));
+    let (width, height) = clamp_terminal_size(
+        width.unwrap_or(TERM_DEFAULT_W),
+        height.unwrap_or(TERM_DEFAULT_H),
+    );
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed));
     if let Some(data_dir) = persistent_webview_data_directory(app)? {
         builder = builder.data_directory(data_dir);
@@ -571,6 +730,7 @@ fn open_terminal_window_inner(
     builder
         .build()
         .map_err(|e| format!("无法打开终端窗口: {e}"))?;
+    remember_terminal_seat(&label, seat_id);
     Ok(())
 }
 
@@ -591,6 +751,18 @@ fn open_terminal_window(
         return Err("terminal pop-out URL must be http://127.0.0.1 or http://localhost".into());
     }
     open_terminal_window_inner(&app, &seat_id, &url, x, y, width, height)
+}
+
+/// Open the embedded PTY pop-out for a seat the desktop daemon just hosted.
+/// The room page supplies only `seatId`. The control token never leaves this process.
+#[tauri::command]
+fn open_managed_terminal(
+    app: AppHandle,
+    daemon: tauri::State<'_, Daemon>,
+    seat_id: String,
+) -> Result<(), String> {
+    let url = open_managed_terminal_url(daemon.control_url().as_deref(), &seat_id)?;
+    open_terminal_window_inner(&app, seat_id.trim(), &url, None, None, None, None)
 }
 
 #[tauri::command]
@@ -806,6 +978,16 @@ impl Daemon {
         g.control_url = None;
     }
 
+    fn control_url(&self) -> Option<String> {
+        let url = self.0.lock().unwrap().control_url.clone()?;
+        let url = url.trim().to_string();
+        if url.is_empty() {
+            None
+        } else {
+            Some(url)
+        }
+    }
+
     fn wait_control_url(&self, timeout: Duration) -> Option<String> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -928,7 +1110,8 @@ fn main() {
         .manage(daemon.clone())
         .invoke_handler(tauri::generate_handler![
             open_terminal_window,
-            close_terminal_window
+            close_terminal_window,
+            open_managed_terminal
         ])
         .on_menu_event({
             let menu_daemon = daemon.clone();
@@ -984,12 +1167,24 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Closing the main window hides it; the tray keeps the app (and daemon) alive.
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
-                    api.prevent_close();
-                    let _ = window.hide();
+            match event {
+                // Closing the main window hides it; the tray keeps the app (and daemon) alive.
+                tauri::WindowEvent::CloseRequested { api, .. } => {
+                    if window.label() == "main" {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    }
                 }
+                // Pop-out is a different origin from the room page, so BroadcastChannel
+                // cannot dock it. Tell the main webview to reattach the same PTY.
+                tauri::WindowEvent::Destroyed => {
+                    if let Some(seat_id) = take_terminal_seat(window.label()) {
+                        if let Some(main) = window.app_handle().get_webview_window("main") {
+                            let _ = main.emit("managed-terminal-docked", seat_id);
+                        }
+                    }
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!())
@@ -1049,15 +1244,14 @@ mod tests {
         assert!(is_unsafe_log_dir_text(r".\.agent-room"));
         assert!(is_unsafe_log_dir_text(r".\.agent-room\logs"));
         assert!(is_unsafe_log_dir_text("./.agent-room"));
-        assert!(!is_unsafe_log_dir_text(r"C:\Users\a\AppData\Local\Agent Room\logs"));
+        assert!(!is_unsafe_log_dir_text(
+            r"C:\Users\a\AppData\Local\Agent Room\logs"
+        ));
         assert!(!is_unsafe_log_dir_text(r"\\server\share\Agent Room\logs"));
 
         let root = std::env::temp_dir().join(format!("agent-room-logs-{}", std::process::id()));
         let spaced = root.join("Agent Room").join("logs");
-        let chosen = choose_log_dir(&[
-            Some(PathBuf::from(r".\.agent-room")),
-            Some(spaced.clone()),
-        ]);
+        let chosen = choose_log_dir(&[Some(PathBuf::from(r".\.agent-room")), Some(spaced.clone())]);
         assert_eq!(chosen, spaced);
         assert!(spaced.is_dir());
         let shown = chosen.to_string_lossy();
@@ -1082,6 +1276,14 @@ mod tests {
         }
     }
     #[test]
+    fn terminal_seat_map_round_trip() {
+        let label = format!("{}-{}", terminal_window_label("st_06eb2797"), "round");
+        remember_terminal_seat(&label, "st_06eb2797");
+        assert_eq!(take_terminal_seat(&label).as_deref(), Some("st_06eb2797"));
+        assert_eq!(take_terminal_seat(&label), None);
+    }
+
+    #[test]
     fn terminal_window_label_sanitizes() {
         assert_eq!(terminal_window_label("seat-1"), "terminal-seat-1");
         assert_eq!(terminal_window_label("a/b c"), "terminal-a_b_c");
@@ -1096,10 +1298,51 @@ mod tests {
         assert_eq!(clamp_terminal_size(9000.0, 9000.0), (3840.0, 2160.0));
         assert_eq!(clamp_terminal_size(f64::NAN, 500.0), (960.0, 500.0));
         assert_eq!(clamp_terminal_size(700.0, f64::INFINITY), (700.0, 640.0));
-        assert_eq!(clamp_terminal_position(Some(12.0), Some(-40.0)), Some((12.0, -40.0)));
-        assert_eq!(clamp_terminal_position(Some(-9000.0), Some(20000.0)), Some((-8000.0, 16000.0)));
+        assert_eq!(
+            clamp_terminal_position(Some(12.0), Some(-40.0)),
+            Some((12.0, -40.0))
+        );
+        assert_eq!(
+            clamp_terminal_position(Some(-9000.0), Some(20000.0)),
+            Some((-8000.0, 16000.0))
+        );
         assert_eq!(clamp_terminal_position(Some(1.0), None), None);
         assert_eq!(clamp_terminal_position(Some(f64::NAN), Some(1.0)), None);
     }
 
+    #[test]
+    fn managed_terminal_url_matches_settings_popout() {
+        let url = open_managed_terminal_url(Some("http://127.0.0.1:17421/?t=abc"), "s1").unwrap();
+        assert_eq!(url, "http://127.0.0.1:17421/?t=abc&terminal=s1&popout=1");
+        let local = open_managed_terminal_url(
+            Some("http://localhost:17421/?t=tok&extra=1"),
+            " st_06eb2797 ",
+        )
+        .unwrap();
+        assert_eq!(
+            local,
+            "http://localhost:17421/?t=tok&terminal=st_06eb2797&popout=1"
+        );
+        let encoded = managed_terminal_popout_url("http://127.0.0.1:9/?t=a%26b", "seat-1").unwrap();
+        assert_eq!(
+            encoded,
+            "http://127.0.0.1:9/?t=a%26b&terminal=seat-1&popout=1"
+        );
+    }
+
+    #[test]
+    fn managed_terminal_url_rejects_missing_daemon_and_bad_seat() {
+        let missing = open_managed_terminal_url(None, "st_1").unwrap_err();
+        assert!(missing.contains("尚未就绪"));
+        assert!(open_managed_terminal_url(Some("  "), "st_1").is_err());
+        assert!(
+            open_managed_terminal_url(Some("http://127.0.0.1:1/"), "st_1")
+                .unwrap_err()
+                .contains("令牌")
+        );
+        assert!(managed_terminal_popout_url("https://ai-room.example/?t=abc", "st_1").is_err());
+        assert!(managed_terminal_popout_url("http://127.0.0.1:1/?t=abc", " ").is_err());
+        assert!(managed_terminal_popout_url("http://127.0.0.1:1/?t=abc", "../x").is_err());
+        assert!(managed_terminal_popout_url("http://127.0.0.1:1/?x=1", "st_1").is_err());
+    }
 }

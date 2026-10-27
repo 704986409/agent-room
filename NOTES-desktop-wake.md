@@ -199,11 +199,19 @@ Default for managed interactive seats is an **in-app PTY** (`node-pty` via
   `terminal-<safeSeatId>` loading `/?t=…&terminal=<seatId>&popout=1` (xterm only).
 - Same seatId PTY: main panel disconnects its WS before pop-out; closing the child
   or **收回/停靠** remounts in settings. WS close never kills the PTY (unless `?kill=1`).
-- IPC (localhost control pages only): `open_terminal_window` / `close_terminal_window`.
-  Capability `local-control-terminal` + `app.withGlobalTauri`. Plain browser against
-  the control port hides/disables pop-out.
+- IPC: `open_terminal_window` / `close_terminal_window` stay on localhost
+  `settings` + `terminal-*` only (`local-control-terminal`). The room page
+  (main window, possibly a VPS origin) may call only `open_managed_terminal(seatId)`
+  (`main-managed-terminal`). The shell reads the daemon `control:` URL and builds
+  `/?t=…&terminal=<seatId>&popout=1` in Rust, so the room page never receives the
+  token and cannot pass an arbitrary URL. The room page calls it only from the
+  docked panel's **弹出** button (not automatically after「在本机托管」). Plain browser
+  against the control port still hides/disables pop-out. `app.withGlobalTauri`.
 - Dock signaling: `BroadcastChannel('agent-room-terminal-dock')` between settings and
-  pop-out (same origin). Close ≡ dock.
+  pop-out (same origin). Close ≡ dock. The room page is a different origin, so
+  destroying a `terminal-*` window emits `managed-terminal-docked` to the main
+  webview (`core:event:allow-listen` on `main-managed-terminal`) and the docked
+  panel attaches to the same PTY again.
 - Helpers: `tools/wake-agent/src/terminalWindow.ts`; Rust `terminal_window_label`.
 
 ## Embedded terminal drag-undock + geometry (P2)
@@ -228,3 +236,17 @@ Default for managed interactive seats is an **in-app PTY** (`node-pty` via
 - Terminal toolbar (`#term-seat-status`, docked and pop-out) polls `GET /api/status`
   every 4s and shows `seat.status` plus `adapterId`. There is no listen boolean
   on that payload; the tooltip says the fine-grained 监听中 signal is not exposed.
+
+## Room page embedded CLI (desktop shell only)
+
+- `DesktopSeatTerminal` sits under the host button on the room people column.
+  It renders only when `isDesktopShell()` is true, so the cloud/browser page has
+  no panel. After「在本机托管」, the panel refreshes and auto-connects that `seatId`
+  in the docked xterm. It does not open a child window.
+- **弹出** calls `revealManagedTerminal` → `open_managed_terminal(seatId)`.
+- Desktop-auth control routes (same gate as `/api/desktop/host`: paired Origin +
+  `x-agent-room-desktop: 1`). The room page never sees the control token.
+  WebSocket cannot set that header, so the attach URL uses `?desktop=1` instead.
+  - `GET /api/desktop/terminals` → `{ terminals, mode }` with `name` / `code` joined from daemon seats
+  - `WS /api/desktop/terminals/:seatId/ws?desktop=1` → same `attachTerminalSocket` as the token WS
+- Client filter: seats whose `code` matches this room, otherwise every live PTY.

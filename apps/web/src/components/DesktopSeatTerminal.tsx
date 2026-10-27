@@ -1,0 +1,337 @@
+import { useEffect, useRef, useState } from 'react';
+import { FitAddon } from '@xterm/addon-fit';
+import { Terminal } from '@xterm/xterm';
+import '@xterm/xterm/css/xterm.css';
+import { useLocale } from '../i18n/LocaleProvider.js';
+import { isDesktopShell, listenDesktopEvent, revealManagedTerminal } from '../lib/desktopHost.js';
+import {
+  desktopTerminalWsUrl,
+  listDesktopTerminals,
+  terminalsForRoom,
+  type DesktopTerminalRow,
+} from '../lib/desktopTerminal.js';
+
+const DOCK_CHANNEL = 'agent-room-terminal-dock';
+const DOCK_EVENT = 'managed-terminal-docked';
+
+function seatLabel(row: DesktopTerminalRow): string {
+  const name = row.name?.trim();
+  return name ? `${name} · ${row.seatId}` : row.seatId;
+}
+
+/**
+ * Docked xterm for this machine's embedded PTY. Rendered only inside the desktop shell.
+ * Pop-out uses the shell command so the control token stays in Rust. Closing that window
+ * emits `managed-terminal-docked` and this panel attaches to the same PTY again.
+ */
+export function DesktopSeatTerminal({ roomCode, preferredSeatId }: {
+  roomCode: string;
+  preferredSeatId?: string;
+}) {
+  const { t } = useLocale();
+  const tRef = useRef(t);
+  tRef.current = t;
+  const desktop = isDesktopShell();
+  const [rows, setRows] = useState<DesktopTerminalRow[]>([]);
+  const [seatId, setSeatId] = useState('');
+  const [connected, setConnected] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [noteErr, setNoteErr] = useState(false);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const poppedRef = useRef<string | null>(null);
+  const seatRef = useRef('');
+  const channelRef = useRef<BroadcastChannel | null>(null);
+  const connectRef = useRef<(id: string) => void>(() => {});
+  const disconnectRef = useRef<(silent?: boolean) => void>(() => {});
+  seatRef.current = seatId;
+
+  const visible = terminalsForRoom(rows, roomCode);
+  const options = seatId && !visible.some(row => row.seatId === seatId)
+    ? [...visible, { seatId, pid: 0, cols: 0, rows: 0 }]
+    : visible;
+  const popped = poppedRef.current === seatId && seatId !== '';
+
+  disconnectRef.current = (silent = false) => {
+    const ws = socketRef.current;
+    socketRef.current = null;
+    if (ws) {
+      ws.onclose = null;
+      ws.onerror = null;
+      try { ws.close(); } catch { /* ignore */ }
+    }
+    setConnected(false);
+    if (!silent) {
+      setNoteErr(false);
+      setNote(tRef.current('desktopTerminal.disconnected'));
+    }
+  };
+
+  function ensureTerm(): Terminal | null {
+    const host = hostRef.current;
+    if (!host) return null;
+    if (termRef.current) {
+      fitRef.current?.fit();
+      return termRef.current;
+    }
+    const term = new Terminal({
+      cursorBlink: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+      fontSize: 12,
+      theme: { background: '#1e1e1e' },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(host);
+    fit.fit();
+    term.onData(data => {
+      const ws = socketRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'stdin', data }));
+      }
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        const current = termRef.current;
+        const ws = socketRef.current;
+        if (!current) return;
+        fit.fit();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'resize', cols: current.cols, rows: current.rows }));
+        }
+      });
+      observer.observe(host);
+    }
+    termRef.current = term;
+    fitRef.current = fit;
+    return term;
+  }
+
+  connectRef.current = (id: string) => {
+    const next = id.trim();
+    if (!next) {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pickSeat'));
+      return;
+    }
+    if (poppedRef.current === next) {
+      setNoteErr(false);
+      setNote(tRef.current('desktopTerminal.popped'));
+      return;
+    }
+    disconnectRef.current(true);
+    setSeatId(next);
+    const term = ensureTerm();
+    term?.clear();
+    const ws = new WebSocket(desktopTerminalWsUrl(next));
+    socketRef.current = ws;
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => {
+      if (socketRef.current !== ws) return;
+      setConnected(true);
+      setNoteErr(false);
+      setNote(tRef.current('desktopTerminal.connected', { seat: next }));
+      fitRef.current?.fit();
+      if (term && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    };
+    ws.onmessage = event => {
+      const data = typeof event.data === 'string'
+        ? event.data
+        : new TextDecoder().decode(event.data as ArrayBuffer);
+      term?.write(data);
+    };
+    ws.onclose = () => {
+      if (socketRef.current === ws) socketRef.current = null;
+      setConnected(false);
+      setNoteErr(false);
+      setNote(poppedRef.current ? tRef.current('desktopTerminal.popped') : tRef.current('desktopTerminal.disconnected'));
+    };
+    ws.onerror = () => {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.wsError'));
+    };
+  };
+
+  useEffect(() => {
+    if (!desktop) return;
+    let stopped = false;
+    async function refresh() {
+      try {
+        const payload = await listDesktopTerminals();
+        if (stopped) return;
+        setRows(payload.terminals);
+        setSeatId(current => {
+          if (current && payload.terminals.some(row => row.seatId === current)) return current;
+          const roomRows = terminalsForRoom(payload.terminals, roomCode);
+          if (preferredSeatId && payload.terminals.some(row => row.seatId === preferredSeatId)) return preferredSeatId;
+          if (roomRows.length === 1) return roomRows[0]!.seatId;
+          return current;
+        });
+      } catch {
+        if (!stopped) {
+          setNoteErr(true);
+          setNote(tRef.current('desktopTerminal.listFailed'));
+        }
+      }
+    }
+    void refresh();
+    const timer = setInterval(() => { void refresh(); }, 4000);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [desktop, preferredSeatId, roomCode]);
+
+  useEffect(() => {
+    if (!desktop || !preferredSeatId) return;
+    let cancelled = false;
+    setSeatId(preferredSeatId);
+    void (async () => {
+      for (let attempt = 0; attempt < 8 && !cancelled; attempt++) {
+        try {
+          const payload = await listDesktopTerminals();
+          if (cancelled) return;
+          setRows(payload.terminals);
+          if (payload.terminals.some(row => row.seatId === preferredSeatId)) {
+            connectRef.current(preferredSeatId);
+            return;
+          }
+        } catch {
+          if (!cancelled) {
+            setNoteErr(true);
+            setNote(tRef.current('desktopTerminal.listFailed'));
+          }
+        }
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
+      if (!cancelled) connectRef.current(preferredSeatId);
+    })();
+    return () => { cancelled = true; };
+  }, [desktop, preferredSeatId]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    let unlisten: (() => void) | null = null;
+    let closed = false;
+    const onDock = (id: string) => {
+      if (poppedRef.current === id) poppedRef.current = null;
+      setSeatId(id);
+      connectRef.current(id);
+    };
+    const onPopout = (id: string) => {
+      poppedRef.current = id;
+      if (seatRef.current === id) disconnectRef.current(true);
+      setNoteErr(false);
+      setNote(tRef.current('desktopTerminal.popped'));
+    };
+    try {
+      const channel = new BroadcastChannel(DOCK_CHANNEL);
+      channelRef.current = channel;
+      channel.onmessage = (event: MessageEvent<{ type?: string; seatId?: string }>) => {
+        const msg = event.data;
+        if (!msg?.seatId) return;
+        if (msg.type === 'dock') onDock(msg.seatId);
+        if (msg.type === 'popout') onPopout(msg.seatId);
+      };
+    } catch { /* BroadcastChannel unavailable */ }
+    void listenDesktopEvent(DOCK_EVENT, payload => {
+      if (closed) return;
+      const id = typeof payload === 'string' ? payload.trim() : '';
+      if (id) onDock(id);
+    }).then(stop => {
+      if (closed) stop?.();
+      else unlisten = stop;
+    });
+    return () => {
+      closed = true;
+      channelRef.current?.close();
+      channelRef.current = null;
+      unlisten?.();
+      const ws = socketRef.current;
+      socketRef.current = null;
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        try { ws.close(); } catch { /* ignore */ }
+      }
+      termRef.current?.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, [desktop]);
+
+  async function popout() {
+    const id = seatId.trim();
+    if (!id) {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pickSeat'));
+      return;
+    }
+    disconnectRef.current(true);
+    poppedRef.current = id;
+    try { channelRef.current?.postMessage({ type: 'popout', seatId: id }); } catch { /* ignore */ }
+    setNoteErr(false);
+    setNote(tRef.current('desktopTerminal.popped'));
+    const error = await revealManagedTerminal(id);
+    if (poppedRef.current !== id) return;
+    if (error) {
+      poppedRef.current = null;
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.popoutFailed'));
+      connectRef.current(id);
+    }
+  }
+
+  if (!desktop) return null;
+
+  return (
+    <section className="mt-3 rounded-lg border border-border-faint bg-surface-softer p-2.5" aria-label={t('desktopTerminal.title')}>
+      <h3 className="text-[12px] font-semibold text-ink">{t('desktopTerminal.title')}</h3>
+      <select
+        value={seatId}
+        onChange={event => { setSeatId(event.target.value); }}
+        className="mt-2 h-9 w-full rounded-lg border border-border bg-white px-2 text-xs font-semibold text-ink outline-none focus:border-accent"
+        aria-label={t('desktopTerminal.seatLabel')}
+      >
+        <option value="">{t('desktopTerminal.seatPlaceholder')}</option>
+        {options.map(row => (
+          <option key={row.seatId} value={row.seatId}>{seatLabel(row)}</option>
+        ))}
+      </select>
+      <div className="mt-2 grid grid-cols-3 gap-1">
+        <button
+          type="button"
+          disabled={!seatId || connected || popped}
+          onClick={() => { connectRef.current(seatId); }}
+          className="min-h-8 rounded-md bg-accent px-1 text-[11px] font-semibold text-white disabled:opacity-50"
+        >
+          {t('desktopTerminal.connect')}
+        </button>
+        <button
+          type="button"
+          disabled={!connected}
+          onClick={() => { disconnectRef.current(false); }}
+          className="min-h-8 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink disabled:opacity-50"
+        >
+          {t('desktopTerminal.disconnect')}
+        </button>
+        <button
+          type="button"
+          disabled={!seatId || popped}
+          onClick={() => { void popout(); }}
+          className="min-h-8 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink disabled:opacity-50"
+        >
+          {t('desktopTerminal.popout')}
+        </button>
+      </div>
+      {note && (
+        <p className={`mt-1 text-[11px] ${noteErr ? 'text-red-700' : 'text-ink-muted'}`}>{note}</p>
+      )}
+      <div ref={hostRef} className="mt-2 h-[200px] overflow-hidden rounded-md bg-[#1e1e1e]" />
+    </section>
+  );
+}

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-close-terminal-window"
+description = "Enables the close_terminal_window command without any pre-configured scope."
+commands.allow = ["close_terminal_window"]
+
+[[permission]]
+identifier = "deny-close-terminal-window"
+description = "Denies the close_terminal_window command without any pre-configured scope."
+commands.deny = ["close_terminal_window"]

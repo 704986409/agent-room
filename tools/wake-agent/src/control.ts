@@ -20,7 +20,12 @@ import type { Duplex } from 'node:stream';
 /** Stable loopback port so the desktop webview can call the daemon without a Tauri rebuild. */
 export const DESKTOP_CONTROL_PORT = 17421;
 
-const DESKTOP_PATHS = new Set(['/api/desktop/ping', '/api/desktop/rooms', '/api/desktop/host']);
+const DESKTOP_PATHS = new Set([
+  '/api/desktop/ping',
+  '/api/desktop/rooms',
+  '/api/desktop/host',
+  '/api/desktop/terminals',
+]);
 
 export interface RecentRoom {
   code: string;
@@ -143,23 +148,50 @@ export async function startControlServer(options: ControlServerOptions): Promise
     });
   });
 
+  function headerOne(req: IncomingMessage, name: string): string {
+    const value = req.headers[name];
+    return (Array.isArray(value) ? value[0] : value) || '';
+  }
+
+  /** Browser WebSocket cannot set headers, so `?desktop=1` is the same mark as `x-agent-room-desktop: 1`. */
+  function desktopMarkPresent(req: IncomingMessage, url: URL): boolean {
+    return headerOne(req, 'x-agent-room-desktop') === '1' || url.searchParams.get('desktop') === '1';
+  }
+
+  function describeTerminals(): Array<{ seatId: string; pid: number; cols: number; rows: number; name?: string; code?: string }> {
+    return listPtySessions().map(row => {
+      const seat = options.daemon.seats.find(item => item.seatId === row.seatId);
+      if (!seat) return row;
+      return { ...row, name: seat.name, code: seat.code };
+    });
+  }
+
   async function handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): Promise<void> {
     const url = new URL(req.url ?? '/', origin);
-    const match = /^\/api\/terminals\/([^/]+)\/ws$/.exec(url.pathname);
+    const tokenMatch = /^\/api\/terminals\/([^/]+)\/ws$/.exec(url.pathname);
+    const desktopMatch = /^\/api\/desktop\/terminals\/([^/]+)\/ws$/.exec(url.pathname);
+    const match = tokenMatch ?? desktopMatch;
     if (!match) {
       socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
     }
-    const presented = (typeof req.headers['x-agent-room-control'] === 'string'
-      ? req.headers['x-agent-room-control']
-      : Array.isArray(req.headers['x-agent-room-control'])
-        ? req.headers['x-agent-room-control'][0]
-        : '') || url.searchParams.get('t') || '';
-    if (!presented || !tokenMatches(presented, token)) {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-      socket.destroy();
-      return;
+    if (tokenMatch) {
+      const presented = headerOne(req, 'x-agent-room-control') || url.searchParams.get('t') || '';
+      if (!presented || !tokenMatches(presented, token)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
+    } else {
+      const requestOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : undefined;
+      const paired = pairedOrigin();
+      const allowed = desktopMarkPresent(req, url) && !!paired && requestOrigin === paired;
+      if (!allowed) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
+        return;
+      }
     }
     const seatId = decodeURIComponent(match[1]!);
     const session = getPtySession(seatId);
@@ -306,8 +338,8 @@ export async function startControlServer(options: ControlServerOptions): Promise
       send(res, 200, { rooms: recentRooms() }, undefined, cors);
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/terminals') {
-      send(res, 200, { terminals: listPtySessions(), mode: process.env.AGENT_ROOM_TERMINAL ?? 'embedded' }, undefined, cors);
+    if (req.method === 'GET' && (url.pathname === '/api/terminals' || url.pathname === '/api/desktop/terminals')) {
+      send(res, 200, { terminals: describeTerminals(), mode: process.env.AGENT_ROOM_TERMINAL ?? 'embedded' }, undefined, cors);
       return;
     }
     {

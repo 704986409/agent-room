@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-managed-terminal",
+  "description": "Main window may ask the shell to open the embedded terminal for one managed seat. The command accepts only a seat id. The control token and pop-out URL stay in Rust. Does not grant open_terminal_window.",
+  "windows": ["main"],
+  "remote": {
+    "urls": [
+      "https://*:*/*",
+      "http://*:*/*"
+    ]
+  },
+  "permissions": [
+    "allow-open-managed-terminal",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten"
+  ]
+}

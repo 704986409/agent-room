@@ -108,6 +108,119 @@ describe('control terminal routes', () => {
   }, 20_000);
 });
 
+describe('desktop-auth terminal routes', () => {
+  it('lists and attaches with the desktop mark and rejects a missing mark', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-desk-term-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const seatId = `desk-pty-${Date.now()}`;
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: {
+        seats: [{
+          seatId, code: 'ABC-DEF', name: '开发工程师', adapterId: 'codex', cwd: directory, status: 'running',
+        }],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'https://room.example',
+      adapters,
+      secrets,
+      log,
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    const roomOrigin = 'https://room.example';
+    try {
+      const missingMark = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals`, {
+        headers: { origin: roomOrigin },
+      });
+      expect(missingMark.status).toBe(401);
+
+      const foreign = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals`, {
+        headers: { origin: 'https://evil.example', 'x-agent-room-desktop': '1' },
+      });
+      expect(foreign.status).toBe(403);
+
+      const empty = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals`, {
+        headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+      });
+      expect(empty.status).toBe(200);
+      expect(empty.headers.get('access-control-allow-origin')).toBe(roomOrigin);
+      const emptyBody = await empty.json() as { terminals: unknown[]; mode: string };
+      expect(emptyBody.terminals).toEqual([]);
+      expect(emptyBody.mode).toBe('embedded');
+
+      const wsDenied = new WebSocket(
+        `ws://127.0.0.1:${control.port}/api/desktop/terminals/${encodeURIComponent(seatId)}/ws`,
+        { headers: { origin: roomOrigin } },
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('denied ws timeout')), 5000);
+        wsDenied.once('open', () => { clearTimeout(timer); reject(new Error('ws opened without desktop mark')); });
+        wsDenied.once('unexpected-response', () => { clearTimeout(timer); resolve(); });
+        wsDenied.once('error', () => { clearTimeout(timer); resolve(); });
+      });
+
+      if (!ptyAvailable()) return;
+
+      spawnPtySession({
+        seatId,
+        command: 'bash',
+        args: ['-lc', 'exec cat'],
+        cwd: directory,
+        env: {},
+      });
+
+      const listed = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals`, {
+        headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+      });
+      const listedBody = await listed.json() as { terminals: { seatId: string; name?: string; code?: string }[] };
+      expect(listedBody.terminals).toEqual(expect.arrayContaining([
+        expect.objectContaining({ seatId, name: '开发工程师', code: 'ABC-DEF' }),
+      ]));
+
+      const ws = new WebSocket(
+        `ws://127.0.0.1:${control.port}/api/desktop/terminals/${encodeURIComponent(seatId)}/ws?desktop=1`,
+        { headers: { origin: roomOrigin } },
+      );
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('ws timeout')), 5000);
+        ws.once('open', () => { clearTimeout(timer); resolve(); });
+        ws.once('error', reject);
+      });
+      const got: string[] = [];
+      ws.on('message', data => { got.push(String(data)); });
+      ws.send(JSON.stringify({ type: 'stdin', data: 'desk-ws\n' }));
+      const deadline = Date.now() + 5000;
+      while (!got.join('').includes('desk-ws') && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      expect(got.join('')).toContain('desk-ws');
+      expect(ws.url.includes('t=')).toBe(false);
+      ws.close();
+    } finally {
+      await control.close();
+    }
+  }, 20_000);
+});
+
 describe('debug pty-spawn hatch', () => {
   it('404s when AGENT_ROOM_DEBUG_PTY is unset and spawns when set to 1', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wake-debug-pty-'));

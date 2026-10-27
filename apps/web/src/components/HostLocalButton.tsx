@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import { useLocale } from '../i18n/LocaleProvider.js';
 import { requestAgentInvite, storedRoomHostKey } from '../lib/agentInvite.js';
-import { hostOnThisMachine, isDesktopShell } from '../lib/desktopHost.js';
+import { hostOnThisMachine, isDesktopShell, type DesktopHostResult } from '../lib/desktopHost.js';
 
 const DEFAULT_ROLE = '开发工程师';
 
 /** Host-only, desktop-webview-only. Hidden in a normal browser so it cannot call loopback from the public site. */
-export function HostLocalButton({ roomCode, isHost, ended }: {
+export function HostLocalButton({ roomCode, isHost, ended, onHosted }: {
   roomCode: string;
   isHost: boolean;
   ended: boolean;
+  onHosted?: (seat: DesktopHostResult['seat']) => void;
 }) {
   const { t } = useLocale();
   const [busy, setBusy] = useState(false);
@@ -31,6 +32,7 @@ export function HostLocalButton({ roomCode, isHost, ended }: {
         name: DEFAULT_ROLE,
       });
       setDone(t('desktopHost.started', { name: seated.seat.name || DEFAULT_ROLE }));
+      onHosted?.(seated.seat);
     } catch (e) {
       setError(e instanceof Error ? e.message : t('common.unknownError'));
     } finally {

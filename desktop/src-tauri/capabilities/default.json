@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main/remote webview has no IPC. Terminal pop-out IPC is granted only via local-control-terminal for localhost control pages.",
+  "description": "Main window has no general IPC and cannot pass a terminal URL. The only main-window command is open_managed_terminal (capability main-managed-terminal): the shell builds the localhost pop-out from the daemon control URL, so the room page never receives the token. Arbitrary terminal URLs stay on local-control-terminal (settings + terminal-* on localhost only).",
   "windows": [],
   "permissions": []
 }
