@@ -13,6 +13,7 @@ import { installMcp, mcpStatus } from './mcpconfig.js';
 import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
+import { readOsClipboardText } from './clipboard.js';
 import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession } from './pty.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
@@ -25,6 +26,7 @@ const DESKTOP_PATHS = new Set([
   '/api/desktop/rooms',
   '/api/desktop/host',
   '/api/desktop/terminals',
+  '/api/desktop/clipboard',
   '/api/status',
 ]);
 
@@ -55,6 +57,8 @@ export interface ControlServerOptions {
   nodePath?: string;
   port?: number;
   token?: string;
+  /** Test hook. Production reads the OS clipboard. */
+  readClipboard?: () => Promise<string>;
   getToken: () => Promise<string | undefined>;
   setToken: (token: string) => void;
   pairComplete?: typeof pairComplete;
@@ -345,6 +349,18 @@ export async function startControlServer(options: ControlServerOptions): Promise
     }
     if (req.method === 'GET' && (url.pathname === '/api/terminals' || url.pathname === '/api/desktop/terminals')) {
       send(res, 200, { terminals: describeTerminals(), mode: process.env.AGENT_ROOM_TERMINAL ?? 'embedded' }, undefined, cors);
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/desktop/clipboard') {
+      let text = '';
+      try {
+        const read = options.readClipboard ?? readOsClipboardText;
+        const value = await read();
+        text = typeof value === 'string' ? value : '';
+      } catch {
+        text = '';
+      }
+      send(res, 200, { text }, undefined, cors);
       return;
     }
     {

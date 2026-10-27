@@ -235,6 +235,108 @@ describe('desktop-auth terminal routes', () => {
   }, 20_000);
 });
 
+describe('desktop clipboard route', () => {
+  it('requires the desktop mark and returns reader text', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-clip-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'https://room.example',
+      adapters,
+      secrets,
+      log,
+      readClipboard: async () => 'INVITE-FROM-OS',
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    const roomOrigin = 'https://room.example';
+    try {
+      const missingMark = await fetch(`http://127.0.0.1:${control.port}/api/desktop/clipboard`, {
+        headers: { origin: roomOrigin },
+      });
+      expect(missingMark.status).toBe(401);
+
+      const foreign = await fetch(`http://127.0.0.1:${control.port}/api/desktop/clipboard`, {
+        headers: { origin: 'https://evil.example', 'x-agent-room-desktop': '1' },
+      });
+      expect(foreign.status).toBe(403);
+
+      const ok = await fetch(`http://127.0.0.1:${control.port}/api/desktop/clipboard`, {
+        headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+      });
+      expect(ok.status).toBe(200);
+      expect(ok.headers.get('access-control-allow-origin')).toBe(roomOrigin);
+      expect(await ok.json()).toEqual({ text: 'INVITE-FROM-OS' });
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('returns an empty string when the clipboard reader throws', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-clip-fail-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'https://room.example',
+      adapters,
+      secrets,
+      log,
+      readClipboard: async () => { throw new Error('clipboard down'); },
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    try {
+      const ok = await fetch(`http://127.0.0.1:${control.port}/api/desktop/clipboard`, {
+        headers: { origin: 'https://room.example', 'x-agent-room-desktop': '1' },
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ text: '' });
+    } finally {
+      await control.close();
+    }
+  });
+});
+
 describe('debug pty-spawn hatch', () => {
   it('404s when AGENT_ROOM_DEBUG_PTY is unset and spawns when set to 1', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wake-debug-pty-'));
