@@ -11,3 +11,11 @@ if (!existsSync(entry) || !existsSync(pkg)) {
   process.exit(1);
 }
 console.log(`mcp-runtime ok: ${entry}`);
+
+const ptyPkg = join(desktop, 'daemon-dist/node_modules/@homebridge/node-pty-prebuilt-multiarch/package.json');
+const ptyPrebuilds = join(desktop, 'daemon-dist/node_modules/@homebridge/node-pty-prebuilt-multiarch/prebuilds');
+if (!existsSync(ptyPkg) || !existsSync(ptyPrebuilds)) {
+  console.error(`node-pty prebuilds missing (${ptyPkg}). Run: node scripts/bundle-daemon.mjs`);
+  process.exit(1);
+}
+console.log(`node-pty ok: ${ptyPkg}`);
