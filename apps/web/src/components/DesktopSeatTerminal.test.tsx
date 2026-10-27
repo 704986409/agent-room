@@ -151,6 +151,34 @@ describe('DesktopSeatTerminal', () => {
     expect(state.reveal).not.toHaveBeenCalled();
   });
 
+  it('switches the live PTY when preferredSeatId and focusToken change', async () => {
+    state.list.mockResolvedValue({
+      mode: 'embedded',
+      terminals: [
+        { seatId: 'st_1', pid: 3, cols: 80, rows: 24, name: 'Codex工位', code: 'ABC-DEF-GHJ' },
+        { seatId: 'st_2', pid: 4, cols: 80, rows: 24, name: 'Cursor工位', code: 'ABC-DEF-GHJ' },
+      ],
+    });
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_1" focusToken={1} />,
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    mounted = renderer;
+    expect(FakeSocket.latest?.url).toContain('/st_1/ws');
+
+    await act(async () => {
+      renderer.update(
+        <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_2" focusToken={2} />,
+      );
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(FakeSocket.latest?.url).toContain('/st_2/ws');
+    expect(state.reveal).not.toHaveBeenCalled();
+  });
+
   it('renders a sub-tab per live seat and does not pop out on its own', async () => {
     state.list.mockResolvedValue({
       mode: 'embedded',

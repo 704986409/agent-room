@@ -9,6 +9,7 @@ import { DeliverEventCard, isDeliverEvent } from '../components/DeliverEventCard
 import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
 import { HostLocalButton } from '../components/HostLocalButton.js';
+import { MemberTerminalButton } from '../components/MemberTerminalButton.js';
 import { RoomRightColumn, type RightRailTab } from '../components/RightRail.js';
 import { isDesktopShell } from '../lib/desktopHost.js';
 import { rosterWithActiveSeats, terminalSeatIdFor } from '../lib/activeRoster.js';
@@ -982,7 +983,7 @@ export function Room() {
                   const canMuteToggle = isMeHost && !isSelf && !ended && storedSeat;
                   const ptySeat = desktopShell ? terminalSeatIdFor(p, terminalRows, code) : null;
                   const canAsk = canConfigureReplyMode && p.client === 'cc' && !isMuted;
-    const presence = participantPresence(p, now, t);
+                  const presence = participantPresence(p, now, t);
                   // Whole-row visual fade for participants who haven't been
                   // seen in a while — keeps the row legible but signals
                   // "probably gone" without screaming about it.
@@ -994,22 +995,24 @@ export function Room() {
                   return (
                     <div
                       key={`${p.name}-${p.client}`}
-                      className={`flex items-center gap-2 rounded-lg border px-2.5 py-2 transition ${rowFade} ${isMuted ? 'border-amber-300 bg-amber-50/60' : 'border-border-faint bg-surface-softer'}`}
+                      className={`flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 transition ${rowFade} ${isMuted ? 'border-amber-300 bg-amber-50/60' : 'border-border-faint bg-surface-softer'}`}
                     >
                       <Avatar initials={p.initials} color={p.color} size="sm" />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] sm:text-xs font-semibold truncate flex items-center gap-1 flex-wrap">
-                          {p.name}
-                          {p.name === room.createdBy && <span className="text-[10px] font-semibold text-accent bg-accent-tint px-1.5 py-0.5 rounded">{t('room.host')}</span>}
-                          {isMuted && <span className="text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">{t('room.muted')}</span>}
+                      <div className="min-w-0 flex-1 overflow-hidden">
+                        <div className="flex min-w-0 items-center gap-1 overflow-hidden text-[13px] font-semibold sm:text-xs">
+                          <span className="min-w-0 truncate">{p.name}</span>
+                          {p.name === room.createdBy && <span className="shrink-0 text-[10px] font-semibold text-accent bg-accent-tint px-1.5 py-0.5 rounded">{t('room.host')}</span>}
+                          {isMuted && <span className="shrink-0 text-[10px] font-semibold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">{t('room.muted')}</span>}
                         </div>
-                        <div className="text-[11px] text-ink-soft truncate">
+                        <div className="truncate text-[11px] text-ink-soft">
                           {[p.role, t(p.client === 'cc' ? 'room.cli' : 'room.browser')].filter(Boolean).join(' · ')}
                         </div>
-                        <div className={`mt-1 flex items-center gap-1 text-[11px] font-medium ${presence.className}`}>
-                          <span className={`h-1.5 w-1.5 rounded-full ${presence.dotClassName}`} />
-                          <span>{presence.label}</span>
-                          {presence.detail && <span className="text-ink-faint">· {presence.detail}</span>}
+                        <div className={`mt-1 flex min-w-0 items-center gap-1 text-[11px] font-medium ${presence.className}`}>
+                          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${presence.dotClassName}`} />
+                          <span className="min-w-0 truncate" title={presence.detail ? `${presence.label} · ${presence.detail}` : presence.label}>
+                            {presence.label}
+                            {presence.detail ? ` · ${presence.detail}` : ''}
+                          </span>
                         </div>
                       </div>
                       {/*
@@ -1022,20 +1025,12 @@ export function Room() {
                         the viewer is actually the host.
                       */}
                       {(ptySeat || canAsk || canMuteToggle || canKick) && (
-                        <div className="flex items-center gap-1">
+                        <div className="relative z-10 flex shrink-0 items-center gap-1">
                           {ptySeat && (
-                            <button
-                              type="button"
-                              onClick={() => openSeatTerminal(ptySeat)}
-                              title={t('room.openSeatTerminal', { name: p.name })}
-                              aria-label={t('room.openSeatTerminal', { name: p.name })}
-                              className="flex h-10 w-10 sm:h-8 sm:w-8 items-center justify-center rounded-lg border border-border-faint bg-surface text-ink-soft transition active:scale-[0.98] hover:border-accent/40 hover:text-accent"
-                            >
-                              <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                                <rect x="1.75" y="2.75" width="12.5" height="10.5" rx="1.5" />
-                                <path d="M4.25 6.25 6.25 8 4.25 9.75M8 10.25h3.5" />
-                              </svg>
-                            </button>
+                            <MemberTerminalButton
+                              label={t('room.openSeatTerminal', { name: p.name })}
+                              onOpen={() => openSeatTerminal(ptySeat)}
+                            />
                           )}
                           {canAsk && (
                             <button
