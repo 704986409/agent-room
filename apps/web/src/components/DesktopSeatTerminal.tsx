@@ -7,12 +7,20 @@ import { isDesktopShell, listenDesktopEvent, revealManagedTerminal } from '../li
 import {
   desktopTerminalWsUrl,
   listDesktopTerminals,
+  readDesktopClipboardText,
   terminalsForRoom,
   type DesktopTerminalRow,
 } from '../lib/desktopTerminal.js';
 
 const DOCK_CHANNEL = 'agent-room-terminal-dock';
 const DOCK_EVENT = 'managed-terminal-docked';
+
+function isPasteShortcut(event: KeyboardEvent): boolean {
+  const key = event.key;
+  const ctrlOrMetaV = (event.ctrlKey || event.metaKey) && !event.altKey && (key === 'v' || key === 'V');
+  const shiftInsert = event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey && key === 'Insert';
+  return ctrlOrMetaV || shiftInsert;
+}
 
 function resetTerm(term: Terminal | null | undefined) {
   term?.reset();
@@ -106,6 +114,23 @@ export function DesktopSeatTerminal({
     })();
   }
 
+  async function pasteFromDaemon() {
+    let text = '';
+    try {
+      text = await readDesktopClipboardText();
+    } catch {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pasteFailed'));
+      return;
+    }
+    if (!text) {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pasteFailed'));
+      return;
+    }
+    sendStdinText(text);
+  }
+
   const visible = terminalsForRoom(rows, roomCode);
   const options = seatId && !visible.some(row => row.seatId === seatId)
     ? [...visible, { seatId, pid: 0, cols: 0, rows: 0 }]
@@ -141,9 +166,14 @@ export function DesktopSeatTerminal({
     term.loadAddon(fit);
     term.open(host);
     fit.fit();
-    // Do not intercept Ctrl/Cmd+V on keydown: preventDefault kills the paste
-    // event (clipboardData) in Tauri webviews. Capture paste on the host so we
-    // read text/plain before xterm handles it.
+    // WebKitGTK swallows Ctrl+V without a paste event and drops 0x16. Read the
+    // OS clipboard from the daemon instead. Right-click still arrives as paste.
+    term.attachCustomKeyEventHandler(event => {
+      if (!isPasteShortcut(event)) return true;
+      event.preventDefault();
+      if (event.type === 'keydown' && !event.repeat) void pasteFromDaemon();
+      return false;
+    });
     if (typeof host.addEventListener === 'function') {
       host.addEventListener('paste', (event: Event) => {
         pasteFromEvent(event as ClipboardEvent);

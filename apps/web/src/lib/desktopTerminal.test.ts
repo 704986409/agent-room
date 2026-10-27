@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DESKTOP_CONTROL_ORIGIN } from './desktopHost.js';
-import { desktopTerminalWsUrl, listDesktopTerminals, terminalsForRoom } from './desktopTerminal.js';
+import { desktopTerminalWsUrl, listDesktopTerminals, readDesktopClipboardText, terminalsForRoom } from './desktopTerminal.js';
 
 describe('desktopTerminalWsUrl', () => {
   it('targets the desktop-auth socket and does not carry a control token', () => {
@@ -41,5 +41,21 @@ describe('listDesktopTerminals', () => {
     expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/terminals`);
     expect(url.includes('t=')).toBe(false);
     expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+  });
+});
+
+describe('readDesktopClipboardText', () => {
+  it('asks the loopback daemon with the desktop mark and returns text', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: 'INVITE-TEXT' }), { status: 200 }));
+    const text = await readDesktopClipboardText(fetchImpl as unknown as typeof fetch);
+    expect(text).toBe('INVITE-TEXT');
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/clipboard`);
+    expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+  });
+
+  it('returns an empty string when the daemon has no text', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ text: '' }), { status: 200 }));
+    await expect(readDesktopClipboardText(fetchImpl as unknown as typeof fetch)).resolves.toBe('');
   });
 });

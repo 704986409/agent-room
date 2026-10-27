@@ -6,12 +6,14 @@ const state = vi.hoisted(() => ({
   desktop: true,
   list: vi.fn(),
   reveal: vi.fn(),
+  readClipboard: vi.fn(),
 }));
 
 const termIo = vi.hoisted(() => ({
   writes: [] as string[],
   resets: 0,
   onDataHandler: null as ((data: string) => void) | null,
+  keyHandler: null as ((event: KeyboardEvent) => boolean) | null,
   pasteListeners: [] as Array<(event: Event) => void>,
 }));
 
@@ -22,6 +24,7 @@ vi.mock('@xterm/xterm', () => ({
     loadAddon() {}
     open() {}
     onData(handler: (data: string) => void) { termIo.onDataHandler = handler; return { dispose() {} }; }
+    attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean) { termIo.keyHandler = handler; }
     write(data: string) { termIo.writes.push(String(data)); }
     clear() {}
     reset() { termIo.resets += 1; }
@@ -50,6 +53,7 @@ vi.mock('../lib/desktopTerminal.js', async (importOriginal) => {
   return {
     ...actual,
     listDesktopTerminals: (...args: unknown[]) => state.list(...args),
+    readDesktopClipboardText: (...args: unknown[]) => state.readClipboard(...args),
   };
 });
 
@@ -125,12 +129,15 @@ describe('DesktopSeatTerminal', () => {
     state.desktop = true;
     state.list.mockReset();
     state.reveal.mockReset();
+    state.readClipboard.mockReset();
     state.list.mockResolvedValue(live);
     state.reveal.mockResolvedValue(null);
+    state.readClipboard.mockResolvedValue('');
     FakeSocket.latest = null;
     termIo.writes = [];
     termIo.resets = 0;
     termIo.onDataHandler = null;
+    termIo.keyHandler = null;
     termIo.pasteListeners = [];
     vi.stubGlobal('WebSocket', FakeSocket);
   });
@@ -330,6 +337,84 @@ describe('DesktopSeatTerminal', () => {
       });
     });
     expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'FROM-REACT' })]);
+  });
+
+  function pasteKey(partial: Partial<KeyboardEvent> & { key: string }): KeyboardEvent {
+    return {
+      type: 'keydown',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      shiftKey: false,
+      repeat: false,
+      preventDefault() {},
+      ...partial,
+    } as KeyboardEvent;
+  }
+
+  it('fetches the daemon clipboard on Ctrl+V, Cmd+V, and Shift+Insert', async () => {
+    state.readClipboard.mockResolvedValue('DAEMON-CLIP');
+    const renderer = await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    expect(termIo.keyHandler).toBeTypeOf('function');
+
+    const prevented = { current: 0 };
+    await act(async () => {
+      const allow = termIo.keyHandler!(pasteKey({
+        key: 'v',
+        ctrlKey: true,
+        preventDefault() { prevented.current += 1; },
+      }));
+      expect(allow).toBe(false);
+      await Promise.resolve();
+    });
+    expect(prevented.current).toBe(1);
+    expect(state.readClipboard).toHaveBeenCalledTimes(1);
+    expect(socket.sent).toEqual([JSON.stringify({ type: 'stdin', data: 'DAEMON-CLIP' })]);
+
+    state.readClipboard.mockResolvedValue('CMD-CLIP');
+    await act(async () => {
+      expect(termIo.keyHandler!(pasteKey({ key: 'v', metaKey: true }))).toBe(false);
+      await Promise.resolve();
+    });
+    expect(socket.sent[1]).toBe(JSON.stringify({ type: 'stdin', data: 'CMD-CLIP' }));
+
+    state.readClipboard.mockResolvedValue('SHIFT-INSERT');
+    await act(async () => {
+      expect(termIo.keyHandler!(pasteKey({ key: 'Insert', shiftKey: true }))).toBe(false);
+      await Promise.resolve();
+    });
+    expect(socket.sent[2]).toBe(JSON.stringify({ type: 'stdin', data: 'SHIFT-INSERT' }));
+
+    const calls = state.readClipboard.mock.calls.length;
+    await act(async () => {
+      expect(termIo.keyHandler!(pasteKey({ type: 'keyup', key: 'v', ctrlKey: true }))).toBe(false);
+      expect(termIo.keyHandler!(pasteKey({ key: 'a' }))).toBe(true);
+    });
+    expect(state.readClipboard).toHaveBeenCalledTimes(calls);
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('剪贴板里没有可粘贴的文本');
+  });
+
+  it('shows pasteFailed when the daemon clipboard is empty or unreadable', async () => {
+    state.readClipboard.mockResolvedValue('');
+    const renderer = await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    await act(async () => {
+      termIo.keyHandler!(pasteKey({ key: 'v', ctrlKey: true }));
+      await Promise.resolve();
+    });
+    expect(socket.sent).toEqual([]);
+    expect(JSON.stringify(renderer.toJSON())).toContain('剪贴板里没有可粘贴的文本');
+
+    state.readClipboard.mockRejectedValue(new Error('down'));
+    await act(async () => {
+      termIo.keyHandler!(pasteKey({ key: 'V', ctrlKey: true }));
+      await Promise.resolve();
+    });
+    expect(socket.sent).toEqual([]);
+    expect(JSON.stringify(renderer.toJSON())).toContain('剪贴板里没有可粘贴的文本');
   });
 
 });

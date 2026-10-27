@@ -49,3 +49,23 @@ export async function listDesktopTerminals(
   }
   return { terminals: body.terminals ?? [], mode: body.mode ?? 'embedded' };
 }
+
+/** OS clipboard via the paired daemon. WebKitGTK does not deliver a paste event for Ctrl+V. */
+export async function readDesktopClipboardText(
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/clipboard`, {
+      headers: { 'x-agent-room-desktop': '1' },
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  }
+  const body = await response.json().catch(() => ({})) as { text?: unknown; error?: string };
+  if (!response.ok) {
+    throw new Error(body.error || `无法读取剪贴板（HTTP ${response.status}）`);
+  }
+  return typeof body.text === 'string' ? body.text : '';
+}
