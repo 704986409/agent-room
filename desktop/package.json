@@ -4,15 +4,16 @@
   "version": "0.1.20",
   "description": "Agent Room Desktop shell (Tauri v2): WebView of the web app, tray, local settings page; spawns the Node daemon.",
   "scripts": {
-    "bundle-daemon": "node scripts/bundle-daemon.mjs",
+    "ensure-wake-agent": "npm ci --prefix ../tools/wake-agent",
+    "bundle-daemon": "npm run ensure-wake-agent && node scripts/bundle-daemon.mjs",
     "bundle-node": "node scripts/bundle-node.mjs",
     "bundle-mcp": "node scripts/bundle-mcp.mjs",
     "tauri": "tauri",
     "dev": "npm run bundle-daemon && tauri dev",
     "package": "npm run bundle-daemon && node scripts/bundle-node.mjs --platform linux && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build --bundles appimage,deb && node scripts/tarball.mjs",
-    "package:linux": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs --platform linux && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build --bundles appimage,deb",
-    "package:windows": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs --platform win && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build --bundles nsis,msi",
-    "package:all": "node scripts/bundle-daemon.mjs && node scripts/bundle-node.mjs && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build"
+    "package:linux": "npm run bundle-daemon && node scripts/bundle-node.mjs --platform linux && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build --bundles appimage,deb",
+    "package:windows": "npm run bundle-daemon && node scripts/bundle-node.mjs --platform win && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build --bundles nsis,msi",
+    "package:all": "npm run bundle-daemon && node scripts/bundle-node.mjs && node scripts/bundle-mcp.mjs && node scripts/assert-mcp-runtime.mjs && tauri build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0",

@@ -49,11 +49,17 @@ jobs:
         with:
           path: agent-room-mcp/node_modules
           key: mcp-npm-${{ hashFiles('agent-room-mcp/package-lock.json') }}
+      - name: Cache wake-agent npm
+        uses: actions/cache@v4
+        with:
+          path: tools/wake-agent/node_modules
+          key: wake-agent-npm-${{ hashFiles('tools/wake-agent/package-lock.json') }}-${{ runner.os }}
       - name: Build packages
         env:
           AGENT_ROOM_MCP_SRC: ${{ github.workspace }}/agent-room-mcp
         run: |
           npm ci
+          npm ci --prefix tools/wake-agent
           cd desktop
           npm ci
           npm run package:linux
@@ -95,12 +101,18 @@ jobs:
         with:
           path: agent-room-mcp/node_modules
           key: mcp-npm-${{ hashFiles('agent-room-mcp/package-lock.json') }}
+      - name: Cache wake-agent npm
+        uses: actions/cache@v4
+        with:
+          path: tools/wake-agent/node_modules
+          key: wake-agent-npm-${{ hashFiles('tools/wake-agent/package-lock.json') }}-${{ runner.os }}
       - name: Build Windows packages
         shell: pwsh
         env:
           AGENT_ROOM_MCP_SRC: ${{ github.workspace }}/agent-room-mcp
         run: |
           npm ci
+          npm ci --prefix tools/wake-agent
           Set-Location desktop
           npm ci
           npm run package:windows
