@@ -10,7 +10,7 @@ import { VoiceButton } from '../components/VoiceButton.js';
 import { MeetingCodePill } from '../components/MeetingCodePill.js';
 import { HostLocalButton } from '../components/HostLocalButton.js';
 import { MemberTerminalButton } from '../components/MemberTerminalButton.js';
-import { RoomRightColumn, type RightRailTab } from '../components/RightRail.js';
+import { RoomRightColumn, shouldCollapseTerminalExpand, type RightRailTab } from '../components/RightRail.js';
 import { isDesktopShell } from '../lib/desktopHost.js';
 import { rosterWithActiveSeats, terminalSeatIdFor } from '../lib/activeRoster.js';
 import type { DesktopTerminalRow } from '../lib/desktopTerminal.js';
@@ -1343,7 +1343,10 @@ export function Room() {
             <RoomRightColumn
               desktop={desktopShell}
               tab={rightTab}
-              onTab={setRightTab}
+              onTab={(next) => {
+                setRightTab(next);
+                if (shouldCollapseTerminalExpand(next)) setTerminalExpanded(false);
+              }}
               tasks={(
                 <TaskBoard
                   code={code}

@@ -3,6 +3,11 @@ import { useLocale } from '../i18n/LocaleProvider.js';
 
 export type RightRailTab = 'tasks' | 'terminal';
 
+/** Leaving 终端 must collapse expand so 任务 does not keep the wide rail. */
+export function shouldCollapseTerminalExpand(next: RightRailTab): boolean {
+  return next !== 'terminal';
+}
+
 /** Cloud and a normal browser keep the task board alone. The terminal tab exists only in the desktop shell. */
 export function showRoomTerminalRail(desktop: boolean): boolean {
   return desktop;

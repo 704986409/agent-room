@@ -1411,15 +1411,69 @@ fn show_settings(app: AppHandle, daemon: Daemon) {
     }
 }
 
-/// Tray 退出. Destroy every window first so main's hide-on-close cannot cancel
-/// `app.exit`. The daemon tree is killed from `RunEvent::Exit` (bounded).
-fn request_quit(app: &AppHandle) {
+/// How long the quit watchdog waits before `process::exit` if `app.exit` stalls
+/// (wedged WebView2 destroy / RunEvent loop).
+const QUIT_WATCHDOG_MS: u64 = 2_000;
+
+/// Windows: delay before an external `taskkill /F /T` of this pid, in case the
+/// process is frozen hard enough that the in-process watchdog never runs.
+#[cfg(windows)]
+const QUIT_TASKKILL_DELAY_SECS: u32 = 3;
+
+#[cfg(windows)]
+const DETACHED_PROCESS: u32 = 0x0000_0008;
+#[cfg(windows)]
+const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+#[cfg(windows)]
+const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+
+/// `cmd /C` args for a deferred self-kill. Kept pure for unit tests.
+#[cfg(windows)]
+fn windows_deferred_self_kill_args(pid: u32, delay_secs: u32) -> Vec<String> {
+    vec![
+        "/C".into(),
+        format!("timeout /T {delay_secs} /NOBREAK >nul & taskkill /F /T /PID {pid}"),
+    ]
+}
+
+/// Tray 退出 must not wait on `WebviewWindow::destroy` (wedged WebView2 can
+/// hang forever and leave a dead tray/taskbar icon). Order:
+/// 1) QUITTING so hide-on-close cannot cancel exit
+/// 2) remove tray so Shell_NotifyIcon NIM_DELETE runs before hard exit
+/// 3) kill daemon + seat CLIs now (do not wait for RunEvent::Exit)
+/// 4) hide windows only
+/// 5) app.exit(0)
+/// 6) in-process watchdog `process::exit`, plus Windows detached taskkill
+fn request_quit(app: &AppHandle, daemon: &Daemon) {
     QUITTING.store(true, Ordering::SeqCst);
-    let windows: Vec<_> = app.webview_windows().into_values().collect();
-    for window in windows {
-        let _ = window.destroy();
+    // Drop closes the tray icon with the shell (avoids ghost icons after hard exit).
+    let _ = app.remove_tray_by_id("main");
+    daemon.stop();
+    for window in app.webview_windows().into_values() {
+        let _ = window.hide();
     }
+    schedule_quit_watchdog();
     app.exit(0);
+}
+
+fn schedule_quit_watchdog() {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(QUIT_WATCHDOG_MS));
+        if QUITTING.load(Ordering::SeqCst) {
+            std::process::exit(0);
+        }
+    });
+    #[cfg(windows)]
+    {
+        let pid = std::process::id();
+        let args = windows_deferred_self_kill_args(pid, QUIT_TASKKILL_DELAY_SECS);
+        let _ = Command::new("cmd")
+            .args(&args)
+            .creation_flags(
+                CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+            )
+            .spawn();
+    }
 }
 
 fn main() {
@@ -1472,7 +1526,7 @@ fn main() {
                         }
                     }
                     "stop" => d.stop(),
-                    "quit" => request_quit(app),
+                    "quit" => request_quit(app, &d),
                     _ => {}
                 })
                 .build(app)?;
@@ -1565,6 +1619,19 @@ mod tests {
         assert!(!terminal_should_force_destroy("terminal-st_1", true));
         assert!(!terminal_should_force_destroy("main", false));
         assert!(!terminal_should_force_destroy("settings", false));
+    }
+
+    #[test]
+    fn quit_watchdog_is_bounded_and_windows_self_kill_targets_pid() {
+        assert!(QUIT_WATCHDOG_MS >= 500);
+        assert!(QUIT_WATCHDOG_MS <= 5_000);
+        #[cfg(windows)]
+        {
+            let args = windows_deferred_self_kill_args(4242, 3);
+            assert_eq!(args[0], "/C");
+            assert!(args[1].contains("timeout /T 3"));
+            assert!(args[1].contains("taskkill /F /T /PID 4242"));
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { describe, expect, it, vi } from 'vitest';
-import { RoomRightColumn, type RightRailTab } from './RightRail.js';
+import { RoomRightColumn, shouldCollapseTerminalExpand, type RightRailTab } from './RightRail.js';
 
 vi.mock('../i18n/LocaleProvider.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../i18n/LocaleProvider.js')>();
@@ -75,5 +75,12 @@ describe('RoomRightColumn', () => {
     const json = JSON.stringify(renderer.toJSON());
     expect(json).toContain('终端面板 st_9');
     expect(button(renderer, '终端')!.props['aria-selected']).toBe(true);
+  });
+});
+
+describe('shouldCollapseTerminalExpand', () => {
+  it('collapses when leaving 终端 for 任务, and keeps expand on 终端', () => {
+    expect(shouldCollapseTerminalExpand('tasks')).toBe(true);
+    expect(shouldCollapseTerminalExpand('terminal')).toBe(false);
   });
 });
