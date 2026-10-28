@@ -453,6 +453,9 @@ describe('pop-out assets and stop', () => {
       const html = await page.text();
       expect(html).not.toContain('jsdelivr');
       expect(html).toContain('/vendor/xterm.js');
+      expect(html).toContain('defer');
+      expect(html).toContain('id="term-boot"');
+      expect(html).toContain('html.popout #term-wrap');
       expect(html).toContain("get('popout')");
       expect(html).toContain('id="term-stop"');
 

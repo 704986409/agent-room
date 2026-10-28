@@ -456,16 +456,32 @@ fn terminal_should_force_destroy(label: &str, quitting: bool) -> bool {
     !quitting && label.starts_with("terminal-")
 }
 
-/// WebView2 allows one controller per user-data folder. A second window on the
-/// main folder stays white and its close button never finishes. `main` keeps
-/// the historical directory so existing site data survives. Every other label
-/// gets a sibling folder, not a child of the main profile.
-fn webview_profile_dir(root: &Path, label: &str) -> PathBuf {
+/// Pick the WebView2/WebKit user-data folder for a window label.
+///
+/// `main` keeps the historical app data dir (remote room origin cookies).
+/// Settings and every `terminal-*` pop-out share one sibling folder
+/// (`…-profiles/local-control`). WebView2 cold-starts an Environment per
+/// folder; a fresh folder per seat left Windows on a black window whose X
+/// never finished. Sharing one loopback profile avoids that. Never reuse
+/// `main`'s folder for localhost windows (second controller on that
+/// Environment stayed blank in 0.1.22).
+fn webview_profile_key(label: &str) -> &str {
     if label == "main" {
+        "main"
+    } else if label == "settings" || label.starts_with("terminal-") {
+        "local-control"
+    } else {
+        label
+    }
+}
+
+fn webview_profile_dir(root: &Path, label: &str) -> PathBuf {
+    let key = webview_profile_key(label);
+    if key == "main" {
         return root.to_path_buf();
     }
     let mut safe = String::new();
-    for c in label.chars() {
+    for c in key.chars() {
         let next = if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
             c
         } else {
@@ -874,10 +890,13 @@ fn open_terminal_window_inner(
     if let Some((x, y)) = clamp_terminal_position(x, y) {
         builder = builder.position(x, y);
     }
-    builder
+    let created = builder
         .build()
         .map_err(|e| format!("无法打开终端窗口: {e}"))?;
     remember_terminal_seat(&label, seat_id);
+    let _ = created.unminimize();
+    let _ = created.show();
+    let _ = created.set_focus();
     Ok(())
 }
 
@@ -1476,11 +1495,19 @@ fn main() {
                         api.prevent_close();
                         let _ = window.hide();
                     } else if terminal_should_force_destroy(&label, quitting) {
+                        // Prevent the default close: a wedged WebView2 ignores it and
+                        // the window stays forever. Destroy synchronously — queueing
+                        // via run_on_main_thread never ran while the Environment hung.
                         api.prevent_close();
                         let app = window.app_handle().clone();
-                        let _ = app.clone().run_on_main_thread(move || {
-                            force_close_terminal(&app, &label);
-                        });
+                        force_close_terminal(&app, &label);
+                        if app.get_webview_window(&label).is_some() {
+                            let _ = window.hide();
+                            let label2 = label.clone();
+                            let _ = app.clone().run_on_main_thread(move || {
+                                force_close_terminal(&app, &label2);
+                            });
+                        }
                     }
                 }
                 // Pop-out is a different origin from the room page, so BroadcastChannel
@@ -1513,16 +1540,16 @@ mod tests {
         let root = PathBuf::from("/tmp/com.agent-room.desktop");
         assert_eq!(webview_profile_dir(&root, "main"), root);
         let term = webview_profile_dir(&root, "terminal-st_1");
+        let term2 = webview_profile_dir(&root, "terminal-st_2");
         let settings = webview_profile_dir(&root, "settings");
         assert_ne!(term, root);
-        assert_ne!(settings, term);
+        assert_eq!(term, term2, "all terminal pop-outs share one WebView2 Environment");
+        assert_eq!(term, settings, "settings warms the same loopback profile");
         assert!(!term.starts_with(&root));
-        assert!(term.ends_with("terminal-st_1"));
-        assert!(settings.ends_with("settings"));
-        assert_eq!(
-            webview_profile_dir(&root, "terminal-st_1"),
-            webview_profile_dir(&root, "terminal-st_1")
-        );
+        assert!(term.ends_with("local-control"));
+        assert_eq!(webview_profile_key("terminal-st_9"), "local-control");
+        assert_eq!(webview_profile_key("settings"), "local-control");
+        assert_eq!(webview_profile_key("main"), "main");
     }
 
     #[test]
