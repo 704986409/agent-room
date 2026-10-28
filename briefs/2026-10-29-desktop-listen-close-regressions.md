@@ -9,7 +9,7 @@ User confirmed on Windows 0.1.26: (1) after wake/@, 「监听直接被移除」;
 | SHA | Summary |
 |-----|---------|
 | `12508f8` | wake: inFlight-only must not kill live listen |
-| `98e26f7` | close: clear preferredSeatId ghost + harden room_leave + brief |
+| `ba387f8` | close: clear preferredSeatId ghost + harden room_leave + brief |
 
 ## Problem 1 — listen removed immediately after @
 
