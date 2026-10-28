@@ -15,6 +15,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
+use tauri::webview::PageLoadEvent;
 use tauri::window::Color;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
@@ -459,17 +460,23 @@ fn terminal_should_force_destroy(label: &str, quitting: bool) -> bool {
 /// Pick the WebView2/WebKit user-data folder for a window label.
 ///
 /// `main` keeps the historical app data dir (remote room origin cookies).
-/// Settings and every `terminal-*` pop-out share one sibling folder
-/// (`…-profiles/local-control`). WebView2 cold-starts an Environment per
-/// folder; a fresh folder per seat left Windows on a black window whose X
-/// never finished. Sharing one loopback profile avoids that. Never reuse
-/// `main`'s folder for localhost windows (second controller on that
-/// Environment stayed blank in 0.1.22).
+/// `settings` uses `local-settings`. Every `terminal-*` pop-out shares
+/// `local-terminal` so extra seats do not each cold-start a profile.
+/// Settings and terminals must not share a folder: wry builds a new
+/// CoreWebView2 Environment per WebView even when Tauri reuses a
+/// WebContext for the same `data_directory`. A second Environment on an
+/// in-use user-data folder never finishes the first navigation, which is
+/// why the 0.1.24 shared `local-control` profile still left Windows
+/// pop-outs on the empty background color. Opening 本机设置 does not warm
+/// a terminal Environment. Never reuse `main`'s folder for localhost
+/// windows (a second controller on that Environment stayed blank in 0.1.22).
 fn webview_profile_key(label: &str) -> &str {
     if label == "main" {
         "main"
-    } else if label == "settings" || label.starts_with("terminal-") {
-        "local-control"
+    } else if label == "settings" {
+        "local-settings"
+    } else if label.starts_with("terminal-") {
+        "local-terminal"
     } else {
         label
     }
@@ -853,6 +860,128 @@ fn open_managed_terminal_url(control_url: Option<&str>, seat_id: &str) -> Result
     managed_terminal_popout_url(control_url, seat_id)
 }
 
+fn html_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Single-quoted JS string. Escapes quotes, controls, and `<` so the value
+/// cannot close the surrounding `<script>` when the control URL is embedded.
+fn js_single_quoted(value: &str) -> String {
+    let mut out = String::from("'");
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\'' => out.push_str("\\'"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '<' => out.push_str("\\u003c"),
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
+}
+
+/// Origin shown if the boot page is still up after ~8s. Never includes `t`.
+fn control_origin_label(control_url: &str) -> String {
+    let raw = control_origin_and_token(control_url)
+        .map(|(origin, _)| origin)
+        .unwrap_or_else(|_| {
+            control_url
+                .split(['?', '#'])
+                .next()
+                .unwrap_or(control_url)
+                .trim()
+                .to_string()
+        });
+    const MAX_CHARS: usize = 64;
+    let mut chars = raw.chars();
+    let truncated: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
+}
+
+fn terminal_boot_document(seat_id: &str, control_url: &str) -> String {
+    let origin = control_origin_label(control_url);
+    let mut html = String::new();
+    html.push_str(
+        "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>Agent Room</title><style>",
+    );
+    html.push_str("html,body{margin:0;height:100%;background:#1e1e1e;color:#c4c7cc}");
+    html.push_str(
+        "body{font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;padding:12px}",
+    );
+    html.push_str("#err{display:none;color:#f28b82;margin-top:12px;white-space:pre-wrap}");
+    html.push_str("</style></head><body><div id=\"boot\">正在连接终端…<br>");
+    html.push_str(&html_escape(seat_id));
+    html.push_str("</div><div id=\"err\"></div><script>(function(){");
+    html.push_str("var target=");
+    html.push_str(&js_single_quoted(control_url));
+    html.push_str(";var origin=");
+    html.push_str(&js_single_quoted(&origin));
+    html.push_str(";function go(){location.replace(target);}");
+    html.push_str("requestAnimationFrame(function(){requestAnimationFrame(go);});");
+    html.push_str("setTimeout(function(){var el=document.getElementById('err');");
+    html.push_str("if(!el)return;el.style.display='block';");
+    html.push_str("el.textContent='无法加载本机终端页\\n'+origin;},8000);");
+    html.push_str("})();</script></body></html>");
+    html
+}
+
+/// `data:` document that paints immediately, then hops to the loopback control URL.
+/// Same percent-encoding style as `open_daemon_loading_window`.
+fn terminal_boot_data_url(seat_id: &str, control_url: &str) -> String {
+    format!(
+        "data:text/html;charset=utf-8,{}",
+        query_encode(&terminal_boot_document(seat_id, control_url))
+    )
+}
+
+fn is_terminal_boot_scheme(scheme: &str) -> bool {
+    // `about:blank` is the WebView's transient start URL. Treating it as the
+    // boot document would `navigate` to the control page before the data:
+    // document commits, which is the blank-window failure mode.
+    scheme == "data"
+}
+
+/// Rust-side hop used when the boot document's `location.replace` does not run.
+///
+/// Called only after that document has finished loading. `navigate` before
+/// then replaces the pending `data:` URL, and WebView2 stays on the empty
+/// background color (the 0.1.25 black pop-out).
+fn queue_terminal_control_navigate(window: tauri::WebviewWindow, control: tauri::Url) {
+    std::thread::spawn(move || {
+        // Leave a beat for the boot script's double-rAF replace and first paint.
+        std::thread::sleep(Duration::from_millis(400));
+        let app = window.app_handle().clone();
+        let _ = app.run_on_main_thread(move || {
+            let still_boot = window
+                .url()
+                .map(|current| is_terminal_boot_scheme(current.scheme()))
+                .unwrap_or(false);
+            if still_boot {
+                let _ = window.navigate(control);
+            }
+        });
+    });
+}
+
 fn open_terminal_window_inner(
     app: &AppHandle,
     seat_id: &str,
@@ -863,7 +992,7 @@ fn open_terminal_window_inner(
     height: Option<f64>,
 ) -> Result<(), String> {
     let label = terminal_window_label(seat_id);
-    let parsed = url
+    let control: tauri::Url = url
         .parse()
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
     if let Some(w) = app.get_webview_window(&label) {
@@ -874,11 +1003,13 @@ fn open_terminal_window_inner(
         let _ = w.set_focus();
         return Ok(());
     }
+    let boot = terminal_boot_data_url(seat_id, url);
+    let boot_url = boot.parse().map_err(|e| format!("终端启动页无效: {e}"))?;
     let (width, height) = clamp_terminal_size(
         width.unwrap_or(TERM_DEFAULT_W),
         height.unwrap_or(TERM_DEFAULT_H),
     );
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed));
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(boot_url));
     if let Some(data_dir) = webview_data_directory(app, &label)? {
         builder = builder.data_directory(data_dir);
     }
@@ -891,6 +1022,17 @@ fn open_terminal_window_inner(
         builder = builder.position(x, y);
     }
     let created = builder
+        .on_page_load(move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            if !is_terminal_boot_scheme(payload.url().scheme()) {
+                return;
+            }
+            // After show + boot-document commit. Synchronous navigate() from
+            // build() would cancel this data: URL before it paints.
+            queue_terminal_control_navigate(window, control.clone());
+        })
         .build()
         .map_err(|e| format!("无法打开终端窗口: {e}"))?;
     remember_terminal_seat(&label, seat_id);
@@ -1470,7 +1612,10 @@ fn schedule_quit_watchdog() {
         let _ = Command::new("cmd")
             .args(&args)
             .creation_flags(
-                CREATE_NO_WINDOW | DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB,
+                CREATE_NO_WINDOW
+                    | DETACHED_PROCESS
+                    | CREATE_NEW_PROCESS_GROUP
+                    | CREATE_BREAKAWAY_FROM_JOB,
             )
             .spawn();
     }
@@ -1601,13 +1746,67 @@ mod tests {
         let term2 = webview_profile_dir(&root, "terminal-st_2");
         let settings = webview_profile_dir(&root, "settings");
         assert_ne!(term, root);
-        assert_eq!(term, term2, "all terminal pop-outs share one WebView2 Environment");
-        assert_eq!(term, settings, "settings warms the same loopback profile");
+        assert_eq!(
+            term, term2,
+            "all terminal pop-outs share one WebView2 user-data folder"
+        );
+        assert_ne!(
+            term, settings,
+            "settings must not share a user-data folder with terminals"
+        );
         assert!(!term.starts_with(&root));
-        assert!(term.ends_with("local-control"));
-        assert_eq!(webview_profile_key("terminal-st_9"), "local-control");
-        assert_eq!(webview_profile_key("settings"), "local-control");
+        assert!(term.ends_with("local-terminal"));
+        assert!(settings.ends_with("local-settings"));
+        assert_eq!(webview_profile_key("terminal-st_9"), "local-terminal");
+        assert_eq!(webview_profile_key("settings"), "local-settings");
         assert_eq!(webview_profile_key("main"), "main");
+    }
+
+    #[test]
+    fn terminal_boot_data_url_paints_seat_then_replaces_control_url() {
+        let control = "http://127.0.0.1:17421/?t=secret-token&terminal=st_abc&popout=1";
+        let data = terminal_boot_data_url("st_abc", control);
+        assert!(data.starts_with("data:text/html;charset=utf-8,"));
+        let html = percent_decode(data.strip_prefix("data:text/html;charset=utf-8,").unwrap());
+        assert!(html.contains("st_abc"));
+        assert!(html.contains("正在连接终端"));
+        assert!(html.contains("#1e1e1e"));
+        assert_eq!(html.matches("requestAnimationFrame").count(), 2);
+        assert!(html.contains("location.replace"));
+        assert!(html.contains(control));
+        assert!(html.contains("无法加载本机终端页"));
+        assert!(html.contains(",8000)"));
+        let origin_js = html.split("var origin=").nth(1).unwrap();
+        let origin_lit = origin_js.split(';').next().unwrap();
+        assert_eq!(origin_lit, "'http://127.0.0.1:17421'");
+        assert!(!origin_lit.contains("secret-token"));
+
+        let escaped =
+            terminal_boot_data_url("a<b>&\"c", "http://127.0.0.1:9/?t=t&terminal=a&popout=1");
+        let escaped_html = percent_decode(
+            escaped
+                .strip_prefix("data:text/html;charset=utf-8,")
+                .unwrap(),
+        );
+        assert!(escaped_html.contains("a&lt;b&gt;&amp;&quot;c"));
+        assert!(!escaped_html.contains("a<b>"));
+    }
+
+    #[test]
+    fn control_origin_label_drops_token_and_truncates() {
+        assert_eq!(
+            control_origin_label("http://127.0.0.1:17421/?t=secret&terminal=s&popout=1"),
+            "http://127.0.0.1:17421"
+        );
+        assert_eq!(
+            control_origin_label("http://localhost:9/?t=secret"),
+            "http://localhost:9"
+        );
+        let long = format!("http://example.invalid/{}", "a".repeat(120));
+        let label = control_origin_label(&long);
+        assert!(label.chars().count() <= 65);
+        assert!(label.ends_with('…'));
+        assert!(!label.contains('?'));
     }
 
     #[test]
