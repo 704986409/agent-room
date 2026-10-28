@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.25
+
+- 终端「展开」后切到「任务」会收回宽栏，不再占满右侧。Leaving 终端 for 任务 clears terminal expand.
+- 托盘「退出」先摘掉托盘图标并杀掉 daemon/座位进程，再 `app.exit`；卡住时进程内 watchdog + Windows 延时 `taskkill /F /T` 强制结束，避免任务栏/托盘僵尸图标。Tray Quit removes the icon, kills the daemon tree, then hard-exits if needed.
+
+## 0.1.24
+
+- 弹出终端黑屏：所有 `terminal-*` 与设置页共用 `local-control` WebView 配置目录；先画启动层再加载 xterm。Pop-out shares local-control profile and paints boot chrome early.
+- 弹出窗口 X 关不掉：同步 `force_close_terminal` + destroy 事件窗口句柄。Pop-out X force-closes synchronously.
+
 ## 0.1.23
 
 - 弹出终端不再依赖 jsDelivr，每个窗口使用独立 WebView 目录，关闭按钮会强制销毁窗口并停靠回房间。Pop-out loads xterm from the daemon, uses its own WebView profile, and force-closes back to the dock.
