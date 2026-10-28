@@ -495,7 +495,7 @@ describe('pop-out assets and stop', () => {
           await new Promise(resolve => setTimeout(resolve, 30));
         }
         expect(getPtySession(seatId)).toBeUndefined();
-        expect(daemon.seats[0]).toMatchObject({ status: 'idle', pid: undefined });
+        expect(daemon.seats.find(s => s.seatId === seatId)).toBeUndefined();
         const gone = await fetch(`http://127.0.0.1:${control.port}/api/terminals/missing-seat/stop?t=${control.token}`, {
           method: 'POST',
         });
@@ -506,7 +506,7 @@ describe('pop-out assets and stop', () => {
           method: 'POST',
         });
         expect(stopped.status).toBe(200);
-        expect(daemon.seats[0]?.status).toBe('idle');
+        expect(daemon.seats.find(s => s.seatId === seatId)).toBeUndefined();
       }
     } finally {
       await control.close();

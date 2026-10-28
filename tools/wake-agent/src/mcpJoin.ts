@@ -103,3 +103,32 @@ export async function joinRoomOverMcp(input: RoomJoinInput): Promise<RoomJoinRes
     yourName: typeof parsed.yourName === 'string' ? parsed.yourName : assigned,
   };
 }
+
+
+export interface RoomLeaveInput {
+  server: string;
+  code: string;
+  name: string;
+  seatKey?: string;
+}
+
+export type RoomLeave = (input: RoomLeaveInput) => Promise<void>;
+
+/** Leave over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
+export async function leaveRoomOverMcp(input: RoomLeaveInput): Promise<void> {
+  const url = mcpUrl(input.server);
+  await mcpCall(url, 'initialize', {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'agent-room-daemon', version: '0.0.0' },
+  }).catch(() => undefined);
+  const args: Record<string, unknown> = {
+    code: normalizeJoinCode(input.code),
+    name: input.name,
+  };
+  if (input.seatKey) args.seatKey = input.seatKey;
+  await mcpCall(url, 'tools/call', {
+    name: 'room_leave',
+    arguments: args,
+  });
+}

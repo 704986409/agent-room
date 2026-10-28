@@ -43,5 +43,6 @@ export function createHttpWakeApi(
     claim: body => post({ action: 'claim', ...body }) as ReturnType<WakeApi['claim']>,
     renew: body => post({ action: 'renew', ...body }),
     progress: body => post({ action: 'progress', ...body }),
+    unregister: body => post({ action: 'unregister', ...body }),
   };
 }

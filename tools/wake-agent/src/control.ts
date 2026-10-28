@@ -15,7 +15,8 @@ import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair,
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
 import { readOsClipboardText } from './clipboard.js';
-import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession } from './pty.js';
+import { modelsForAdapter } from './modelsList.js';
+import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
 
@@ -573,6 +574,8 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const session = getPtySession(id);
     if (session) {
       try { session.kill(); } catch { /* already dead */ }
+      // Drop from the rail list immediately; onExit may lag after kill.
+      unregisterPtySession(id);
     }
     const hadSeat = await options.daemon.stopManagedSeat(id);
     if (!session && !hadSeat) return { status: 404, body: { error: 'terminal_not_found' } };
@@ -591,13 +594,15 @@ export async function startControlServer(options: ControlServerOptions): Promise
       const ready = [];
       for (const adapter of options.adapters.values()) {
         const detected = await adapter.detect();
-        if (detected.installed && adapter.models.length > 0) ready.push(adapter);
+        if (detected.installed && modelsForAdapter(adapter).length > 0) ready.push(adapter);
       }
       chosen = ready.find(adapter => adapter.id === 'codex') ?? ready[0];
     }
-    if (!chosen || chosen.models.length === 0) return { status: 400, body: { error: 'launcher_unavailable' } };
+    if (!chosen) return { status: 400, body: { error: 'launcher_unavailable' } };
+    const chosenModels = modelsForAdapter(chosen);
+    if (chosenModels.length === 0) return { status: 400, body: { error: 'launcher_unavailable' } };
     const requestedModel = typeof body.model === 'string' ? body.model : '';
-    const model = chosen.models.includes(requestedModel) ? requestedModel : chosen.models[0]!;
+    const model = chosenModels.includes(requestedModel) ? requestedModel : chosenModels[0]!;
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : chosen.id;
     const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : (options.home ?? homedir());
     const seat = await options.daemon.startAgent({
@@ -628,7 +633,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const adapters = [];
     for (const adapter of options.adapters.values()) {
       const detected = await adapter.detect();
-      adapters.push({ id: adapter.id, command: adapter.command, models: [...adapter.models], ...detected });
+      adapters.push({ id: adapter.id, command: adapter.command, models: [...modelsForAdapter(adapter)], ...detected });
     }
     return {
       paired: !!device,

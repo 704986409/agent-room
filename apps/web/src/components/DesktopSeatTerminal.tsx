@@ -140,7 +140,10 @@ export function DesktopSeatTerminal({
   }
 
   const visible = terminalsForRoom(rows, roomCode);
-  const options = seatId && !visible.some(row => row.seatId === seatId)
+  // Only stub a tab while a preferred seat is still spinning up — never after 「关闭」.
+  const options = seatId
+    && preferredSeatId === seatId
+    && !visible.some(row => row.seatId === seatId)
     ? [...visible, { seatId, pid: 0, cols: 0, rows: 0 }]
     : visible;
   const popped = poppedRef.current === seatId && seatId !== '';
@@ -275,9 +278,11 @@ export function DesktopSeatTerminal({
         onTerminalsRef.current?.(payload.terminals);
         setSeatId(current => {
           if (current && payload.terminals.some(row => row.seatId === current)) return current;
-          const roomRows = terminalsForRoom(payload.terminals, roomCode);
           if (preferredSeatId && payload.terminals.some(row => row.seatId === preferredSeatId)) return preferredSeatId;
+          const roomRows = terminalsForRoom(payload.terminals, roomCode);
           if (roomRows.length === 1) return roomRows[0]!.seatId;
+          // Seat closed / PTY gone — drop selection so the rail does not keep a ghost tab.
+          if (current && !payload.terminals.some(row => row.seatId === current)) return '';
           return current;
         });
       } catch {
@@ -434,6 +439,10 @@ export function DesktopSeatTerminal({
       poppedRef.current = null;
       await closeManagedTerminal(id);
     }
+    // Clear the rail tab immediately; do not keep a ghost stub for a closed seat.
+    setRows(prev => prev.filter(row => row.seatId !== id));
+    setSeatId(prev => (prev === id ? '' : prev));
+    resetTerm(termRef.current);
     setNoteErr(false);
     setNote(tRef.current('desktopTerminal.stopped', { seat: label }));
   }
