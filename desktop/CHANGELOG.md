@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26
+
+- 弹出终端：`data:` 启动层 + 每座位独立 WebView 配置目录，避免黑屏/串配置。Pop-out boots from data URL with per-seat WebView profiles.
+- 房间 `@` Cursor：超过 grace 后 stop+resume，把唤醒提示真正打进 CLI。Wake re-resumes Cursor after grace when ACK never arrives.
+- 「关闭」立刻清右栏 tab，并从房间 `room_leave` / 踢座。Close clears the rail tab and kicks the seat.
+- 托盘退出：Windows 用静默 `ping` 延迟，不再闪 cmd。Silent tray quit watchdog on Windows.
+- 托管模型：启动后异步拉各 CLI 列表，进程内缓存。Async live model lists for HostLocal.
+- NSIS 升级前强制结束 Agent Room / 安装目录内进程（含 daemon/`conpty`），降低 `conpty.node` 被锁导致升级失败。NSIS preinstall/preuninstall kills shell + install-dir locks.
+
 ## 0.1.25
 
 - 终端「展开」后切到「任务」会收回宽栏，不再占满右侧。Leaving 终端 for 任务 clears terminal expand.
