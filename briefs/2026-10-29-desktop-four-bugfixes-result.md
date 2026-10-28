@@ -6,7 +6,14 @@ Pop-out black-screen left untouched.
 
 ## Commits (this turn)
 
-See `git log` after the four fix commits on this branch.
+| SHA | Summary |
+|-----|---------|
+| `478cfe1` | wake-cursor: re-resume after grace when inFlight never acks (+ stopManagedSeat unregister/leave) |
+| `ff15f3e` | close-clear-kick: unregisterPty + UI clear + leaveRoom MCP + status modelsForAdapter wiring |
+| `58fff9f` | tray-silent: ping delay + null stdio |
+| `497b1ed` | models-live: modelsList cache + HostLocal via adapters.models + this brief |
+
+HEAD: `497b1ed` · ahead of origin by 6 (prior 2 + these 4). Version still 0.1.25.
 
 ## 1) wake-cursor — room `@` never reached Cursor CLI
 
