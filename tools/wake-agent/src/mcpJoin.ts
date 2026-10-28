@@ -117,11 +117,12 @@ export type RoomLeave = (input: RoomLeaveInput) => Promise<void>;
 /** Leave over the hosted MCP endpoint. Tests inject a fake instead of calling this. */
 export async function leaveRoomOverMcp(input: RoomLeaveInput): Promise<void> {
   const url = mcpUrl(input.server);
+  // Same initialize + tools/call shape as joinRoomOverMcp (stateless MCP).
   await mcpCall(url, 'initialize', {
     protocolVersion: '2024-11-05',
     capabilities: {},
     clientInfo: { name: 'agent-room-daemon', version: '0.0.0' },
-  }).catch(() => undefined);
+  });
   const args: Record<string, unknown> = {
     code: normalizeJoinCode(input.code),
     name: input.name,

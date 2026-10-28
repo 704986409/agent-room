@@ -475,6 +475,13 @@ export function Room() {
       return same ? prev : rows;
     });
   }, []);
+  const onTerminalStopped = useCallback((seatId: string) => {
+    // Drop preferred so the rail cannot stub a ghost tab for a closed seat.
+    setHostedSeatId(prev => (prev === seatId ? undefined : prev));
+    setTerminalExpanded(false);
+    // room_leave runs in the daemon; refresh so the roster drops the seat.
+    void refreshRoom();
+  }, [refreshRoom]);
   const openSeatTerminal = useCallback((seatId: string) => {
     setHostedSeatId(seatId);
     setTerminalFocus(n => n + 1);
@@ -1372,6 +1379,7 @@ export function Room() {
                     expanded={terminalExpanded}
                     onToggleExpand={() => setTerminalExpanded(value => !value)}
                     onTerminals={onTerminals}
+                    onStopped={onTerminalStopped}
                   />
                 </Suspense>
               ) : null}

@@ -54,6 +54,7 @@ export function DesktopSeatTerminal({
   expanded = false,
   onToggleExpand,
   onTerminals,
+  onStopped,
 }: {
   roomCode: string;
   preferredSeatId?: string;
@@ -62,6 +63,8 @@ export function DesktopSeatTerminal({
   expanded?: boolean;
   onToggleExpand?: () => void;
   onTerminals?: (rows: DesktopTerminalRow[]) => void;
+  /** Fired after 「关闭」 succeeds so the room can drop preferredSeatId / refresh roster. */
+  onStopped?: (seatId: string) => void;
 }) {
   const { t } = useLocale();
   const tRef = useRef(t);
@@ -85,6 +88,10 @@ export function DesktopSeatTerminal({
   const expandedLayoutRef = useRef(false);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
+  const onStoppedRef = useRef(onStopped);
+  onStoppedRef.current = onStopped;
+  /** Seats the user closed — never stub them back while preferredSeatId still points here. */
+  const closedByUserRef = useRef(new Set<string>());
   seatRef.current = seatId;
 
   function sendStdinText(text: string) {
@@ -143,6 +150,7 @@ export function DesktopSeatTerminal({
   // Only stub a tab while a preferred seat is still spinning up — never after 「关闭」.
   const options = seatId
     && preferredSeatId === seatId
+    && !closedByUserRef.current.has(seatId)
     && !visible.some(row => row.seatId === seatId)
     ? [...visible, { seatId, pid: 0, cols: 0, rows: 0 }]
     : visible;
@@ -302,6 +310,8 @@ export function DesktopSeatTerminal({
 
   useEffect(() => {
     if (!desktop || !preferredSeatId) return;
+    // Parent re-opened this seat (focusToken bump) — allow stub/connect again.
+    closedByUserRef.current.delete(preferredSeatId);
     let cancelled = false;
     setSeatId(preferredSeatId);
     // Drop the previous socket before the list round-trip. connect() resets again.
@@ -440,9 +450,11 @@ export function DesktopSeatTerminal({
       await closeManagedTerminal(id);
     }
     // Clear the rail tab immediately; do not keep a ghost stub for a closed seat.
+    closedByUserRef.current.add(id);
     setRows(prev => prev.filter(row => row.seatId !== id));
     setSeatId(prev => (prev === id ? '' : prev));
     resetTerm(termRef.current);
+    onStoppedRef.current?.(id);
     setNoteErr(false);
     setNote(tRef.current('desktopTerminal.stopped', { seat: label }));
   }

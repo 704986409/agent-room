@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { machineIdPath, readOrCreateMachineId } from './src/machineId.js';
-import { joinRoomOverMcp } from './src/mcpJoin.js';
+import { joinRoomOverMcp, leaveRoomOverMcp } from './src/mcpJoin.js';
 
 describe('machine id', () => {
   it('uses LOCALAPPDATA on Windows and XDG state elsewhere, not the install directory', () => {
@@ -44,5 +44,28 @@ describe('joinRoomOverMcp', () => {
     expect(joined).toMatchObject({ seatKey: 'seat-key-value', cursor: 4, name: 'Codex' });
     const call = bodies[1] as { params: { arguments: { machineId: string; inviteCode: string } } };
     expect(call.params.arguments).toMatchObject({ machineId: 'machine-a-1111', inviteCode: 'AI-1', name: 'Codex' });
+  });
+});
+
+describe('leaveRoomOverMcp', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('initializes then calls room_leave with code and name', async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal('fetch', async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { method: string };
+      bodies.push(body);
+      return new Response(JSON.stringify({ result: { structuredContent: { left: true } } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    });
+    await leaveRoomOverMcp({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', name: 'cursor-a', seatKey: 'seat-key',
+    });
+    expect(bodies[0]).toMatchObject({ method: 'initialize' });
+    expect(bodies[1]).toMatchObject({
+      method: 'tools/call',
+      params: { name: 'room_leave', arguments: { code: 'ABC-DEF-GHJ', name: 'cursor-a', seatKey: 'seat-key' } },
+    });
   });
 });

@@ -661,8 +661,12 @@ async function dispatch(
     }
 
     case 'room_leave': {
+      // Agents are always client "cc". Self-removal needs the matching client
+      // or the filter no-ops and the roster seat stays (desktop 「关闭」kick).
       try {
-        await removeParticipant(client, a.code, a.name, a.name);
+        if (typeof a.name === 'string' && a.name.trim()) {
+          await removeParticipant(client, a.code, a.name, a.name, 'cc');
+        }
       } catch { /* room may already be ended / expired */ }
       return ok({ left: true, code: a.code }, [], structured);
     }

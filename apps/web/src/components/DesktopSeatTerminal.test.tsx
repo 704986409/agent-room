@@ -114,11 +114,18 @@ function mockHost() {
   };
 }
 
-async function renderPanel(preferredSeatId?: string): Promise<ReactTestRenderer> {
+async function renderPanel(
+  preferredSeatId?: string,
+  extras?: { onStopped?: (seatId: string) => void },
+): Promise<ReactTestRenderer> {
   let renderer!: ReactTestRenderer;
   await act(async () => {
     renderer = create(
-      <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId={preferredSeatId} />,
+      <DesktopSeatTerminal
+        roomCode="ABC-DEF-GHJ"
+        preferredSeatId={preferredSeatId}
+        onStopped={extras?.onStopped}
+      />,
       { createNodeMock: () => mockHost() },
     );
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -302,7 +309,8 @@ describe('DesktopSeatTerminal', () => {
   it('stops the managed process and leaves disconnect as detach-only', async () => {
     const confirm = vi.fn(() => true);
     vi.stubGlobal('confirm', confirm);
-    const renderer = await renderPanel('st_1');
+    const onStopped = vi.fn();
+    const renderer = await renderPanel('st_1', { onStopped });
     expect(button(renderer, '断开')).toBeTruthy();
     expect(button(renderer, '关闭')).toBeTruthy();
     await act(async () => {
@@ -316,6 +324,7 @@ describe('DesktopSeatTerminal', () => {
     });
     expect(confirm).toHaveBeenCalled();
     expect(state.stop).toHaveBeenCalledWith('st_1');
+    expect(onStopped).toHaveBeenCalledWith('st_1');
     expect(JSON.stringify(renderer.toJSON())).toContain('已关闭');
 
     state.stop.mockClear();
