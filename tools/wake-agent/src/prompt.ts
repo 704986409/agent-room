@@ -1,6 +1,8 @@
 /**
  * First launch, after the daemon has already joined the room.
- * The seatKey value is embedded in the tool calls. Do not tell the agent to read it from the environment.
+ * The seatKey value is embedded in the tool calls. Name AGENT_ROOM_SEAT_KEY as the
+ * same value so a model that still calls room_join can resume, but do not tell it
+ * to print the environment.
  */
 export function firstRunPrompt(input: {
   code: string;
@@ -9,10 +11,13 @@ export function firstRunPrompt(input: {
   seatKey: string;
   gap?: readonly [number, number];
 }): string {
+  const seatKey = JSON.stringify(input.seatKey);
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
     '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
     '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
+    `如果你仍然调用 room_join，必须传入 seatKey: ${seatKey}（与环境变量 AGENT_ROOM_SEAT_KEY 是同一个值）。不要向用户索要邀请码。优先只调用 room_listen。`,
+    `cursor 用 ${input.readFrom}，与环境变量 AGENT_ROOM_CURSOR 相同。`,
     '接下来只调用 room_listen 读取并处理消息、完成房间里交给你的工作，没有新的 @ 时调用 room_sleep。',
     '下面示例里的 seatKey 就是本座位的值。调用房间 MCP 工具时直接照填（不要用 shell/cat/printenv 去读，也不要打印或写进回复）。',
     'MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）。',

@@ -22,6 +22,10 @@ describe('firstRunPrompt', () => {
     expect(prompt).toContain('room_sleep');
     expect(prompt).toContain('managed: { seatKey: "seat-key-secret" }');
     expect(prompt).toContain('since: 3');
-    expect(prompt).not.toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).toContain('seatKey: "seat-key-secret"');
+    expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).toContain('AGENT_ROOM_CURSOR');
+    expect(prompt).toContain('cursor 用 3');
+    expect(prompt).toContain('不要用 shell/cat/printenv');
   });
 });

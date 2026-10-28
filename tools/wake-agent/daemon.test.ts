@@ -120,7 +120,8 @@ describe('wake daemon', () => {
     expect(child.calls[0]!.args.slice(0, 2)).toEqual(['-m', 'gpt-6-sol']);
     expect(child.calls[0]!.args).toContain('mcp_servers.agent-room.default_tools_approval_mode="approve"');
     expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "super-secret-key"');
-    expect(child.calls[0]!.args.at(-1)).not.toContain('AGENT_ROOM_SEAT_KEY');
+    expect(child.calls[0]!.args.at(-1)).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(child.calls[0]!.args.at(-1)).toContain('AGENT_ROOM_CURSOR');
     expect(child.calls[0]!.args.join(' ')).not.toMatch(/dangerously|full-auto|--yolo|--force/);
     expect(child.calls[0]!.env).toMatchObject({
       AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SERVER: 'http://127.0.0.1:9',
@@ -135,7 +136,7 @@ describe('wake daemon', () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect(logs.join('\n')).not.toContain('super-secret-key');
     expect(logs.join('\n')).toContain('[redacted]');
-    expect(logs.join('\n')).not.toContain('AGENT_ROOM_SEAT_KEY');
+    expect(logs.join('\n')).toContain('AGENT_ROOM_SEAT_KEY');
     expect(client.calls).toEqual(['register']);
   });
 
