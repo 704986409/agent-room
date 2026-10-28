@@ -138,6 +138,8 @@ export class WakeDaemon {
   private wakeSleep: (() => void) | undefined;
   /** When each still-pending event was first seen, so a live listen can ack it. */
   private readonly pendingSeen = new Map<string, number>();
+  /** Seats the user explicitly stopped. Polling must not spawn them again. */
+  private readonly stoppedByUser = new Set<string>();
 
   constructor(options: WakeDaemonOptions) {
     this.options = options;
@@ -179,6 +181,7 @@ export class WakeDaemon {
           this.markRevoked(seat, `seat ${seat.seatId} revoked`);
           continue;
         }
+        if (this.stoppedByUser.has(seat.seatId)) continue;
         if (remote.status !== 'active') continue;
         const claimIds = remote.inFlight.map(event => event.claimId).filter((id): id is string => !!id);
         if (claimIds.length) await this.options.api.renew({ claimIds });
@@ -281,9 +284,24 @@ export class WakeDaemon {
       startedAt: new Date().toISOString(),
     };
     this.options.state.seats.push(seat);
+    this.stoppedByUser.delete(seat.seatId);
     this.watchExit(seat.seatId, launched.pid, launched.exited);
     await this.options.persist?.(this.options.state);
     return seat;
+  }
+
+  /**
+   * End one managed seat and keep the wake loop from starting it again.
+   * The PTY, when present, is killed by the control route; this stops the
+   * recorded pid and marks the seat idle.
+   */
+  async stopManagedSeat(seatId: string): Promise<boolean> {
+    const seat = this.options.state.seats.find(item => item.seatId === seatId);
+    if (!seat || seat.status === 'revoked') return false;
+    this.stoppedByUser.add(seatId);
+    await this.stopLiveProcess(seat);
+    await this.options.persist?.(this.options.state);
+    return true;
   }
 
   private adapter(id: string): LauncherAdapter {

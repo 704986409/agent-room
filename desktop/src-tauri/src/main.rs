@@ -9,15 +9,22 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
+use tauri::window::Color;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+
+/// Set before exit so the main window's hide-on-close does not cancel quit.
+static QUITTING: AtomicBool = AtomicBool::new(false);
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -439,20 +446,141 @@ fn alert(title: &str, message: &str) {
     }
 }
 
-fn persistent_webview_data_directory(app: &AppHandle) -> Result<Option<PathBuf>, String> {
+/// `true` when closing `main` should hide to the tray instead of exiting.
+fn main_should_hide_on_close(label: &str, quitting: bool) -> bool {
+    label == "main" && !quitting
+}
+
+/// Pop-out labels get an explicit destroy. During quit the process exit closes them.
+fn terminal_should_force_destroy(label: &str, quitting: bool) -> bool {
+    !quitting && label.starts_with("terminal-")
+}
+
+/// WebView2 allows one controller per user-data folder. A second window on the
+/// main folder stays white and its close button never finishes. `main` keeps
+/// the historical directory so existing site data survives. Every other label
+/// gets a sibling folder, not a child of the main profile.
+fn webview_profile_dir(root: &Path, label: &str) -> PathBuf {
+    if label == "main" {
+        return root.to_path_buf();
+    }
+    let mut safe = String::new();
+    for c in label.chars() {
+        let next = if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            c
+        } else {
+            '_'
+        };
+        safe.push(next);
+        if safe.len() >= 96 {
+            break;
+        }
+    }
+    if safe.is_empty() {
+        safe.push_str("window");
+    }
+    let parent = root.parent().unwrap_or(root);
+    let folder = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("webview");
+    parent.join(format!("{folder}-profiles")).join(safe)
+}
+
+fn webview_data_directory(app: &AppHandle, label: &str) -> Result<Option<PathBuf>, String> {
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
-        app.path()
+        let root = app
+            .path()
             .app_local_data_dir()
-            .map(Some)
-            .map_err(|e| format!("无法确定 WebView 持久化目录: {e}"))
+            .map_err(|e| format!("无法确定 WebView 持久化目录: {e}"))?;
+        let dir = webview_profile_dir(&root, label);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("无法创建 WebView 目录 {}: {e}", dir.display()))?;
+        Ok(Some(dir))
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
         // WKWebView uses its persistent default website data store on macOS;
         // Tauri's data_directory setting is unavailable there.
-        let _ = app;
+        let _ = (app, label);
         Ok(None)
+    }
+}
+
+fn parse_daemon_lock_pid(text: &str) -> Option<u32> {
+    let pid = text.trim().parse::<u32>().ok()?;
+    if pid == 0 {
+        None
+    } else {
+        Some(pid)
+    }
+}
+
+fn seat_pids_from_daemon_state(text: &str) -> Vec<u32> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(seats) = value.get("seats").and_then(|entry| entry.as_array()) else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for seat in seats {
+        let Some(pid) = seat.get("pid").and_then(|entry| entry.as_u64()) else {
+            continue;
+        };
+        if (1..=u64::from(u32::MAX)).contains(&pid) {
+            pids.push(pid as u32);
+        }
+    }
+    pids
+}
+
+/// Pids to hard-kill on quit: spawned node, daemon.lock owner, and seat CLIs.
+/// Never includes this process.
+fn pids_to_kill(
+    self_pid: u32,
+    child: Option<u32>,
+    lock_pid: Option<u32>,
+    seat_pids: &[u32],
+) -> Vec<u32> {
+    let mut pids = Vec::new();
+    if let Some(pid) = child {
+        pids.push(pid);
+    }
+    if let Some(pid) = lock_pid {
+        pids.push(pid);
+    }
+    pids.extend(seat_pids.iter().copied());
+    pids.retain(|pid| *pid != 0 && *pid != self_pid);
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+/// Kill `pid` and descendants. Windows: `taskkill /F /T`. Unix: process group
+/// (daemon is spawned with `process_group(0)`) and the pid itself. Seat CLIs
+/// that called `setsid` are killed when their pid is passed in separately.
+fn terminate_pid_tree(pid: u32) {
+    if pid == 0 || pid == std::process::id() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = Command::new("kill")
+            .args(["-KILL", &format!("-{pid}")])
+            .status();
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
     }
 }
 
@@ -476,7 +604,7 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
         return Ok(());
     }
     let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(parsed));
-    if let Some(data_dir) = persistent_webview_data_directory(app)? {
+    if let Some(data_dir) = webview_data_directory(app, "settings")? {
         builder = builder.data_directory(data_dir);
     }
     builder
@@ -490,12 +618,30 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
 const DAEMON_READY_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn close_labeled_window(app: &AppHandle, label: &str) {
-    if let Some(w) = app.get_webview_window(label) {
-        let _ = w.close();
+    let Some(window) = app.get_webview_window(label) else {
+        return;
+    };
+    if label.starts_with("terminal-") {
+        force_close_terminal(app, label);
+    } else {
+        let _ = window.close();
     }
 }
 
-static TERMINAL_SEAT_BY_LABEL: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// `destroy` skips `Destroyed`, so dock the seat before tearing the window down.
+fn force_close_terminal(app: &AppHandle, label: &str) {
+    if let Some(seat_id) = take_terminal_seat(label) {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.emit("managed-terminal-docked", seat_id);
+        }
+    }
+    if let Some(window) = app.get_webview_window(label) {
+        let _ = window.destroy();
+    }
+}
+
+static TERMINAL_SEAT_BY_LABEL: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn remember_terminal_seat(label: &str, seat_id: &str) {
     if let Ok(mut map) = TERMINAL_SEAT_BY_LABEL.lock() {
@@ -717,13 +863,14 @@ fn open_terminal_window_inner(
         height.unwrap_or(TERM_DEFAULT_H),
     );
     let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed));
-    if let Some(data_dir) = persistent_webview_data_directory(app)? {
+    if let Some(data_dir) = webview_data_directory(app, &label)? {
         builder = builder.data_directory(data_dir);
     }
     builder = builder
         .title(format!("Agent Room · {seat_id}"))
         .inner_size(width, height)
-        .min_inner_size(TERM_MIN_W, TERM_MIN_H);
+        .min_inner_size(TERM_MIN_W, TERM_MIN_H)
+        .background_color(Color(0x1e, 0x1e, 0x1e, 255));
     if let Some((x, y)) = clamp_terminal_position(x, y) {
         builder = builder.position(x, y);
     }
@@ -1011,6 +1158,11 @@ impl Daemon {
         }
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
+        // Own process group so quit can kill the daemon tree without signaling us.
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
 
         let mut child = cmd.spawn().map_err(|e| {
             format!(
@@ -1072,27 +1224,41 @@ impl Daemon {
         )
     }
 
+    /// Hard-stop the spawned daemon and seat CLIs. Bounded: never `wait()`s
+    /// forever, and does not hold the daemon mutex across the kill.
     fn stop(&self) {
-        let mut g = self.0.lock().unwrap();
-        if let Some(mut c) = g.child.take() {
-            #[cfg(unix)]
-            {
-                let _ = Command::new("kill")
-                    .arg("-TERM")
-                    .arg(c.id().to_string())
-                    .status();
-                let deadline = Instant::now() + Duration::from_secs(3);
-                while Instant::now() < deadline {
-                    if let Ok(Some(_)) = c.try_wait() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-            let _ = c.kill();
-            let _ = c.wait();
+        let child = {
+            let mut g = self
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            g.control_url = None;
+            g.child.take()
+        };
+        let dir = daemon_log_dir();
+        let state = std::fs::read_to_string(dir.join("daemon.json")).unwrap_or_default();
+        let lock_text = std::fs::read_to_string(dir.join("daemon.lock")).unwrap_or_default();
+        let child_pid = child.as_ref().map(|proc| proc.id());
+        let pids = pids_to_kill(
+            std::process::id(),
+            child_pid,
+            parse_daemon_lock_pid(&lock_text),
+            &seat_pids_from_daemon_state(&state),
+        );
+        for pid in pids {
+            terminate_pid_tree(pid);
         }
-        g.control_url = None;
+        let Some(mut child) = child else {
+            return;
+        };
+        let _ = child.kill();
+        let deadline = Instant::now() + Duration::from_millis(800);
+        while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(Duration::from_millis(40)),
+            }
+        }
     }
 
     fn control_url(&self) -> Option<String> {
@@ -1146,7 +1312,7 @@ fn show_main(app: &AppHandle) {
         }
     };
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url));
-    match persistent_webview_data_directory(app) {
+    match webview_data_directory(app, "main") {
         Ok(Some(data_dir)) => builder = builder.data_directory(data_dir),
         Ok(None) => {}
         Err(e) => {
@@ -1226,6 +1392,17 @@ fn show_settings(app: AppHandle, daemon: Daemon) {
     }
 }
 
+/// Tray 退出. Destroy every window first so main's hide-on-close cannot cancel
+/// `app.exit`. The daemon tree is killed from `RunEvent::Exit` (bounded).
+fn request_quit(app: &AppHandle) {
+    QUITTING.store(true, Ordering::SeqCst);
+    let windows: Vec<_> = app.webview_windows().into_values().collect();
+    for window in windows {
+        let _ = window.destroy();
+    }
+    app.exit(0);
+}
+
 fn main() {
     let daemon = Daemon::default();
     let daemon_for_exit = daemon.clone();
@@ -1276,10 +1453,7 @@ fn main() {
                         }
                     }
                     "stop" => d.stop(),
-                    "quit" => {
-                        d.stop();
-                        app.exit(0);
-                    }
+                    "quit" => request_quit(app),
                     _ => {}
                 })
                 .build(app)?;
@@ -1290,12 +1464,23 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            let quitting = QUITTING.load(Ordering::SeqCst);
             match event {
                 // Closing the main window hides it; the tray keeps the app (and daemon) alive.
+                // Quit must not take this branch: prevent_close cancels app.exit and the
+                // tray item looks dead. Terminal close is forced because a WebView2 that
+                // is still starting (blank pop-out) can ignore the default close.
                 tauri::WindowEvent::CloseRequested { api, .. } => {
-                    if window.label() == "main" {
+                    let label = window.label().to_string();
+                    if main_should_hide_on_close(&label, quitting) {
                         api.prevent_close();
                         let _ = window.hide();
+                    } else if terminal_should_force_destroy(&label, quitting) {
+                        api.prevent_close();
+                        let app = window.app_handle().clone();
+                        let _ = app.clone().run_on_main_thread(move || {
+                            force_close_terminal(&app, &label);
+                        });
                     }
                 }
                 // Pop-out is a different origin from the room page, so BroadcastChannel
@@ -1322,6 +1507,53 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webview_profiles_are_siblings_of_the_main_folder() {
+        let root = PathBuf::from("/tmp/com.agent-room.desktop");
+        assert_eq!(webview_profile_dir(&root, "main"), root);
+        let term = webview_profile_dir(&root, "terminal-st_1");
+        let settings = webview_profile_dir(&root, "settings");
+        assert_ne!(term, root);
+        assert_ne!(settings, term);
+        assert!(!term.starts_with(&root));
+        assert!(term.ends_with("terminal-st_1"));
+        assert!(settings.ends_with("settings"));
+        assert_eq!(
+            webview_profile_dir(&root, "terminal-st_1"),
+            webview_profile_dir(&root, "terminal-st_1")
+        );
+    }
+
+    #[test]
+    fn close_policy_hides_main_until_quit_and_forces_terminal_destroy() {
+        assert!(main_should_hide_on_close("main", false));
+        assert!(!main_should_hide_on_close("main", true));
+        assert!(!main_should_hide_on_close("terminal-st_1", false));
+        assert!(terminal_should_force_destroy("terminal-st_1", false));
+        assert!(!terminal_should_force_destroy("terminal-st_1", true));
+        assert!(!terminal_should_force_destroy("main", false));
+        assert!(!terminal_should_force_destroy("settings", false));
+    }
+
+    #[test]
+    fn quit_kills_daemon_child_lock_owner_and_seat_pids_except_self() {
+        let seats = seat_pids_from_daemon_state(
+            r#"{"seats":[{"seatId":"st_1","pid":4242},{"seatId":"st_2"},{"pid":0},{"pid":7}]}"#,
+        );
+        assert_eq!(seats, vec![4242, 7]);
+        assert_eq!(parse_daemon_lock_pid("  5150 \n"), Some(5150));
+        assert_eq!(parse_daemon_lock_pid("0"), None);
+        assert_eq!(parse_daemon_lock_pid("nope"), None);
+        assert_eq!(
+            pids_to_kill(100, Some(200), Some(200), &[4242, 100, 7]),
+            vec![7, 200, 4242]
+        );
+        assert_eq!(
+            pids_to_kill(100, None, Some(100), &[100]),
+            Vec::<u32>::new()
+        );
+    }
 
     #[test]
     fn strips_verbatim_disk_prefix() {

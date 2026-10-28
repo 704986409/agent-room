@@ -180,6 +180,21 @@ async function build_esbuild() {
 
 const html = join(root, 'tools/wake-agent/src/settings.html');
 if (existsSync(html)) cpSync(html, join(out, 'settings.html'));
+const vendorOut = join(out, 'vendor');
+mkdirSync(vendorOut, { recursive: true });
+const vendorAssets = [
+  ['node_modules/@xterm/xterm/lib/xterm.js', 'xterm.js'],
+  ['node_modules/@xterm/xterm/css/xterm.css', 'xterm.css'],
+  ['node_modules/@xterm/addon-fit/lib/addon-fit.js', 'xterm-addon-fit.js'],
+];
+for (const [rel, name] of vendorAssets) {
+  const src = join(root, rel);
+  if (!existsSync(src)) {
+    console.error(`missing xterm asset ${src}`);
+    process.exit(1);
+  }
+  cpSync(src, join(vendorOut, name));
+}
 const winCred = join(root, 'tools/wake-agent/scripts/win-cred.ps1');
 if (existsSync(winCred)) cpSync(winCred, join(out, 'win-cred.ps1'));
 const seatLaunch = join(root, 'tools/wake-agent/src/seat-launch.mjs');

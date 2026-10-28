@@ -492,4 +492,29 @@ describe('state file round trip', () => {
     expect(restarted.seats).toHaveLength(1);
     expect(restarted.seats[0]).toMatchObject({ seatId: 'st_a', status: 'idle', sessionId: 'thr_9', model: 'gpt-6-sol' });
   });
+
+  it('does not resume a seat the user stopped', async () => {
+    const stopped: number[] = [];
+    let alive = true;
+    const surface = api();
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map(),
+      state: {
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+          sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242,
+        }],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      stopProcess: (pid) => { stopped.push(pid); alive = false; },
+    });
+    expect(await daemon.stopManagedSeat('st_a')).toBe(true);
+    expect(stopped).toEqual([4242]);
+    expect(daemon.seats[0]).toMatchObject({ status: 'idle', pid: undefined });
+    await daemon.tick();
+    expect(surface.calls).toEqual(['poll']);
+    expect(await daemon.stopManagedSeat('missing')).toBe(false);
+  });
 });

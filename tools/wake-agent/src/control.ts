@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
@@ -38,6 +39,39 @@ export interface RecentRoom {
 }
 
 const settingsHtml = await readFile(fileURLToPath(new URL('./settings.html', import.meta.url)), 'utf8');
+
+/** Same-origin xterm builds. Pop-out must not block on a CDN (blank window, close stalls). */
+const VENDOR_ASSETS: Record<string, { type: string; files: string[] }> = {
+  '/vendor/xterm.js': {
+    type: 'text/javascript; charset=utf-8',
+    files: ['./vendor/xterm.js', '../../../node_modules/@xterm/xterm/lib/xterm.js'],
+  },
+  '/vendor/xterm.css': {
+    type: 'text/css; charset=utf-8',
+    files: ['./vendor/xterm.css', '../../../node_modules/@xterm/xterm/css/xterm.css'],
+  },
+  '/vendor/xterm-addon-fit.js': {
+    type: 'text/javascript; charset=utf-8',
+    files: ['./vendor/xterm-addon-fit.js', '../../../node_modules/@xterm/addon-fit/lib/addon-fit.js'],
+  },
+};
+
+const vendorBodyCache = new Map<string, string>();
+
+function readVendorAsset(urlPath: string): { body: string; type: string } | null {
+  const spec = VENDOR_ASSETS[urlPath];
+  if (!spec) return null;
+  const cached = vendorBodyCache.get(urlPath);
+  if (cached !== undefined) return { body: cached, type: spec.type };
+  for (const rel of spec.files) {
+    const path = fileURLToPath(new URL(rel, import.meta.url));
+    if (!existsSync(path)) continue;
+    const body = readFileSync(path, 'utf8');
+    vendorBodyCache.set(urlPath, body);
+    return { body, type: spec.type };
+  }
+  return null;
+}
 
 export interface ControlServerOptions {
   daemon: WakeDaemon;
@@ -318,7 +352,17 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const tokenOk = !!presented && tokenMatches(presented, token);
     const desktopHeader = req.headers['x-agent-room-desktop'];
     const desktopMark = desktopHeader === '1' || (Array.isArray(desktopHeader) && desktopHeader[0] === '1');
-    const desktopOk = DESKTOP_PATHS.has(url.pathname) && desktopMark && !!paired && requestOrigin === paired;
+    const desktopStop = /^\/api\/desktop\/terminals\/([^/]+)\/stop$/.test(url.pathname);
+    const desktopOk = (DESKTOP_PATHS.has(url.pathname) || desktopStop) && desktopMark && !!paired && requestOrigin === paired;
+    if (req.method === 'GET' && VENDOR_ASSETS[url.pathname]) {
+      const asset = readVendorAsset(url.pathname);
+      if (!asset) {
+        send(res, 404, { error: 'vendor_missing' }, 'application/json; charset=utf-8', cors);
+        return;
+      }
+      send(res, 200, asset.body, asset.type, cors);
+      return;
+    }
     if (!tokenOk && !desktopOk) {
       send(res, 401, { error: 'control_unauthorized' }, undefined, cors);
       return;
@@ -373,6 +417,16 @@ export async function startControlServer(options: ControlServerOptions): Promise
           return;
         }
         send(res, 200, { seatId: session.seatId, pid: session.pid, cols: session.cols, rows: session.rows }, undefined, cors);
+        return;
+      }
+    }
+    if (req.method === 'POST') {
+      const desktopStopMatch = /^\/api\/desktop\/terminals\/([^/]+)\/stop$/.exec(url.pathname);
+      const tokenStopMatch = /^\/api\/terminals\/([^/]+)\/stop$/.exec(url.pathname);
+      const stopMatch = desktopStopMatch ?? tokenStopMatch;
+      if (stopMatch) {
+        const stopped = await stopTerminal(decodeURIComponent(stopMatch[1]!));
+        send(res, stopped.status, stopped.body, undefined, cors);
         return;
       }
     }
@@ -509,6 +563,20 @@ export async function startControlServer(options: ControlServerOptions): Promise
       return;
     }
     send(res, 404, { error: 'not_found' });
+  }
+
+  async function stopTerminal(seatId: string): Promise<{ status: number; body: unknown }> {
+    const id = seatId.trim();
+    if (!id || id.length > 128 || id.includes('/') || id.includes('\\')) {
+      return { status: 400, body: { error: 'seat_id' } };
+    }
+    const session = getPtySession(id);
+    if (session) {
+      try { session.kill(); } catch { /* already dead */ }
+    }
+    const hadSeat = await options.daemon.stopManagedSeat(id);
+    if (!session && !hadSeat) return { status: 404, body: { error: 'terminal_not_found' } };
+    return { status: 200, body: { ok: true, stopped: true, seatId: id } };
   }
 
   async function hostFromRoom(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {

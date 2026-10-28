@@ -404,3 +404,106 @@ describe('debug pty-spawn hatch', () => {
     }
   }, 20_000);
 });
+
+describe('pop-out assets and stop', () => {
+  it('serves xterm from the daemon and stops a PTY without a CDN', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-stop-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const seatId = 'st_stop';
+    let alive = true;
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId, scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: {
+        seats: [{
+          seatId, code: 'ABC-DEF', name: '开发工程师', adapterId: 'codex', cwd: directory,
+          status: 'running', pid: 5150,
+        }],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      stopProcess: () => { alive = false; },
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'https://room.example',
+      adapters,
+      secrets,
+      log,
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    const roomOrigin = 'https://room.example';
+    try {
+      const page = await fetch(`http://127.0.0.1:${control.port}/?t=${control.token}&terminal=${seatId}&popout=1`);
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      expect(html).not.toContain('jsdelivr');
+      expect(html).toContain('/vendor/xterm.js');
+      expect(html).toContain("get('popout')");
+      expect(html).toContain('id="term-stop"');
+
+      const vendor = await fetch(`http://127.0.0.1:${control.port}/vendor/xterm.js`);
+      expect(vendor.status).toBe(200);
+      expect(vendor.headers.get('content-type')).toContain('javascript');
+      expect(await vendor.text()).toContain('Terminal');
+      const fit = await fetch(`http://127.0.0.1:${control.port}/vendor/xterm-addon-fit.js`);
+      expect(fit.status).toBe(200);
+      expect(await fit.text()).toContain('FitAddon');
+
+      const denied = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals/${seatId}/stop`, {
+        method: 'POST',
+        headers: { origin: roomOrigin },
+      });
+      expect(denied.status).toBe(401);
+
+      if (ptyAvailable()) {
+        const session = spawnPtySession({
+          seatId,
+          command: 'bash',
+          args: ['-lc', 'exec cat'],
+          cwd: directory,
+          env: {},
+        });
+        const stopped = await fetch(`http://127.0.0.1:${control.port}/api/desktop/terminals/${seatId}/stop`, {
+          method: 'POST',
+          headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        });
+        expect(stopped.status).toBe(200);
+        expect(await stopped.json()).toMatchObject({ ok: true, stopped: true, seatId });
+        const deadline = Date.now() + 3000;
+        while (getPtySession(seatId) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 30));
+        }
+        expect(getPtySession(seatId)).toBeUndefined();
+        expect(daemon.seats[0]).toMatchObject({ status: 'idle', pid: undefined });
+        const gone = await fetch(`http://127.0.0.1:${control.port}/api/terminals/missing-seat/stop?t=${control.token}`, {
+          method: 'POST',
+        });
+        expect(gone.status).toBe(404);
+        expect(session.pid).toBeGreaterThan(0);
+      } else {
+        const stopped = await fetch(`http://127.0.0.1:${control.port}/api/terminals/${seatId}/stop?t=${control.token}`, {
+          method: 'POST',
+        });
+        expect(stopped.status).toBe(200);
+        expect(daemon.seats[0]?.status).toBe('idle');
+      }
+    } finally {
+      await control.close();
+    }
+  }, 20_000);
+});
