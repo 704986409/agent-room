@@ -456,6 +456,9 @@ describe('pop-out assets and stop', () => {
       expect(html).toContain('defer');
       expect(html).toContain('id="term-boot"');
       expect(html).toContain('html.popout #term-wrap');
+      expect(html).toContain("document.body.classList.add('popout')");
+      expect(html).toContain("wrap.classList.add('term-open')");
+      expect(html).not.toMatch(/id="term-wrap"\s+hidden/);
       expect(html).toContain("get('popout')");
       expect(html).toContain('id="term-stop"');
 

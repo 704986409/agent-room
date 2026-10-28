@@ -1496,11 +1496,15 @@ fn main() {
                         let _ = window.hide();
                     } else if terminal_should_force_destroy(&label, quitting) {
                         // Prevent the default close: a wedged WebView2 ignores it and
-                        // the window stays forever. Destroy synchronously — queueing
-                        // via run_on_main_thread never ran while the Environment hung.
+                        // the window stays forever. Destroy synchronously on THIS
+                        // handle — queueing via run_on_main_thread never ran while
+                        // the Environment hung (0.1.23 black pop-out).
                         api.prevent_close();
                         let app = window.app_handle().clone();
                         force_close_terminal(&app, &label);
+                        // force_close may no-op if the map lookup races; always
+                        // destroy the CloseRequested window handle itself.
+                        let _ = window.destroy();
                         if app.get_webview_window(&label).is_some() {
                             let _ = window.hide();
                             let label2 = label.clone();

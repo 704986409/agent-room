@@ -25,6 +25,8 @@
     .err { color: #9b1c1c; }
     .ok { color: #0f6b3a; font-size: 13px; }
     #term-wrap { height: 320px; border-radius: 8px; overflow: hidden; background: #1e1e1e; }
+    /* settings: keep panel closed until connect; popout paints immediately */
+    body:not(.popout) #term-wrap:not(.term-open) { display: none; }
     #term-wrap .xterm { height: 100%; padding: 4px; }
     #term-note { margin-top: 8px; }
     /* html.popout is set in <head> before first paint — do not wait for body.js */
@@ -85,6 +87,13 @@
   </script>
 </head>
 <body>
+  <script>
+    // Mirror html.popout onto body before first layout so chrome CSS applies
+    // even while deferred xterm scripts are still downloading.
+    if (document.documentElement.classList.contains('popout')) {
+      document.body.classList.add('popout');
+    }
+  </script>
   <header>
     <h1>Agent Room 本机设置</h1>
     <p class="muted">只在这台电脑上使用。除已绑定服务器上的房间页外，其他网站不能调用这里的接口。</p>
@@ -161,7 +170,7 @@
         <button type="button" class="quiet" id="term-stop" title="结束该座位的 CLI 进程">关闭进程</button>
         <button type="button" class="quiet" id="term-dock">收回 / 停靠</button>
       </div>
-      <div id="term-wrap" hidden><div id="term-boot">正在连接终端…</div></div>
+      <div id="term-wrap"><div id="term-boot">正在连接终端…</div></div>
       <p id="term-note" class="muted">尚未连接。先启动托管 Agent（嵌入模式），再在这里选座位连接。</p>
     </section>
     <section>
@@ -607,6 +616,7 @@
         return null;
       }
       const wrap = document.getElementById('term-wrap');
+      wrap.classList.add('term-open');
       wrap.hidden = false;
       if (term) {
         fitAddon && fitAddon.fit();
