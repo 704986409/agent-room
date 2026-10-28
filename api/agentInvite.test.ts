@@ -191,6 +191,85 @@ describe('joinRoom agent invite gate', () => {
     expect(resumed.participant.memoryPersonaId).toBe('开发工程师');
   });
 
+  function holdOnline() {
+    room = {
+      ...room,
+      participants: room.participants.map(p => ({
+        ...p,
+        lastSeenAt: Date.now(),
+        listenLeases: { hold: Date.now() + 60_000 },
+      })),
+    };
+  }
+
+  it('returns already_joined when the same persona is online and no seatKey or machineId is sent', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    holdOnline();
+    const calls = storeJoin.mock.calls.length;
+    const error = await joinRoom(client(), room.code, agent('Codex'), {
+      requireAgentInvite: true, personaId: '开发工程师',
+    }).catch(e => e);
+    expect(error).toBeInstanceOf(RemoteRoomApiError);
+    expect(error).toMatchObject({ code: 'already_joined', status: 409 });
+    expect(String(error.message)).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(String(error.message)).toContain('room_listen');
+    expect(String(error.message)).toContain('不要向用户索要邀请码');
+    expect(String(error.message)).not.toContain(first.seatKey);
+    expect(String(error.message)).not.toContain('120s');
+    expect(storeJoin).toHaveBeenCalledTimes(calls);
+  });
+
+  it('returns already_joined instead of invite_code_required when that role is already online', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    holdOnline();
+    const calls = storeJoin.mock.calls.length;
+    const error = await joinRoom(client(), room.code, agent('Codex', '开发工程师'), { requireAgentInvite: true }).catch(e => e);
+    expect(error).toMatchObject({ code: 'already_joined', status: 409 });
+    expect(String(error.message)).not.toContain(first.seatKey);
+    expect(storeJoin).toHaveBeenCalledTimes(calls);
+
+    const otherRole = await joinRoom(client(), room.code, agent('Claude', '测试工程师'), { requireAgentInvite: true }).catch(e => e);
+    expect(otherRole).toMatchObject({ code: 'invite_code_required', status: 403 });
+    const unnamed = await joinRoom(client(), room.code, agent('Guest'), { requireAgentInvite: true }).catch(e => e);
+    expect(unnamed).toMatchObject({ code: 'invite_code_required', status: 403 });
+  });
+
+  it('returns already_joined for an invite-only retry and does not spend that code', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    holdOnline();
+    const again = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const error = await joinRoom(client(), room.code, agent('Codex', '开发工程师'), {
+      requireAgentInvite: true, inviteCode: again.inviteCode,
+    }).catch(e => e);
+    expect(error).toMatchObject({ code: 'already_joined', status: 409 });
+    expect(String(error.message)).not.toContain(first.seatKey);
+    expect(await lookupAgentInvite(store, room, again.inviteCode)).toMatchObject({ ok: true });
+    expect(room.participants.filter(p => p.client === 'cc')).toHaveLength(1);
+  });
+
+  it('still refuses a different machine that presents its own machineId', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    await joinRoom(client(), room.code, agent('Codex'), {
+      requireAgentInvite: true, inviteCode: invite.inviteCode, machineId: 'machine-a-1111',
+    });
+    holdOnline();
+    await expect(joinRoom(client(), room.code, agent('Codex', '开发工程师'), {
+      requireAgentInvite: true, machineId: 'machine-b-2222',
+    })).rejects.toMatchObject({ code: 'SEAT_IN_USE', status: 409 });
+  });
+
+  it('keeps SEAT_IN_USE for a non-MCP join of an online persona', async () => {
+    const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
+    const first = await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });
+    holdOnline();
+    const error = await joinRoom(client(), room.code, agent('Codex'), { personaId: '开发工程师' }).catch(e => e);
+    expect(error).toMatchObject({ code: 'SEAT_IN_USE', status: 409 });
+    expect(String(error.message)).not.toContain(first.seatKey);
+  });
+
   it('lets an offline same-Persona seat be reclaimed without a code', async () => {
     const invite = await createAgentInvite(store, room, { hostKey: HOST_KEY, role: '开发工程师' });
     await joinRoom(client(), room.code, agent('Codex'), { requireAgentInvite: true, inviteCode: invite.inviteCode });

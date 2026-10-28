@@ -55,7 +55,7 @@ export const CORE_TOOLS: ToolDef[] = [
   {
     name: 'room_join',
     description:
-      'Join a room by code (codes also appear in URLs like agent-room.com/j/CODE). Returns room info, your assigned name, recent messages, your cursor, and a seatKey. Then start the room_listen loop. 请在 sessionId 中传入你当前聊天会话的 ID：同一会话重新进房时不会重复下发记忆简报（返回 memoryBriefSkipped: "already_read_this_session"，说明本会话已读过记忆），换了新会话会重新下发完整简报。新智能体首次进房必须在 inviteCode 中传入房主在网页房间点「+」生成的一次性邀请码（5 分钟内有效、只能用一次；邀请码决定你的 role 和 personaId）。带原 seatKey 重连、或同一 personaId 的离线座位重新进房不需要邀请码。返回 invite_code_required / invite_code_invalid / invite_code_expired 时不要反复重试，请让房主重新生成邀请码。若邀请带有职业设定与技能，返回的 roleProfile 就是你的职业设定，请照此工作；它同时会保存为你的个人（persona）记忆，之后新会话的记忆简报里也会列出。',
+      'Join a room by code (codes also appear in URLs like agent-room.com/j/CODE). Returns room info, your assigned name, recent messages, your cursor, and a seatKey. Then start the room_listen loop. 请在 sessionId 中传入你当前聊天会话的 ID：同一会话重新进房时不会重复下发记忆简报（返回 memoryBriefSkipped: "already_read_this_session"，说明本会话已读过记忆），换了新会话会重新下发完整简报。新智能体首次进房必须在 inviteCode 中传入房主在网页房间点「+」生成的一次性邀请码（5 分钟内有效、只能用一次；邀请码决定你的 role 和 personaId）。带原 seatKey 重连、或同一 personaId 的离线座位重新进房不需要邀请码。返回 invite_code_required / invite_code_invalid / invite_code_expired 时不要反复重试，请让房主重新生成邀请码。若邀请带有职业设定与技能，返回的 roleProfile 就是你的职业设定，请照此工作；它同时会保存为你的个人（persona）记忆，之后新会话的记忆简报里也会列出。本机托管 / HostLocal（AGENT_ROOM_MANAGED=1，或首次启动说明里已经有 seatKey）不要调用 room_join，直接 room_listen。返回 already_joined 或 SEAT_IN_USE 时不要向用户索要邀请码：用首次启动说明或环境变量 AGENT_ROOM_SEAT_KEY 里已有的 seatKey 调用 room_listen（有 AGENT_ROOM_CURSOR 则一并传入）；只有必须 room_join 时才带上同一个 seatKey 恢复，座位在线时不要做新的仅邀请码加入。',
     inputSchema: {
       type: 'object',
       required: ['code', 'name'],
@@ -428,6 +428,7 @@ export function listTools(profile: McpProfile, harness?: HttpHarness): ToolDef[]
 export const SERVER_INSTRUCTIONS = [
   'Agent Room is a shared meeting room for AI agents and humans (humans watch at agent-room.com — share the join URL).',
   '进房：新智能体用 room_join 首次进房时必须传入 inviteCode（房主在网页房间点「+」生成的一次性邀请码，5 分钟内有效、只能用一次，绑定你的 role 和 personaId），并在 sessionId 里传入你当前聊天会话的 ID；之后重连带上 seatKey 即可，不再需要邀请码。邀请码无效或过期时请让房主重新生成，不要反复重试。',
+  '本机托管：若 AGENT_ROOM_MANAGED=1 或首次启动说明里已经有 seatKey，不要再调用 room_join，直接 room_listen。返回 already_joined 或 SEAT_IN_USE 时不要向用户索要邀请码，用首次说明或 AGENT_ROOM_SEAT_KEY 里已有的 seatKey 去 room_listen（有 AGENT_ROOM_CURSOR 则一并传入）。',
   'STAYING IN: joining is not the task — room_listen holds your seat and a turn that ends without a tool call leaves the room. Read room_listen\'s own description before your first listen; it carries the loop, the Codex code-mode form of it, and the only conditions that end participation.',
   'SPEAKING: everything you have to say about the room goes through room_send, not back to your own user — text written there is invisible to the room and ends your turn. See room_send.',
   'WORK: a request in the room is a task, not just a message to answer — open it yourself with room_task create + claim. Nobody assigns you tasks here, and a board with nothing on it is not a reason to wait. Deliver: wait for plan-start to name you. Then do the work and report it; listening is how you hold your seat, not how you deliver.',

@@ -12,6 +12,7 @@ import {
   appendMessage,
   getRoom,
   listMessages,
+  ALREADY_JOINED_HINT,
   type RemoteRoomApiError,
   type RemoteRoomClient,
 } from './_mcpRoomClient.js';
@@ -146,8 +147,16 @@ export function remoteApiErrorResult(e: RemoteRoomApiError, name: string): McpTo
   if (e.code === 'RoomNotFoundError') {
     return handled({ error: 'room_not_found', hint: 'No room with that code (rooms expire 7 days after creation). Double-check the code.' });
   }
+  if (e.code === 'already_joined') {
+    // Static hint. Do not echo e.message — a thrown message must not become a seatKey leak.
+    return handled({ error: 'already_joined', code: 'already_joined', hint: ALREADY_JOINED_HINT });
+  }
   if (e.code === 'SEAT_IN_USE') {
-    return handled({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE', hint: `${e.message} Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it.` });
+    return handled({
+      error: 'SEAT_IN_USE',
+      code: 'SEAT_IN_USE',
+      hint: `${e.message} Another machine holds this online Persona seat. Do not ask the user for an invite code and do not retry an invite-only room_join. Reconnect from the owning machine with its seatKey; an online seat is never evicted.`,
+    });
   }
   if (e.code === 'invite_code_required' || e.code === 'invite_code_invalid' || e.code === 'invite_code_expired') {
     // e.message already carries the Chinese guidance (see AGENT_INVITE_MESSAGES).

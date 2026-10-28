@@ -151,7 +151,7 @@ exports[`room lifecycle tools return structuredContent > room_join mirrors the S
 "{
   "error": "SEAT_IN_USE",
   "code": "SEAT_IN_USE",
-  "hint": "That seat is online. Call room_join again with the seatKey you were given; if it is lost, wait until that seat has been offline for 120s and rejoin to reclaim it."
+  "hint": "That seat is online. Another machine holds this online Persona seat. Do not ask the user for an invite code and do not retry an invite-only room_join. Reconnect from the owning machine with its seatKey; an online seat is never evicted."
 }"
 `;
 

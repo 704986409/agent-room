@@ -110,6 +110,16 @@ describe('memory guidance stays static and gated', () => {
 });
 
 describe('no verbatim duplication inside one description', () => {
+  it('room_join tells a managed seat to listen instead of asking for an invite', () => {
+    const text = desc('room_join');
+    expect(text).toContain('already_joined');
+    expect(text).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(text).toContain('AGENT_ROOM_MANAGED');
+    expect(text).toContain('不要向用户索要邀请码');
+    expect(serverInstructions()).toContain('already_joined');
+    expect(serverInstructions()).toContain('AGENT_ROOM_SEAT_KEY');
+  });
+
   it('room_listen contains no memory guidance', () => {
     expect(desc('room_listen')).not.toMatch(/memory|记忆/i);
   });

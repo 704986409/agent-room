@@ -1081,11 +1081,14 @@ describe('hosted MCP endpoint', () => {
       };
       const seatNames = () => (JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: { name: string }[] })
         .participants.map(p => p.name);
-      // Same Persona, no seatKey, while its seat is online: refused, never evicted, no "(2)" seat.
+      // Same Persona, no seatKey, while its seat is online: already_joined, never evicted, no "(2)" seat.
       const busy = await invoke('room_join', {
         code, name: 'Agent A new seat', personaId: 'persona-alpha', role: 'builder',
       });
-      expect(busy).toMatchObject({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE' });
+      expect(busy).toMatchObject({ error: 'already_joined', code: 'already_joined' });
+      expect(String(busy.hint)).toContain('room_listen');
+      expect(String(busy.hint)).toContain('AGENT_ROOM_SEAT_KEY');
+      expect(JSON.stringify(busy)).not.toContain(seatA);
       expect(seatNames().filter(n => n.startsWith('Agent A'))).toEqual(['Agent A']);
       // Plant an orphaned offline seat of the same Persona (as left by an earlier key-less join).
       const planted = JSON.parse(smokeKv.get(`room:${code}`)!) as { participants: Record<string, unknown>[] };

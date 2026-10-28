@@ -97,6 +97,18 @@ export class RemoteRoomApiError extends Error {
   }
 }
 
+/**
+ * Recoverable refusal when this Persona is already online and the caller did not
+ * present a seatKey or machineId. Static text only — never interpolate a live seatKey.
+ * The managed CLI already has the key in its first-run prompt and AGENT_ROOM_SEAT_KEY.
+ */
+export const ALREADY_JOINED_HINT = [
+  '该身份的席位已在线（例如本机托管 / HostLocal 已经加入）。不要向用户索要邀请码，也不要只用邀请码再调用 room_join。',
+  '请用首次启动说明里的 managed.seatKey，或环境变量 AGENT_ROOM_SEAT_KEY，调用 room_listen；如果首次说明或环境变量 AGENT_ROOM_CURSOR 里有 cursor，一并传入。',
+  '如果仍要调用 room_join，必须带上同一个 seatKey 恢复座位。座位在线时不要做新的仅邀请码加入。',
+  'This Persona seat is already online (HostLocal / the desktop daemon already joined). Do not ask the user for an invite code. Call room_listen with the seatKey from your first-run instructions or AGENT_ROOM_SEAT_KEY.',
+].join('');
+
 export interface RemoteRoomClient {
   readonly store: UpstashClient;
   /**
@@ -429,7 +441,9 @@ export async function joinRoom(
     const machineHash = hashMachineId(options.machineId);
     let reclaimed = false;
     // Same computer, same seat: a reconnect that lost its seatKey still replaces
-    // the stale session instead of SEAT_IN_USE. A different computer does not.
+    // the stale session. A different computer does not — that stays SEAT_IN_USE.
+    // No machineId (the managed CLI calling room_join again) is already_joined:
+    // the daemon already holds the seatKey, and we must not strand the user on an invite.
     if (!validResume && !isHostClaim && machineHash) {
       const owned = current.participants.find(p => p.client === participant.client
         && !!p.seatKeyHash && hashesMatch(p.machineIdHash, machineHash)
@@ -442,11 +456,7 @@ export async function joinRoom(
       const samePersona = current.participants.filter(p => p.client === participant.client
         && p.seatKeyHash && p.memoryIdentityType === 'persona' && p.memoryPersonaId === options.personaId);
       if (samePersona.some(p => isMemorySeatOnline(p))) {
-        throw new RemoteRoomApiError(
-          'This Persona already holds an online seat in this room. Reconnect with that seat\'s seatKey; an online seat is never evicted.',
-          409,
-          'SEAT_IN_USE',
-        );
+        refuseHeldOnlineSeat(options.requireAgentInvite, machineHash);
       }
       const target = samePersona.find(p => p.name === participant.name) ?? samePersona[0];
       if (target) { previous = target; reclaimed = true; }
@@ -462,6 +472,12 @@ export async function joinRoom(
     if (needsInvite) {
       if (!invite) {
         const reason = inviteFailure ?? 'invite_code_required';
+        // Codex's first call is role-only (no personaId, no invite) while HostLocal
+        // already put that persona online. Say so instead of demanding a code.
+        if (reason === 'invite_code_required'
+          && onlinePersonaSeatHeld(current.participants, participant, options.personaId)) {
+          refuseHeldOnlineSeat(true, machineHash);
+        }
         throw new RemoteRoomApiError(AGENT_INVITE_MESSAGES[reason], 403, reason);
       }
       if (!(await claimAgentInvite(client.store, code, invite.hash))) {
@@ -564,6 +580,51 @@ export async function createAgentInvite(
     const room = await storeGetRoom(client.store, code);
     return storeCreateAgentInvite(client.store, room, input);
   });
+}
+
+function identityText(value: string | undefined): string | undefined {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return text ? text : undefined;
+}
+
+/**
+ * An online cc persona seat whose stored personaId or role equals the requested
+ * personaId or role. Empty strings never match. Does not read seatKey material.
+ */
+function onlinePersonaSeatHeld(
+  participants: Participant[],
+  participant: Participant,
+  personaId: string | undefined,
+): boolean {
+  const wanted = new Set<string>();
+  const requestedPersona = identityText(personaId);
+  const requestedRole = identityText(participant.role);
+  if (requestedPersona) wanted.add(requestedPersona);
+  if (requestedRole) wanted.add(requestedRole);
+  if (wanted.size === 0) return false;
+  return participants.some(p => {
+    if (p.client !== 'cc' || !p.seatKeyHash || p.memoryIdentityType !== 'persona') return false;
+    if (!isMemorySeatOnline(p)) return false;
+    const persona = identityText(p.memoryPersonaId);
+    const role = identityText(p.role);
+    return (persona !== undefined && wanted.has(persona)) || (role !== undefined && wanted.has(role));
+  });
+}
+
+/**
+ * Online persona, caller cannot resume or reclaim.
+ * MCP without a machineId → already_joined (do not ask for an invite).
+ * A presented machineId that did not match, and non-MCP joins, stay SEAT_IN_USE.
+ */
+function refuseHeldOnlineSeat(requireAgentInvite: boolean | undefined, machineHash: string | undefined): never {
+  if (requireAgentInvite && !machineHash) {
+    throw new RemoteRoomApiError(ALREADY_JOINED_HINT, 409, 'already_joined');
+  }
+  throw new RemoteRoomApiError(
+    'This Persona already holds an online seat in this room. Reconnect with that seat\'s seatKey; an online seat is never evicted.',
+    409,
+    'SEAT_IN_USE',
+  );
 }
 
 /** Seconds a memory seat may be silent before it counts as offline (a live listen lease always counts as online). */

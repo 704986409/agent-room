@@ -146,6 +146,31 @@ describe('room lifecycle tools return structuredContent', () => {
     expect(textOf(result)).toMatchSnapshot();
     expectMirroredJson(result);
     expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({ error: 'SEAT_IN_USE', code: 'SEAT_IN_USE' });
+    expect(JSON.stringify(result.structuredContent)).not.toContain('120s');
+  });
+
+  it('room_join maps already_joined to a static hint and does not echo a seatKey', async () => {
+    const { RemoteRoomApiError, ALREADY_JOINED_HINT } = await import('./_mcpRoomClient.js');
+    joinRoom.mockRejectedValue(new RemoteRoomApiError(
+      'leaked seatKey super-secret-seat-key-value-should-not-appear',
+      409,
+      'already_joined',
+    ));
+    const result = await call('room_join', { code: room.code, name: 'Codex', role: '开发工程师' });
+    expectMirroredJson(result);
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({
+      error: 'already_joined',
+      code: 'already_joined',
+      hint: ALREADY_JOINED_HINT,
+    });
+    const body = JSON.stringify(result.structuredContent);
+    expect(body).not.toContain('super-secret-seat-key-value-should-not-appear');
+    expect(body).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(body).toContain('room_listen');
+    expect(body).toContain('不要向用户索要邀请码');
+    expect(body).not.toContain('120s');
   });
 
   it('room_listen mirrors a non-blocking history read', async () => {
