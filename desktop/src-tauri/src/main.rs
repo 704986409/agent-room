@@ -460,23 +460,24 @@ fn terminal_should_force_destroy(label: &str, quitting: bool) -> bool {
 /// Pick the WebView2/WebKit user-data folder for a window label.
 ///
 /// `main` keeps the historical app data dir (remote room origin cookies).
-/// `settings` uses `local-settings`. Every `terminal-*` pop-out shares
-/// `local-terminal` so extra seats do not each cold-start a profile.
-/// Settings and terminals must not share a folder: wry builds a new
+/// `settings` uses `local-settings`. Each `terminal-*` pop-out gets its own
+/// sibling folder named after the window label. wry builds a new
 /// CoreWebView2 Environment per WebView even when Tauri reuses a
-/// WebContext for the same `data_directory`. A second Environment on an
-/// in-use user-data folder never finishes the first navigation, which is
-/// why the 0.1.24 shared `local-control` profile still left Windows
-/// pop-outs on the empty background color. Opening 本机设置 does not warm
-/// a terminal Environment. Never reuse `main`'s folder for localhost
-/// windows (a second controller on that Environment stayed blank in 0.1.22).
+/// WebContext for the same `data_directory`; a second Environment on an
+/// in-use user-data folder never finishes the first navigation (0.1.24's
+/// shared `local-control` left Windows pop-outs on the empty background).
+/// Sharing one folder among terminals would hit the same footgun when two
+/// seats are popped. Per-seat folders are safe again because the pop-out
+/// boots from a `data:` document that paints before the loopback hop.
+/// Never reuse `main`'s folder for localhost windows (a second controller
+/// on that Environment stayed blank in 0.1.22).
 fn webview_profile_key(label: &str) -> &str {
     if label == "main" {
         "main"
     } else if label == "settings" {
         "local-settings"
     } else if label.starts_with("terminal-") {
-        "local-terminal"
+        label
     } else {
         label
     }
@@ -1746,18 +1747,19 @@ mod tests {
         let term2 = webview_profile_dir(&root, "terminal-st_2");
         let settings = webview_profile_dir(&root, "settings");
         assert_ne!(term, root);
-        assert_eq!(
+        assert_ne!(
             term, term2,
-            "all terminal pop-outs share one WebView2 user-data folder"
+            "each terminal pop-out gets its own WebView2 user-data folder"
         );
         assert_ne!(
             term, settings,
             "settings must not share a user-data folder with terminals"
         );
         assert!(!term.starts_with(&root));
-        assert!(term.ends_with("local-terminal"));
+        assert!(term.ends_with("terminal-st_1"));
+        assert!(term2.ends_with("terminal-st_2"));
         assert!(settings.ends_with("local-settings"));
-        assert_eq!(webview_profile_key("terminal-st_9"), "local-terminal");
+        assert_eq!(webview_profile_key("terminal-st_9"), "terminal-st_9");
         assert_eq!(webview_profile_key("settings"), "local-settings");
         assert_eq!(webview_profile_key("main"), "main");
     }
