@@ -27,6 +27,29 @@ export function desktopTerminalWsUrl(seatId: string, origin = DESKTOP_CONTROL_OR
   return `${wsOrigin}/api/desktop/terminals/${encodeURIComponent(seatId.trim())}/ws?desktop=1`;
 }
 
+/** Kill the managed PTY / seat process. Disconnect only closes the view. */
+export async function stopDesktopTerminal(
+  seatId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<void> {
+  const id = seatId.trim();
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/terminals/${encodeURIComponent(id)}/stop`, {
+      method: 'POST',
+      headers: { 'x-agent-room-desktop': '1', 'content-type': 'application/json' },
+      body: '{}',
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  }
+  const body = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok) {
+    throw new Error(body.error || `无法关闭进程（HTTP ${response.status}）`);
+  }
+}
+
 export async function listDesktopTerminals(
   fetchImpl: typeof fetch = fetch,
 ): Promise<{ terminals: DesktopTerminalRow[]; mode: string }> {

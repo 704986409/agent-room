@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   list: vi.fn(),
   reveal: vi.fn(),
   readClipboard: vi.fn(),
+  stop: vi.fn(),
 }));
 
 const termIo = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const termIo = vi.hoisted(() => ({
   onDataHandler: null as ((data: string) => void) | null,
   keyHandler: null as ((event: KeyboardEvent) => boolean) | null,
   pasteListeners: [] as Array<(event: Event) => void>,
+  fits: 0,
 }));
 
 vi.mock('@xterm/xterm', () => ({
@@ -33,7 +35,7 @@ vi.mock('@xterm/xterm', () => ({
 }));
 
 vi.mock('@xterm/addon-fit', () => ({
-  FitAddon: class { fit() {} },
+  FitAddon: class { fit() { termIo.fits += 1; } },
 }));
 
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
@@ -54,6 +56,7 @@ vi.mock('../lib/desktopTerminal.js', async (importOriginal) => {
     ...actual,
     listDesktopTerminals: (...args: unknown[]) => state.list(...args),
     readDesktopClipboardText: (...args: unknown[]) => state.readClipboard(...args),
+    stopDesktopTerminal: (...args: unknown[]) => state.stop(...args),
   };
 });
 
@@ -130,15 +133,18 @@ describe('DesktopSeatTerminal', () => {
     state.list.mockReset();
     state.reveal.mockReset();
     state.readClipboard.mockReset();
+    state.stop.mockReset();
     state.list.mockResolvedValue(live);
     state.reveal.mockResolvedValue(null);
     state.readClipboard.mockResolvedValue('');
+    state.stop.mockResolvedValue(undefined);
     FakeSocket.latest = null;
     termIo.writes = [];
     termIo.resets = 0;
     termIo.onDataHandler = null;
     termIo.keyHandler = null;
     termIo.pasteListeners = [];
+    termIo.fits = 0;
     vi.stubGlobal('WebSocket', FakeSocket);
   });
 
@@ -266,6 +272,58 @@ describe('DesktopSeatTerminal', () => {
     expect(state.reveal).not.toHaveBeenCalled();
     await act(async () => { button(renderer, '展开')!.props.onClick(); });
     expect(onToggleExpand).toHaveBeenCalledTimes(1);
+  });
+
+  it('refits and sends a resize when the rail expands or collapses', async () => {
+    const renderer = await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    const fitsBefore = termIo.fits;
+    const sentBefore = socket.sent.length;
+    await act(async () => {
+      renderer.update(
+        <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_1" expanded />,
+      );
+      await new Promise(resolve => setTimeout(resolve, 80));
+    });
+    expect(termIo.fits).toBeGreaterThan(fitsBefore);
+    expect(socket.sent.slice(sentBefore).some(line => line.includes('"type":"resize"'))).toBe(true);
+
+    const fitsExpanded = termIo.fits;
+    await act(async () => {
+      renderer.update(
+        <DesktopSeatTerminal roomCode="ABC-DEF-GHJ" preferredSeatId="st_1" expanded={false} />,
+      );
+      await new Promise(resolve => setTimeout(resolve, 80));
+    });
+    expect(termIo.fits).toBeGreaterThan(fitsExpanded);
+  });
+
+  it('stops the managed process and leaves disconnect as detach-only', async () => {
+    const confirm = vi.fn(() => true);
+    vi.stubGlobal('confirm', confirm);
+    const renderer = await renderPanel('st_1');
+    expect(button(renderer, '断开')).toBeTruthy();
+    expect(button(renderer, '关闭')).toBeTruthy();
+    await act(async () => {
+      button(renderer, '断开')!.props.onClick();
+    });
+    expect(state.stop).not.toHaveBeenCalled();
+
+    await act(async () => {
+      button(renderer, '关闭')!.props.onClick();
+      await Promise.resolve();
+    });
+    expect(confirm).toHaveBeenCalled();
+    expect(state.stop).toHaveBeenCalledWith('st_1');
+    expect(JSON.stringify(renderer.toJSON())).toContain('已关闭');
+
+    state.stop.mockClear();
+    confirm.mockReturnValue(false);
+    await act(async () => {
+      button(renderer, '关闭')!.props.onClick();
+    });
+    expect(state.stop).not.toHaveBeenCalled();
   });
 
   it('pastes clipboardData text from the paste event and drops the image-paste control character', async () => {

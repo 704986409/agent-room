@@ -3,11 +3,12 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useLocale } from '../i18n/LocaleProvider.js';
-import { isDesktopShell, listenDesktopEvent, revealManagedTerminal } from '../lib/desktopHost.js';
+import { closeManagedTerminal, isDesktopShell, listenDesktopEvent, revealManagedTerminal } from '../lib/desktopHost.js';
 import {
   desktopTerminalWsUrl,
   listDesktopTerminals,
   readDesktopClipboardText,
+  stopDesktopTerminal,
   terminalsForRoom,
   type DesktopTerminalRow,
 } from '../lib/desktopTerminal.js';
@@ -24,6 +25,12 @@ function isPasteShortcut(event: KeyboardEvent): boolean {
 
 function resetTerm(term: Terminal | null | undefined) {
   term?.reset();
+}
+
+function confirmStop(message: string): boolean {
+  const fn = (globalThis as { confirm?: (text: string) => boolean }).confirm;
+  if (typeof fn !== 'function') return true;
+  return fn(message);
 }
 
 function detachSocket(ws: WebSocket | null) {
@@ -75,6 +82,7 @@ export function DesktopSeatTerminal({
   const connectRef = useRef<(id: string) => void>(() => {});
   const disconnectRef = useRef<(silent?: boolean) => void>(() => {});
   const generationRef = useRef(0);
+  const expandedLayoutRef = useRef(false);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
   seatRef.current = seatId;
@@ -366,6 +374,70 @@ export function DesktopSeatTerminal({
     };
   }, [desktop]);
 
+  useEffect(() => {
+    if (!desktop) return;
+    // The first paint is fitted from connect/ResizeObserver. Later expanded
+    // toggles need a frame so the grid has actually changed width.
+    if (!expandedLayoutRef.current) {
+      expandedLayoutRef.current = true;
+      return;
+    }
+    let cancelled = false;
+    const fitNow = () => {
+      if (cancelled) return;
+      const term = termRef.current;
+      const fit = fitRef.current;
+      if (!term || !fit) return;
+      fit.fit();
+      const ws = socketRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+      }
+    };
+    const timers = [0, 50].map(ms => setTimeout(fitNow, ms));
+    let rafOuter = 0;
+    let rafInner = 0;
+    if (typeof requestAnimationFrame === 'function') {
+      rafOuter = requestAnimationFrame(() => {
+        rafInner = requestAnimationFrame(fitNow);
+      });
+    }
+    return () => {
+      cancelled = true;
+      for (const timer of timers) clearTimeout(timer);
+      if (typeof cancelAnimationFrame === 'function') {
+        if (rafOuter) cancelAnimationFrame(rafOuter);
+        if (rafInner) cancelAnimationFrame(rafInner);
+      }
+    };
+  }, [desktop, expanded]);
+
+  async function stopSeat() {
+    const id = seatId.trim();
+    if (!id) {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.pickSeat'));
+      return;
+    }
+    const label = options.find(row => row.seatId === id)?.name?.trim() || id;
+    if (!confirmStop(tRef.current('desktopTerminal.stopConfirm', { seat: label }))) return;
+    const wasPopped = poppedRef.current === id;
+    try {
+      await stopDesktopTerminal(id);
+    } catch {
+      setNoteErr(true);
+      setNote(tRef.current('desktopTerminal.stopFailed'));
+      return;
+    }
+    disconnectRef.current(true);
+    if (wasPopped) {
+      poppedRef.current = null;
+      await closeManagedTerminal(id);
+    }
+    setNoteErr(false);
+    setNote(tRef.current('desktopTerminal.stopped', { seat: label }));
+  }
+
   async function popout() {
     const id = seatId.trim();
     if (!id) {
@@ -396,7 +468,7 @@ export function DesktopSeatTerminal({
   }
 
   return (
-    <section className="flex min-h-0 flex-1 flex-col" aria-label={t('desktopTerminal.title')}>
+    <section className="flex min-h-0 min-w-0 w-full flex-1 flex-col" aria-label={t('desktopTerminal.title')}>
       <h3 className="sr-only">{t('desktopTerminal.title')}</h3>
       <div role="tablist" aria-label={t('desktopTerminal.seatLabel')} className="flex shrink-0 gap-1 overflow-x-auto px-3 pt-2">
         {options.length === 0 ? (
@@ -420,7 +492,7 @@ export function DesktopSeatTerminal({
           );
         })}
       </div>
-      <div className="mt-2 grid shrink-0 grid-cols-4 gap-1 px-3">
+      <div className="mt-2 grid shrink-0 grid-cols-5 gap-1 px-3">
         <button
           type="button"
           disabled={!seatId || connected || popped}
@@ -436,6 +508,14 @@ export function DesktopSeatTerminal({
           className="min-h-8 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink disabled:opacity-50"
         >
           {t('desktopTerminal.disconnect')}
+        </button>
+        <button
+          type="button"
+          disabled={!seatId}
+          onClick={() => { void stopSeat(); }}
+          className="min-h-8 min-w-0 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink disabled:opacity-50"
+        >
+          {t('desktopTerminal.stop')}
         </button>
         <button
           type="button"
@@ -458,7 +538,7 @@ export function DesktopSeatTerminal({
       )}
       <div
         ref={hostRef}
-        className="mx-3 mb-3 mt-2 min-h-[180px] flex-1 overflow-hidden rounded-md bg-[#1e1e1e]"
+        className="mx-3 mb-3 mt-2 min-h-[180px] min-w-0 w-full flex-1 overflow-hidden rounded-md bg-[#1e1e1e] [&_.xterm]:w-full"
         onPaste={event => { pasteFromEvent(event.nativeEvent); }}
       />
     </section>

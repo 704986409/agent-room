@@ -42,6 +42,22 @@ export function desktopTauriInvoke(target?: DesktopWindow): TauriInvoke | null {
   return invokeFrom(view);
 }
 
+/** Close the pop-out for this seat. The shell docks the PTY back into the room rail. */
+export async function closeManagedTerminal(
+  seatId: string | undefined,
+  invoke?: TauriInvoke | null,
+): Promise<void> {
+  const id = seatId?.trim();
+  if (!id) return;
+  const call = invoke === undefined ? desktopTauriInvoke() : invoke;
+  if (!call) return;
+  try {
+    await call('close_terminal_window', { seatId: id });
+  } catch {
+    /* The window may already be gone. */
+  }
+}
+
 /**
  * Ask the shell to open this seat's embedded terminal. The control token stays in Rust.
  * Returns a short failure detail, or null when the window was asked to open (or there is nothing to open).

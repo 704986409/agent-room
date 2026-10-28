@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DESKTOP_CONTROL_ORIGIN } from './desktopHost.js';
-import { desktopTerminalWsUrl, listDesktopTerminals, readDesktopClipboardText, terminalsForRoom } from './desktopTerminal.js';
+import { desktopTerminalWsUrl, listDesktopTerminals, readDesktopClipboardText, stopDesktopTerminal, terminalsForRoom } from './desktopTerminal.js';
 
 describe('desktopTerminalWsUrl', () => {
   it('targets the desktop-auth socket and does not carry a control token', () => {
@@ -40,6 +40,18 @@ describe('listDesktopTerminals', () => {
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/terminals`);
     expect(url.includes('t=')).toBe(false);
+    expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+  });
+});
+
+describe('stopDesktopTerminal', () => {
+  it('posts to the desktop stop route with the desktop mark and no token', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, stopped: true }), { status: 200 }));
+    await stopDesktopTerminal('st_1', fetchImpl as unknown as typeof fetch);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/terminals/st_1/stop`);
+    expect(url.includes('t=')).toBe(false);
+    expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
   });
 });

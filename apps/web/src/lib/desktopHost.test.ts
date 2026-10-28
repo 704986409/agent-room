@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, installedAdapterChoices, isDesktopShell, listInstalledDesktopAdapters, listenDesktopEvent, revealManagedTerminal } from './desktopHost.js';
+import { closeManagedTerminal, DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, installedAdapterChoices, isDesktopShell, listInstalledDesktopAdapters, listenDesktopEvent, revealManagedTerminal } from './desktopHost.js';
 
 describe('isDesktopShell', () => {
   it('is false in a normal browser window', () => {
@@ -124,6 +124,15 @@ describe('revealManagedTerminal', () => {
     const invoke = vi.fn(async () => { throw new Error('daemon not ready'); });
     await expect(revealManagedTerminal('st_1', invoke)).resolves.toBe('daemon not ready');
     expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the pop-out by seat id', async () => {
+    const invoke = vi.fn(async () => undefined);
+    await closeManagedTerminal('st_06eb2797', invoke);
+    expect(invoke).toHaveBeenCalledWith('close_terminal_window', { seatId: 'st_06eb2797' });
+    invoke.mockClear();
+    await closeManagedTerminal('  ', invoke);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('does not invoke when the host response has no seat id', async () => {
