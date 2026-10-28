@@ -193,18 +193,19 @@ export class WakeDaemon {
         if (this.options.heartbeat?.blocks(seat)) continue;
         this.observeProcess(seat);
         if (!remote.pending.length && !remote.inFlight.length) continue;
-        // A claimed run may still be inside a live listen (or mid-turn). Within
-        // the grace window, merge new @ events into that run. Past grace with no
-        // ACK, fail the stale claims and resume so Cursor/Codex actually get a
-        // wake prompt — infinite merge left room @ undelivered when the CLI was
-        // mid-turn / not holding room_listen.
+        // A claimed run may still be inside a live listen (or mid-turn).
+        // - inFlight only: renew + wait for managed_listen ACK. Do NOT kill —
+        //   force-resume on WAITING_ACK age tore down healthy room_listen
+        //   ("监听直接被移除") on 0.1.26.
+        // - new pending within grace: merge into the live run so @ reaches the
+        //   hold without replacing the process.
+        // - new pending past grace: fail stale claims and stop+resume so a
+        //   cold / mid-turn CLI that never acks still gets the wake prompt.
         let view = remote;
         if (seat.status === 'running' && seat.wakeRunId && remote.inFlight.length) {
-          const forGrace = remote.pending.length
-            ? remote
-            : { ...remote, pending: remote.inFlight.map(event => ({ eventId: event.eventId })) };
-          if (this.deferForLiveListen(seat, forGrace)) {
-            if (remote.pending.length) await this.merge(seat, remote);
+          if (!remote.pending.length) continue;
+          if (this.deferForLiveListen(seat, remote)) {
+            await this.merge(seat, remote);
             continue;
           }
           await this.failStaleInFlight(seat, remote);
@@ -424,8 +425,9 @@ export class WakeDaemon {
 
   /**
    * A process that is still inside room_listen will ack a new @ on its own.
-   * Give it one grace window before replacing it. An idle prompt after
-   * room_sleep will not ack, so the next poll starts a real resume.
+   * Grace is only for *pending* events (new @), never for WAITING_ACK age —
+   * killing on inFlight age removed a live listen. An idle prompt after
+   * room_sleep will not ack pending, so the next poll past grace resumes.
    */
   private deferForLiveListen(seat: SeatRecord, remote: WakeSeatView): boolean {
     if (seat.status !== 'running' || !seat.pid || !this.options.inspect(seat.pid).alive) return false;

@@ -519,7 +519,7 @@ describe('state file round trip', () => {
     expect(await daemon.stopManagedSeat('missing')).toBe(false);
   });
 
-  it('re-resumes after grace when inFlight never acks (room @ must reach Cursor)', async () => {
+  it('re-resumes after grace when pending @ never acks under a live inFlight run', async () => {
     const child = spawner([THREAD]);
     let now = 1_000;
     const stopped: number[] = [];
@@ -561,6 +561,48 @@ describe('state file round trip', () => {
     expect(stopped).toEqual([400]);
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args[0]).toBe('resume');
+  });
+
+  it('keeps a healthy live listen: inFlight-only past grace must not kill the process', async () => {
+    const child = spawner([THREAD]);
+    let now = 1_000;
+    const stopped: number[] = [];
+    let alive = true;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [],
+          inFlight: [{ eventId: 'wk:1', claimId: 'cl-wk:1', state: 'WAITING_ACK' }],
+          failed: [],
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400, wakeRunId: 'wr_1',
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex resume thr_9' }),
+      now: () => now,
+      resumeGraceMs: 100,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+    });
+    await daemon.tick();
+    now = 1_500; // well past grace
+    surface.calls.length = 0;
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(surface.calls).toContain('renew');
+    expect(surface.calls).not.toContain('resume_failed');
+    expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 400, wakeRunId: 'wr_1' });
   });
 
   it('closes a seat with wake unregister and room leave', async () => {
