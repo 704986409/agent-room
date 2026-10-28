@@ -30,6 +30,8 @@ export interface LauncherAdapter {
   readonly id: string;
   readonly command: string;
   readonly models: readonly string[];
+  /** Replace the allowlist with a live CLI list (process cache). Optional. */
+  setModels?(models: readonly string[]): void;
   detect(): Promise<DetectResult>;
   launch(opts: LaunchOptions): Promise<{ pid: number; sessionId: string; exited: Promise<number> }>;
   resume(opts: LaunchOptions & { sessionId: string }): Promise<{ pid: number; exited: Promise<number> }>;
@@ -410,7 +412,7 @@ export interface AdapterOptions {
 export class CliAdapter implements LauncherAdapter {
   readonly id: string;
   readonly command: string;
-  readonly models: readonly string[];
+  private liveModels: string[] | undefined;
   private readonly probe?: VersionProbe;
   private readonly detectTimeoutMs: number;
   private readonly createChat?: CreateChat;
@@ -427,13 +429,21 @@ export class CliAdapter implements LauncherAdapter {
   ) {
     this.id = definition.id;
     this.command = options.command ?? definition.command;
-    this.models = definition.models;
     this.probe = options.probe;
     this.detectTimeoutMs = options.detectTimeoutMs ?? 5_000;
     this.createChat = options.createChat;
     this.waitCodexSession = options.waitCodexSession ?? (input => waitForCodexSession(input));
     this.waitAgyConversation = options.waitAgyConversation ?? (input => waitForAgyConversation(input));
     this.directSpawn = options.directSpawn ?? false;
+  }
+
+  get models(): readonly string[] {
+    return this.liveModels ?? this.definition.models;
+  }
+
+  setModels(models: readonly string[]): void {
+    const clean = models.map(m => m.trim()).filter(Boolean);
+    this.liveModels = clean.length ? clean : undefined;
   }
 
   launchArgv(model: string, prompt: string, sessionId?: string): readonly string[] {
