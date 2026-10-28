@@ -1573,9 +1573,13 @@ const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
 /// `cmd /C` args for a deferred self-kill. Kept pure for unit tests.
 #[cfg(windows)]
 fn windows_deferred_self_kill_args(pid: u32, delay_secs: u32) -> Vec<String> {
+    // `timeout` still flashes a console on some Windows builds even with
+    // CREATE_NO_WINDOW. `ping` to localhost is the classic silent delay.
+    let pings = delay_secs.saturating_add(1);
     vec![
-        "/C".into(),
-        format!("timeout /T {delay_secs} /NOBREAK >nul & taskkill /F /T /PID {pid}"),
+        "/d".into(),
+        "/c".into(),
+        format!("ping 127.0.0.1 -n {pings} >nul & taskkill /F /T /PID {pid}"),
     ]
 }
 
@@ -1612,6 +1616,9 @@ fn schedule_quit_watchdog() {
         let args = windows_deferred_self_kill_args(pid, QUIT_TASKKILL_DELAY_SECS);
         let _ = Command::new("cmd")
             .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .creation_flags(
                 CREATE_NO_WINDOW
                     | DETACHED_PROCESS
@@ -1829,9 +1836,11 @@ mod tests {
         #[cfg(windows)]
         {
             let args = windows_deferred_self_kill_args(4242, 3);
-            assert_eq!(args[0], "/C");
-            assert!(args[1].contains("timeout /T 3"));
-            assert!(args[1].contains("taskkill /F /T /PID 4242"));
+            assert_eq!(args[0], "/d");
+            assert_eq!(args[1], "/c");
+            assert!(args[2].contains("ping 127.0.0.1 -n 4"));
+            assert!(args[2].contains("taskkill /F /T /PID 4242"));
+            assert!(!args[2].contains("timeout"));
         }
     }
 
