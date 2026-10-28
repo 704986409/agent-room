@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { LauncherAdapter } from './adapter.js';
 import type { CredentialStore } from './credstore.js';
 import { nextWait } from './interval.js';
-import { joinRoomOverMcp, type RoomJoin } from './mcpJoin.js';
+import { joinRoomOverMcp, leaveRoomOverMcp, type RoomJoin, type RoomLeave } from './mcpJoin.js';
 import { firstRunPrompt, wakePrompt } from './prompt.js';
 import type { SecretRegistry } from './redact.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
@@ -44,6 +44,8 @@ export interface WakeApi {
   claim(body: { eventIds: string[]; wakeRunId?: string }): Promise<ClaimResult>;
   renew(body: { claimIds: string[] }): Promise<unknown>;
   progress(body: { claims: { claimId: string; status: 'resume_started' | 'resume_failed' }[] }): Promise<unknown>;
+  /** Drop the wake binding so room @ no longer targets this seat. Optional for tests. */
+  unregister?(body: { seatId: string }): Promise<unknown>;
 }
 
 export interface RunLock {
@@ -112,6 +114,8 @@ export interface WakeDaemonOptions {
   server?: string;
   stateDir?: string;
   joinRoom?: RoomJoin;
+  /** Leave the room seat (MCP room_leave). Injected in production; tests may stub. */
+  leaveRoom?: RoomLeave;
   secrets?: SecretRegistry;
   /** Clock for the live-listen grace. Tests pin this; production uses Date.now. */
   now?: () => number;
@@ -188,17 +192,35 @@ export class WakeDaemon {
         if (remote.pending.length || remote.inFlight.length) busy = true;
         if (this.options.heartbeat?.blocks(seat)) continue;
         this.observeProcess(seat);
-        if (!remote.pending.length) continue;
-        // A claimed run is already inside the live process. Anything else needs a
-        // new wake prompt. Interactive TUIs do not exit after room_sleep, and
-        // `codex resume` refuses while that process still holds the session.
+        if (!remote.pending.length && !remote.inFlight.length) continue;
+        // A claimed run may still be inside a live listen (or mid-turn). Within
+        // the grace window, merge new @ events into that run. Past grace with no
+        // ACK, fail the stale claims and resume so Cursor/Codex actually get a
+        // wake prompt — infinite merge left room @ undelivered when the CLI was
+        // mid-turn / not holding room_listen.
+        let view = remote;
         if (seat.status === 'running' && seat.wakeRunId && remote.inFlight.length) {
-          await this.merge(seat, remote);
-          continue;
+          const forGrace = remote.pending.length
+            ? remote
+            : { ...remote, pending: remote.inFlight.map(event => ({ eventId: event.eventId })) };
+          if (this.deferForLiveListen(seat, forGrace)) {
+            if (remote.pending.length) await this.merge(seat, remote);
+            continue;
+          }
+          await this.failStaleInFlight(seat, remote);
+          view = {
+            ...remote,
+            pending: [
+              ...remote.pending,
+              ...remote.inFlight.map(event => ({ eventId: event.eventId })),
+            ],
+            inFlight: [],
+          };
         }
-        if (this.deferForLiveListen(seat, remote)) continue;
+        if (!view.pending.length) continue;
+        if (this.deferForLiveListen(seat, view)) continue;
         if (seat.pid && this.options.inspect(seat.pid).alive) await this.stopLiveProcess(seat);
-        await this.resumeSeat(seat, remote);
+        await this.resumeSeat(seat, view);
       }
     } catch {
       if (messageOf(failure) === 'unpaired') skipped = true;
@@ -291,15 +313,35 @@ export class WakeDaemon {
   }
 
   /**
-   * End one managed seat and keep the wake loop from starting it again.
-   * The PTY, when present, is killed by the control route; this stops the
-   * recorded pid and marks the seat idle.
+   * End one managed seat: stop the process, unregister wake, leave the room,
+   * drop the local seat record, and keep the wake loop from starting it again.
+   * The PTY, when present, is killed by the control route before this runs.
    */
   async stopManagedSeat(seatId: string): Promise<boolean> {
     const seat = this.options.state.seats.find(item => item.seatId === seatId);
     if (!seat || seat.status === 'revoked') return false;
     this.stoppedByUser.add(seatId);
     await this.stopLiveProcess(seat);
+    try {
+      await this.options.api.unregister?.({ seatId });
+    } catch {
+      /* best-effort — room @ must not keep targeting a closed seat */
+    }
+    const leave = this.options.leaveRoom ?? leaveRoomOverMcp;
+    const server = this.options.server ?? '';
+    if (server && seat.code && seat.name) {
+      try {
+        const seatKey = await this.options.credentials?.get(`seat:${seatId}`) ?? '';
+        await leave({ server, code: seat.code, name: seat.name, seatKey });
+      } catch {
+        /* room may already be ended / seat already gone */
+      }
+    }
+    try {
+      await this.options.credentials?.delete(`seat:${seatId}`);
+    } catch { /* ignore */ }
+    this.options.state.seats = this.options.state.seats.filter(item => item.seatId !== seatId);
+    this.claimsBySeat.delete(seatId);
     await this.options.persist?.(this.options.state);
     return true;
   }
@@ -455,6 +497,17 @@ export class WakeDaemon {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_failed' as const })) });
       await this.options.lock.release(seat.seatId);
     }
+  }
+
+  /** Roll stale WAITING_ACK claims back to PENDING so the next resume can claim them. */
+  private async failStaleInFlight(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
+    const claims = remote.inFlight
+      .map(event => event.claimId)
+      .filter((id): id is string => !!id)
+      .map(claimId => ({ claimId, status: 'resume_failed' as const }));
+    if (claims.length) await this.options.api.progress({ claims });
+    seat.wakeRunId = undefined;
+    this.claimsBySeat.delete(seat.seatId);
   }
 
   /** The seat's process is already up. Claim into one run and do not spawn another. */

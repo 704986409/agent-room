@@ -512,9 +512,87 @@ describe('state file round trip', () => {
     });
     expect(await daemon.stopManagedSeat('st_a')).toBe(true);
     expect(stopped).toEqual([4242]);
-    expect(daemon.seats[0]).toMatchObject({ status: 'idle', pid: undefined });
+    // Closed seats are removed from local state (rail + room kick path).
+    expect(daemon.seats.find(s => s.seatId === 'st_a')).toBeUndefined();
     await daemon.tick();
     expect(surface.calls).toEqual(['poll']);
     expect(await daemon.stopManagedSeat('missing')).toBe(false);
+  });
+
+  it('re-resumes after grace when inFlight never acks (room @ must reach Cursor)', async () => {
+    const child = spawner([THREAD]);
+    let now = 1_000;
+    const stopped: number[] = [];
+    let alive = true;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:2', preview: '@ hello' }],
+          inFlight: [{ eventId: 'wk:1', claimId: 'cl-wk:1', state: 'WAITING_ACK' }],
+          failed: [],
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400, wakeRunId: 'wr_1',
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex resume thr_9' }),
+      now: () => now,
+      resumeGraceMs: 100,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(surface.calls).toContain('claim:wr_1'); // merge within grace
+    now = 1_250; // past grace
+    surface.calls.length = 0;
+    await daemon.tick();
+    expect(surface.calls).toContain('resume_failed');
+    expect(stopped).toEqual([400]);
+    expect(child.calls).toHaveLength(1);
+    expect(child.calls[0]!.args[0]).toBe('resume');
+  });
+
+  it('closes a seat with wake unregister and room leave', async () => {
+    const stopped: number[] = [];
+    let alive = true;
+    const left: { code: string; name: string }[] = [];
+    const unregistered: string[] = [];
+    const surface = api();
+    surface.unregister = async ({ seatId }) => { unregistered.push(seatId); return { ok: true }; };
+    const creds = new MemoryCredentialStore();
+    await creds.set('seat:st_a', 'seat-key-secret');
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map(),
+      state: {
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+          sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242,
+        }],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      stopProcess: (pid) => { stopped.push(pid); alive = false; },
+      server: 'http://127.0.0.1:9',
+      credentials: creds,
+      leaveRoom: async (input) => { left.push({ code: input.code, name: input.name }); },
+    });
+    expect(await daemon.stopManagedSeat('st_a')).toBe(true);
+    expect(stopped).toEqual([4242]);
+    expect(unregistered).toEqual(['st_a']);
+    expect(left).toEqual([{ code: 'ABC-DEF-GHJ', name: 'codex-a' }]);
+    expect(daemon.seats).toEqual([]);
+    expect(await creds.get('seat:st_a')).toBeUndefined();
   });
 });
