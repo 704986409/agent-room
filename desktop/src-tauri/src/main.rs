@@ -14,8 +14,19 @@ use std::sync::{Arc, LazyLock, Mutex};
 #[cfg(windows)]
 use std::sync::OnceLock;
 
+/// WebView2 Environment is a COM pointer (not Sync/Send in the Windows crates).
+/// Tauri creates/uses it on the UI thread; we only share the same Environment across
+/// top-level windows (Plan A). Marking Send+Sync is required for a process-wide OnceLock.
 #[cfg(windows)]
-static SHARED_WEBVIEW_ENV: OnceLock<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> = OnceLock::new();
+struct SharedWebViewEnv(webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment);
+
+#[cfg(windows)]
+unsafe impl Send for SharedWebViewEnv {}
+#[cfg(windows)]
+unsafe impl Sync for SharedWebViewEnv {}
+
+#[cfg(windows)]
+static SHARED_WEBVIEW_ENV: OnceLock<SharedWebViewEnv> = OnceLock::new();
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -652,7 +663,7 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
         let env = SHARED_WEBVIEW_ENV.get().ok_or("WebView2 环境尚未就绪")?;
-        builder = builder.with_environment(env.clone());
+        builder = builder.with_environment(env.0.clone());
     }
     builder
         .title("Agent Room · 本机设置")
@@ -1044,7 +1055,7 @@ fn open_terminal_window_inner(
     #[cfg(windows)]
     {
         let env = SHARED_WEBVIEW_ENV.get().ok_or("WebView2 环境尚未就绪")?;
-        builder = builder.with_environment(env.clone());
+        builder = builder.with_environment(env.0.clone());
     }
     builder = builder
         .title(format!("Agent Room · {seat_id}"))
@@ -1526,7 +1537,7 @@ fn show_main(app: &AppHandle) {
         Ok(window) => {
             #[cfg(windows)]
             if let Err(error) = window.with_webview(|view| {
-                let _ = SHARED_WEBVIEW_ENV.set(view.environment());
+                let _ = SHARED_WEBVIEW_ENV.set(SharedWebViewEnv(view.environment()));
                 shell_log("[popout] shared WebView2 environment ready");
             }) {
                 shell_log(&format!("[popout] shared environment capture failed reason={error}"));
