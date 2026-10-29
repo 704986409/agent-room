@@ -11,6 +11,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(windows)]
+use std::sync::OnceLock;
+
+#[cfg(windows)]
+static SHARED_WEBVIEW_ENV: OnceLock<webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Environment> = OnceLock::new();
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -323,6 +328,12 @@ fn open_daemon_log() -> Result<std::fs::File, String> {
         .map_err(|e| format!("无法打开日志 {}: {e}", daemon_log_path().display()))
 }
 
+fn shell_log(line: &str) {
+    if let Ok(mut file) = open_daemon_log() {
+        let _ = writeln!(file, "{} {}", log_stamp(), line);
+    }
+}
+
 fn log_stamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -519,7 +530,14 @@ fn webview_data_directory(app: &AppHandle, label: &str) -> Result<Option<PathBuf
             .path()
             .app_local_data_dir()
             .map_err(|e| format!("无法确定 WebView 持久化目录: {e}"))?;
+        // Windows windows share the main WebView2 Environment. Its user-data
+        // folder must match on every builder using that Environment.
+        #[cfg(windows)]
+        let dir = root;
+        #[cfg(not(windows))]
         let dir = webview_profile_dir(&root, label);
+        #[cfg(windows)]
+        let _ = label;
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("无法创建 WebView 目录 {}: {e}", dir.display()))?;
         Ok(Some(dir))
@@ -630,6 +648,11 @@ fn open_settings_window(app: &AppHandle, url: &str) -> Result<(), String> {
     let mut builder = WebviewWindowBuilder::new(app, "settings", WebviewUrl::External(parsed));
     if let Some(data_dir) = webview_data_directory(app, "settings")? {
         builder = builder.data_directory(data_dir);
+    }
+    #[cfg(windows)]
+    {
+        let env = SHARED_WEBVIEW_ENV.get().ok_or("WebView2 环境尚未就绪")?;
+        builder = builder.with_environment(env.clone());
     }
     builder
         .title("Agent Room · 本机设置")
@@ -977,7 +1000,10 @@ fn queue_terminal_control_navigate(window: tauri::WebviewWindow, control: tauri:
                 .map(|current| is_terminal_boot_scheme(current.scheme()))
                 .unwrap_or(false);
             if still_boot {
-                let _ = window.navigate(control);
+                shell_log(&format!("[popout] navigate fallback label={}", window.label()));
+                if let Err(error) = window.navigate(control) {
+                    shell_log(&format!("[popout] navigate failed label={} reason={error}", window.label()));
+                }
             }
         });
     });
@@ -993,6 +1019,7 @@ fn open_terminal_window_inner(
     height: Option<f64>,
 ) -> Result<(), String> {
     let label = terminal_window_label(seat_id);
+    shell_log(&format!("[popout] create start seatId={seat_id} label={label}"));
     let control: tauri::Url = url
         .parse()
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
@@ -1014,6 +1041,11 @@ fn open_terminal_window_inner(
     if let Some(data_dir) = webview_data_directory(app, &label)? {
         builder = builder.data_directory(data_dir);
     }
+    #[cfg(windows)]
+    {
+        let env = SHARED_WEBVIEW_ENV.get().ok_or("WebView2 环境尚未就绪")?;
+        builder = builder.with_environment(env.clone());
+    }
     builder = builder
         .title(format!("Agent Room · {seat_id}"))
         .inner_size(width, height)
@@ -1028,8 +1060,10 @@ fn open_terminal_window_inner(
                 return;
             }
             if !is_terminal_boot_scheme(payload.url().scheme()) {
+                shell_log(&format!("[popout] page loaded label={} scheme={}", window.label(), payload.url().scheme()));
                 return;
             }
+            shell_log(&format!("[popout] boot loaded label={}", window.label()));
             // After show + boot-document commit. Synchronous navigate() from
             // build() would cancel this data: URL before it paints.
             queue_terminal_control_navigate(window, control.clone());
@@ -1040,6 +1074,7 @@ fn open_terminal_window_inner(
     let _ = created.unminimize();
     let _ = created.show();
     let _ = created.set_focus();
+    shell_log(&format!("[popout] create done seatId={seat_id} label={label}"));
     Ok(())
 }
 
@@ -1482,13 +1517,24 @@ fn show_main(app: &AppHandle) {
             return;
         }
     }
-    if let Err(e) = builder
+    match builder
         .title("Agent Room")
         .inner_size(1200.0, 800.0)
         .menu(menu)
         .build()
     {
-        alert("Agent Room", &format!("无法打开主窗口: {e}"));
+        Ok(window) => {
+            #[cfg(windows)]
+            if let Err(error) = window.with_webview(|view| {
+                let _ = SHARED_WEBVIEW_ENV.set(view.environment());
+                shell_log("[popout] shared WebView2 environment ready");
+            }) {
+                shell_log(&format!("[popout] shared environment capture failed reason={error}"));
+            }
+            #[cfg(not(windows))]
+            let _ = window;
+        }
+        Err(e) => alert("Agent Room", &format!("无法打开主窗口: {e}")),
     }
 }
 
@@ -1560,29 +1606,6 @@ const QUIT_WATCHDOG_MS: u64 = 2_000;
 
 /// Windows: delay before an external `taskkill /F /T` of this pid, in case the
 /// process is frozen hard enough that the in-process watchdog never runs.
-#[cfg(windows)]
-const QUIT_TASKKILL_DELAY_SECS: u32 = 3;
-
-#[cfg(windows)]
-const DETACHED_PROCESS: u32 = 0x0000_0008;
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-#[cfg(windows)]
-const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
-
-/// `cmd /C` args for a deferred self-kill. Kept pure for unit tests.
-#[cfg(windows)]
-fn windows_deferred_self_kill_args(pid: u32, delay_secs: u32) -> Vec<String> {
-    // `timeout` still flashes a console on some Windows builds even with
-    // CREATE_NO_WINDOW. `ping` to localhost is the classic silent delay.
-    let pings = delay_secs.saturating_add(1);
-    vec![
-        "/d".into(),
-        "/c".into(),
-        format!("ping 127.0.0.1 -n {pings} >nul & taskkill /F /T /PID {pid}"),
-    ]
-}
-
 /// Tray 退出 must not wait on `WebviewWindow::destroy` (wedged WebView2 can
 /// hang forever and leave a dead tray/taskbar icon). Order:
 /// 1) QUITTING so hide-on-close cannot cancel exit
@@ -1593,13 +1616,14 @@ fn windows_deferred_self_kill_args(pid: u32, delay_secs: u32) -> Vec<String> {
 /// 6) in-process watchdog `process::exit`, plus Windows detached taskkill
 fn request_quit(app: &AppHandle, daemon: &Daemon) {
     QUITTING.store(true, Ordering::SeqCst);
+    shell_log("[tray] quit requested");
+    schedule_quit_watchdog();
     // Drop closes the tray icon with the shell (avoids ghost icons after hard exit).
     let _ = app.remove_tray_by_id("main");
     daemon.stop();
     for window in app.webview_windows().into_values() {
         let _ = window.hide();
     }
-    schedule_quit_watchdog();
     app.exit(0);
 }
 
@@ -1610,23 +1634,6 @@ fn schedule_quit_watchdog() {
             std::process::exit(0);
         }
     });
-    #[cfg(windows)]
-    {
-        let pid = std::process::id();
-        let args = windows_deferred_self_kill_args(pid, QUIT_TASKKILL_DELAY_SECS);
-        let _ = Command::new("cmd")
-            .args(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(
-                CREATE_NO_WINDOW
-                    | DETACHED_PROCESS
-                    | CREATE_NEW_PROCESS_GROUP
-                    | CREATE_BREAKAWAY_FROM_JOB,
-            )
-            .spawn();
-    }
 }
 
 fn main() {
@@ -1830,18 +1837,9 @@ mod tests {
     }
 
     #[test]
-    fn quit_watchdog_is_bounded_and_windows_self_kill_targets_pid() {
+    fn quit_watchdog_is_bounded() {
         assert!(QUIT_WATCHDOG_MS >= 500);
         assert!(QUIT_WATCHDOG_MS <= 5_000);
-        #[cfg(windows)]
-        {
-            let args = windows_deferred_self_kill_args(4242, 3);
-            assert_eq!(args[0], "/d");
-            assert_eq!(args[1], "/c");
-            assert!(args[2].contains("ping 127.0.0.1 -n 4"));
-            assert!(args[2].contains("taskkill /F /T /PID 4242"));
-            assert!(!args[2].contains("timeout"));
-        }
     }
 
     #[test]
