@@ -496,6 +496,7 @@ export async function runListen(
   // for its whole window so a missed 15s renewal cannot show the seat as idle
   // while this call is still blocked. Return/timeout shortens it to grace.
   const holding = timeoutMs > 0;
+  if (holding) console.info(`[listen] hold start roomCode=${code} since=${since} timeoutMs=${timeoutMs}`);
   const holdLeaseId = holding ? `hold:${crypto.randomUUID()}` : undefined;
   if (holdLeaseId) {
     const cappedMs = Math.min(Math.max(1000, timeoutMs), LISTEN_MAX_MS);
@@ -504,7 +505,9 @@ export async function runListen(
     } catch { /* presence must not break the listen */ }
   }
   try {
-    return await runListenInner(client, code, since, timeoutMs, selfName, wakeOn);
+    const result = await runListenInner(client, code, since, timeoutMs, selfName, wakeOn);
+    if (holding) console.info(`[listen] hold return roomCode=${code} cursor=${result.cursor} messages=${result.messages.length} terminated=${result.terminated ?? 'none'}`);
+    return result;
   } finally {
     await releaseLease();
     if (holdLeaseId) {

@@ -67,10 +67,16 @@ export async function settleManagedRead(client: CommandClient, input: {
   const room = JSON.parse(raw) as { status?: string; roomInstanceId?: string; participants?: { name: string; client: string; seatId?: string; seatKeyHash?: string }[] };
   if (room.status !== 'active' || !room.roomInstanceId) return null;
   const participant = room.participants?.find(p => p.client === 'cc' && p.name === input.name);
-  if (!participant?.seatId || !participant.seatKeyHash) return null;
+  if (!participant?.seatId || !participant.seatKeyHash) {
+    console.info(`[listen] managed seat missing roomCode=${input.code}`);
+    return null;
+  }
   if (!verifySeat({
     roomInstanceId: room.roomInstanceId, seatId: participant.seatId, name: input.name, seatKeyHash: participant.seatKeyHash,
-  }, input.name, input.managed.seatKey)) return null;
+  }, input.name, input.managed.seatKey)) {
+    console.info(`[listen] managed seat verification failed roomCode=${input.code} seatId=${participant.seatId}`);
+    return null;
+  }
   const store = new RedisWakeStore(client);
   const snapshot = await store.loadMessages(input.code, input.since);
   if (!snapshot) return null;
@@ -89,5 +95,6 @@ export async function settleManagedRead(client: CommandClient, input: {
     timeoutMs: input.timeoutMs,
     listenEpoch,
   }, input.now ?? Date.now());
+  console.info(`[listen] managed read roomCode=${input.code} seatId=${participant.seatId} since=${input.since} cursor=${snapshot.total} holdMs=${input.timeoutMs} ackedEventIds=${acked.join(',')}`);
   return { cursor: snapshot.total, acked, ...(listenEpoch ? { listenEpoch } : {}) };
 }

@@ -125,6 +125,7 @@ export class WakeService {
       seatKeyHash: issued.seatKeyHash, status: 'active', expiresAt: roomExpiresAt(room),
     };
     await writeBinding(this.client, binding, binding.expiresAt);
+    console.info(`[host] wake registered roomCode=${code} seatId=${issued.seatId} scanFrom=${scanFrom}`);
     return { roomInstanceId: issued.roomInstanceId, seatId: issued.seatId, scanFrom };
   }
 
@@ -135,6 +136,7 @@ export class WakeService {
       if (active(event)) await this.store.apply(event.eventId, { kind: 'cancel', reason: 'unregistered' }, this.now());
     }
     await deleteBinding(this.client, binding);
+    console.info(`[leave] wake unregistered roomCode=${binding.code} seatId=${binding.seatId}`);
     return { unregistered: true, seatId: binding.seatId };
   }
 
@@ -170,6 +172,9 @@ export class WakeService {
       const oldest = snap.count === null ? 0 : Math.max(0, snap.count - length);
       await this.store.maintain(seat, snap.count !== null, oldest, now);
       const events = await this.store.list(seat);
+      if (events.some(e => e.state === 'PENDING' || inFlight(e))) {
+        console.info(`[wake] poll roomCode=${binding.code} seatId=${binding.seatId} pendingEventIds=${events.filter(e => e.state === 'PENDING').map(e => e.eventId).join(',')} inFlightEventIds=${events.filter(inFlight).map(e => e.eventId).join(',')}`);
+      }
       await this.noteFailures(binding, events);
       seats.push({
         seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const,
@@ -194,6 +199,7 @@ export class WakeService {
     const seat = { roomInstanceId: loaded[0]!.roomInstanceId, seatId: loaded[0]!.seatId };
     if (loaded.some(e => e.roomInstanceId !== seat.roomInstanceId || e.seatId !== seat.seatId)) fail('bad_request');
     const binding = await this.requireActiveBinding(deviceId, seat.seatId);
+    console.info(`[wake] claim start roomCode=${binding.code} seatId=${seat.seatId} eventIds=${eventIds.join(',')}`);
     const existing = (await this.store.list(seat)).filter(e => inFlight(e) && e.deviceId === deviceId && e.wakeRunId);
     const activeRun = existing[0]?.wakeRunId;
     let wakeRunId: string;
@@ -220,6 +226,7 @@ export class WakeService {
     if (!snapshot) fail('seat_unauthorized');
     const handoff = await this.store.handoff(seat);
     const start = readStart(runEvents, seat, snapshot.oldestRetained, handoff?.cursor);
+    console.info(`[wake] claim delivered roomCode=${binding.code} seatId=${seat.seatId} eventIds=${claims.filter(c => c.claimId).map(c => c.eventId).join(',')} readFrom=${start.readFrom}`);
     return { wakeRunId, readFrom: start.readFrom, ...(start.gap ? { gap: start.gap } : {}), claims };
   }
 

@@ -653,26 +653,34 @@ async function dispatch(
       }
       try {
         const seat = await new RedisWakeStore(client.store).sleep(a.code, name, seatKey, cursor, Date.now());
+        console.info(`[listen] room_sleep roomCode=${a.code} seatId=${seat.seatId} cursor=${cursor}`);
         return ok({ slept: true, cursor, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId }, [], structured);
       } catch (error) {
         const code = error instanceof Error ? error.message : 'seat_unauthorized';
+        console.info(`[listen] room_sleep failed roomCode=${a.code} reason=${code}`);
         return ok({ slept: false, error: code }, [], structured);
       }
     }
 
     case 'room_leave': {
+      console.info(`[leave] room_leave start roomCode=${a.code}`);
       // Agents are always client "cc". Self-removal needs the matching client
       // or the filter no-ops and the roster seat stays (desktop 「关闭」kick).
       try {
         if (typeof a.name === 'string' && a.name.trim()) {
           await removeParticipant(client, a.code, a.name, a.name, 'cc');
         }
-      } catch { /* room may already be ended / expired */ }
+      } catch (error) {
+        console.info(`[leave] room_leave failed roomCode=${a.code} reason=${error instanceof Error ? error.message : 'unknown'}`);
+      }
+      console.info(`[leave] room_leave done roomCode=${a.code}`);
       return ok({ left: true, code: a.code }, [], structured);
     }
 
     case 'room_end': {
+      console.info(`[leave] room_end start roomCode=${a.code}`);
       await endRoom(client, a.code, a.name ?? '', typeof a.hostKey === 'string' ? a.hostKey : undefined);
+      console.info(`[leave] room_end done roomCode=${a.code}`);
       return ok({ ended: true, code: a.code }, [], structured);
     }
 
