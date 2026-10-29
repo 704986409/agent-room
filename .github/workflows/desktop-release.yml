@@ -161,16 +161,13 @@ jobs:
             PACK="Agent-Room-${LABEL}"
             echo "Renaming release assets to ${PACK}_*"
             cd assets
+            shopt -s nullglob
             for f in *; do
               [ -f "$f" ] || continue
-              if [[ "$f" =~ ^Agent\.Room_[0-9]+\.[0-9]+\.[0-9]+_(.+)$ ]]; then
-                rest="${BASH_REMATCH[1]}"
+              # Tauri writes "Agent Room_0.1.26_…"; GitHub Release may show dots for spaces.
+              if [[ "$f" =~ ^(Agent[.]Room_|Agent[[:space:]]Room_)[0-9]+\.[0-9]+\.[0-9]+_(.+)$ ]]; then
+                rest="${BASH_REMATCH[2]}"
                 mv -v -- "$f" "${PACK}_${rest}"
-              elif [[ "$f" =~ ^agent-room-desktop- ]]; then
-                # optional linux tarball if present
-                ext="${f##*.}"
-                # keep simple: Agent-Room-<label>-linux.<ext> only for .tar.gz handled below
-                :
               fi
             done
             # Rename any leftover *.tar.gz to pack label if present
