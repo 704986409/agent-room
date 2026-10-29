@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { CODEX_MANAGED_MCP_APPROVAL } from './src/adapter.js';
+import { CODEX_MANAGED_MCP_APPROVAL, embeddedSeatCommand } from './src/adapter.js';
 import { prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleArg } from './src/winlaunch.js';
 
 const PROMPT = '你是房间 "甲"\n1) room_listen({ code: "ABC", name: "席" })\n说 ""你好""\n第二行';
@@ -67,6 +67,25 @@ async function deliver(kind: 'npm' | 'cursor') {
 }
 
 describe('windows seat launcher', () => {
+  it('routes embedded ConPTY seats through the prompt-file launcher with managed approval argv', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'Agent Room embedded '));
+    const prompt = 'room_listen({ managed: { seatKey: "secret" } })\n下一行';
+    const env = { AGENT_ROOM_MANAGED: '1', AGENT_ROOM_SEAT_KEY: 'secret', AGENT_ROOM_SERVER: 'https://example.test' };
+    for (const adapter of ['codex', 'cursor-agent'] as const) {
+      const args = adapter === 'codex'
+        ? ['resume', 'thread-id', '-c', CODEX_MANAGED_MCP_APPROVAL, prompt]
+        : ['--resume', 'thread-id', '--trust', '--approve-mcps', prompt];
+      const logFile = join(directory, `${adapter}.log`);
+      const spec = embeddedSeatCommand(`${adapter}.cmd`, args, { cwd: directory, env, prompt }, logFile, 'win32');
+      expect(spec.command.toLowerCase()).toContain('cmd');
+      expect(spec.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
+      expect(spec.args.join(' ')).not.toContain('secret');
+      const launch = JSON.parse(await readFile(join(directory, `${adapter}.launch.json`), 'utf8')) as { args: string[]; env: typeof env };
+      expect(launch.args).toContain(adapter === 'codex' ? CODEX_MANAGED_MCP_APPROVAL : '--approve-mcps');
+      expect(launch.env).toMatchObject(env);
+      expect(await readFile(join(directory, `${adapter}.prompt.txt`), 'utf8')).toBe(prompt);
+    }
+  });
   it('quotes a launcher path that contains spaces and never puts the prompt on the cmd line', async () => {
     expect(windowsConsoleArg('D:\\Agent Room\\logs\\st_b5e09cd0.cmd'))
       .toBe('""D:\\Agent Room\\logs\\st_b5e09cd0.cmd" & if not errorlevel 1 exit"');

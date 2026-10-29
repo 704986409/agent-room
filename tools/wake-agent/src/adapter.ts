@@ -798,6 +798,19 @@ function windowsSeatConsole(
   }).spawn;
 }
 
+/** ConPTY runs cmd.exe, while the UTF-8 launch spec preserves CLI argv/env and prompt. */
+export function embeddedSeatCommand(
+  command: string,
+  args: readonly string[],
+  opts: { cwd: string; env: Record<string, string>; prompt?: string; terminalTitle?: string },
+  logFile: string,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: readonly string[] } {
+  if (platform !== 'win32') return { command, args };
+  const wrapped = windowsSeatConsole(command, args, opts, logFile);
+  return { command: wrapped.command, args: ['/d', '/s', '/c', wrapped.args.at(-1)!] };
+}
+
 /**
  * Spawns an interactive CLI. When `terminalTitle` is set and a terminal emulator
  * is available, opens a visible window so the user can approve tool permissions.
@@ -834,10 +847,14 @@ export function nodeSpawner(): ProcessSpawner {
       // Embedded managed seat: real PTY (Unix / ConPTY), not system CMD / xfce4-terminal.
       if (shouldEmbedTerminal(opts)) {
         const seatId = seatIdFromLogFile(opts.logFile) ?? `seat-${process.pid}-${Date.now()}`;
+        // ConPTY cannot execute npm/Cursor .cmd shims as a native process, and
+        // passing the multiline prompt through cmd.exe splits it into commands.
+        // Use the same UTF-8 prompt-file launcher as the system console path.
+        const embedded = embeddedSeatCommand(command, args, opts, logFile);
         const session = spawnPtySession({
           seatId,
-          command,
-          args,
+          command: embedded.command,
+          args: embedded.args,
           cwd: opts.cwd,
           env: opts.env,
           logFile,

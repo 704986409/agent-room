@@ -272,6 +272,7 @@ export class WakeDaemon {
   async startAgent(input: StartAgentInput): Promise<SeatRecord> {
     const adapter = this.adapter(input.adapterId);
     if (!adapter.models.includes(input.model)) throw new Error('model_not_allowed');
+    this.logLine(`[host] start roomCode=${input.code} adapter=${input.adapterId}`);
     const join = this.options.joinRoom ?? joinRoomOverMcp;
     const joined = await join({
       server: input.server, code: input.code, name: input.name, inviteCode: input.inviteCode,
@@ -280,6 +281,7 @@ export class WakeDaemon {
     const registered = await this.options.api.register({
       code: input.code, name: seatName, seatKey: joined.seatKey, cursor: joined.cursor,
     });
+    this.logLine(`[host] registered roomCode=${input.code} seatId=${registered.seatId}`);
     this.options.secrets?.add(joined.seatKey);
     await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
     const prompt = firstRunPrompt({
@@ -293,6 +295,7 @@ export class WakeDaemon {
       env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor),
       logFile: this.logFile(registered.seatId),
     });
+    this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid}`);
     const seat: SeatRecord = {
       seatId: registered.seatId,
       roomInstanceId: registered.roomInstanceId,
@@ -321,11 +324,13 @@ export class WakeDaemon {
   async stopManagedSeat(seatId: string): Promise<boolean> {
     const seat = this.options.state.seats.find(item => item.seatId === seatId);
     if (!seat || seat.status === 'revoked') return false;
+    this.logLine(`[leave] stopManagedSeat start roomCode=${seat.code} seatId=${seatId} pid=${seat.pid ?? 0}`);
     this.stoppedByUser.add(seatId);
     await this.stopLiveProcess(seat);
     try {
       await this.options.api.unregister?.({ seatId });
-    } catch {
+    } catch (error) {
+      this.logLine(`[leave] unregister failed roomCode=${seat.code} seatId=${seatId} reason=${messageOf(error)}`);
       /* best-effort — room @ must not keep targeting a closed seat */
     }
     const leave = this.options.leaveRoom ?? leaveRoomOverMcp;
@@ -333,8 +338,11 @@ export class WakeDaemon {
     if (server && seat.code && seat.name) {
       try {
         const seatKey = await this.options.credentials?.get(`seat:${seatId}`) ?? '';
+        this.logLine(`[leave] room_leave start roomCode=${seat.code} seatId=${seatId}`);
         await leave({ server, code: seat.code, name: seat.name, seatKey });
-      } catch {
+        this.logLine(`[leave] room_leave done roomCode=${seat.code} seatId=${seatId}`);
+      } catch (error) {
+        this.logLine(`[leave] room_leave failed roomCode=${seat.code} seatId=${seatId} reason=${messageOf(error)}`);
         /* room may already be ended / seat already gone */
       }
     }
@@ -344,6 +352,7 @@ export class WakeDaemon {
     this.options.state.seats = this.options.state.seats.filter(item => item.seatId !== seatId);
     this.claimsBySeat.delete(seatId);
     await this.options.persist?.(this.options.state);
+    this.logLine(`[leave] stopManagedSeat done roomCode=${seat.code} seatId=${seatId}`);
     return true;
   }
 
@@ -411,6 +420,7 @@ export class WakeDaemon {
       const seat = this.options.state.seats.find(item => item.seatId === seatId);
       if (!seat || seat.pid !== pid || seat.status !== 'running') return;
       const claims = this.claimsBySeat.get(seatId) ?? [];
+      this.logLine(`[listen] process exit roomCode=${seat.code} seatId=${seatId} pid=${pid} code=${code} claims=${claims.length}`);
       seat.status = 'idle';
       seat.pid = undefined;
       seat.wakeRunId = undefined;
@@ -466,10 +476,23 @@ export class WakeDaemon {
   }
 
   private async resumeSeat(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
-    if (!seat.sessionId || !seat.model) return;
+    if (!seat.sessionId || !seat.model) {
+      this.logLine(`[wake] resume unavailable roomCode=${seat.code} seatId=${seat.seatId} session=${Boolean(seat.sessionId)} model=${Boolean(seat.model)}`);
+      return;
+    }
     if (!(await this.options.lock.tryAcquire(seat.seatId))) return;
-    const claimed = await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId) });
+    const eventIds = remote.pending.map(event => event.eventId);
+    this.logLine(`[wake] claim start roomCode=${seat.code} seatId=${seat.seatId} eventIds=${eventIds.join(',')}`);
+    let claimed: ClaimResult;
+    try {
+      claimed = await this.options.api.claim({ eventIds });
+    } catch (error) {
+      this.logLine(`[wake] claim failed roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+      await this.options.lock.release(seat.seatId);
+      throw error;
+    }
     const ok = claimed.claims.filter(claim => claim.claimId);
+    this.logLine(`[wake] claim result roomCode=${seat.code} seatId=${seat.seatId} eventIds=${ok.map(c => c.eventId).join(',')} readFrom=${claimed.readFrom ?? 'missing'}`);
     if (!ok.length || claimed.readFrom === undefined) {
       await this.options.lock.release(seat.seatId);
       return;
@@ -481,6 +504,7 @@ export class WakeDaemon {
     });
     this.logLine(prompt);
     try {
+      this.logLine(`[wake] resume start roomCode=${seat.code} seatId=${seat.seatId} adapter=${seat.adapterId} eventIds=${ok.map(c => c.eventId).join(',')}`);
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
       const child = await this.adapter(seat.adapterId).resume({
         sessionId: seat.sessionId,
@@ -495,7 +519,9 @@ export class WakeDaemon {
       seat.wakeRunId = claimed.wakeRunId;
       this.claimsBySeat.set(seat.seatId, ok.map(claim => claim.claimId!));
       this.watchExit(seat.seatId, child.pid, child.exited);
-    } catch {
+      this.logLine(`[wake] resume launched roomCode=${seat.code} seatId=${seat.seatId} pid=${child.pid}`);
+    } catch (error) {
+      this.logLine(`[wake] resume failed roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_failed' as const })) });
       await this.options.lock.release(seat.seatId);
     }
@@ -523,6 +549,7 @@ export class WakeDaemon {
   }
 
   private async merge(seat: SeatRecord, remote: WakeSeatView): Promise<void> {
+    this.logLine(`[wake] merge live run roomCode=${seat.code} seatId=${seat.seatId} eventIds=${remote.pending.map(e => e.eventId).join(',')}`);
     await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId), wakeRunId: seat.wakeRunId });
   }
 }

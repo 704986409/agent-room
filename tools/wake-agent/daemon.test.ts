@@ -163,12 +163,12 @@ describe('wake daemon', () => {
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       expect.any(String),
     ]);
-    expect(logs[0]).toContain('since: 183');
-    expect(logs[0]).toContain('第 120–182 条');
-    expect(logs[0]).not.toContain('secret body');
-    expect(logs[0]).toContain('seatKey: ""');
-    expect(logs[0]).not.toContain('AGENT_ROOM_SEAT_KEY');
-    expect(logs[0]).not.toContain('super-secret');
+    const promptLog = logs.find(line => line.includes('since: 183'))!;
+    expect(promptLog).toContain('第 120–182 条');
+    expect(promptLog).not.toContain('secret body');
+    expect(promptLog).toContain('seatKey: ""');
+    expect(promptLog).not.toContain('AGENT_ROOM_SEAT_KEY');
+    expect(promptLog).not.toContain('super-secret');
     expect(client.calls).toContain('resume_started');
     expect(client.calls).not.toContain('SUCCEEDED');
 
@@ -179,6 +179,30 @@ describe('wake daemon', () => {
     await daemon.tick();
     expect(client.calls).toContain('renew');
     expect(client.calls).toContain('claim:wr_1');
+    expect(child.calls).toHaveLength(1);
+  });
+
+  it('releases the seat lock when a wake claim fails so a later poll can retry', async () => {
+    const client = api();
+    let attempts = 0;
+    const claim = client.claim;
+    client.claim = async body => {
+      if (++attempts === 1) throw new Error('temporary_network_error');
+      return claim(body);
+    };
+    const lock = new MemoryRunLock();
+    const child = spawner([]);
+    const daemon = new WakeDaemon({
+      api: client,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{ seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol', sessionId: 'thr_9', cwd: '/work', status: 'idle' }] },
+      lock,
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    await daemon.tick();
+    expect(lock.has('st_a')).toBe(false);
+    await daemon.tick();
+    expect(attempts).toBe(2);
     expect(child.calls).toHaveLength(1);
   });
 
