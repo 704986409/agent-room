@@ -13,6 +13,7 @@ import { MemberTerminalButton } from '../components/MemberTerminalButton.js';
 import { RoomRightColumn, shouldCollapseTerminalExpand, type RightRailTab } from '../components/RightRail.js';
 import { isDesktopShell } from '../lib/desktopHost.js';
 import { rosterWithActiveSeats, terminalSeatIdFor } from '../lib/activeRoster.js';
+import { stopLocalManagedSeats } from '../lib/desktopTerminal.js';
 import type { DesktopTerminalRow } from '../lib/desktopTerminal.js';
 import { InviteAgentDialog } from '../components/InviteAgentDialog.js';
 import { LocaleSwitcher } from '../i18n/LocaleSwitcher.js';
@@ -432,13 +433,26 @@ export function Room() {
   // Host-only. Removes (name, client) from the room. The kicked client will
   // notice it's gone on its next room poll / room_listen and can be told to
   // leave by their UI. Reconnection is not blocked — they'd need to be re-joined.
-  async function handleKick(p: { name: string; client: 'web' | 'cc' }) {
+  async function handleKick(p: { name: string; client: 'web' | 'cc'; seatId?: string }) {
     if (!room || !self || room.createdBy !== self.name) return;
     if (p.name === self.name && p.client === 'web') return; // host can't kick themselves
     const clientLabel = t(p.client === 'web' ? 'room.browser' : 'room.cli');
     if (!confirm(t('room.removeParticipantConfirm', { name: p.name, client: clientLabel }))) return;
     try {
+      if (p.client === 'cc') {
+        try {
+          await stopLocalManagedSeats({ code, name: p.name, seatId: p.seatId });
+        } catch (error) {
+          console.warn(`[leave] local seat stop failed roomCode=${code} name=${p.name}`, error);
+        }
+      }
       await roomApi.host({ code, op: 'remove', name: p.name, client: p.client });
+      setDismissedSeats(prev => {
+        const next = new Set(prev);
+        next.add(`${p.client}:${p.name}`);
+        return next;
+      });
+      setHostedSeatId(prev => (prev && prev === p.seatId ? undefined : prev));
       await refreshRoom();
     } catch (e) {
       const { showToast } = await import('../components/Toast.js');
@@ -464,6 +478,7 @@ export function Room() {
 
   const [mobilePanel, setMobilePanel] = useState<'chat' | 'tasks' | 'people'>('chat');
   const [hostedSeatId, setHostedSeatId] = useState<string | undefined>(undefined);
+  const [dismissedSeats, setDismissedSeats] = useState<ReadonlySet<string>>(new Set());
   const [rightTab, setRightTab] = useState<RightRailTab>('tasks');
   const [terminalExpanded, setTerminalExpanded] = useState(false);
   const [terminalRows, setTerminalRows] = useState<DesktopTerminalRow[]>([]);
@@ -629,7 +644,11 @@ export function Room() {
   const desktopShell = isDesktopShell();
   // Stored participants can omit a managed seat that is already speaking or
   // already has a live PTY. The list below is what the member column renders.
-  const roster = rosterWithActiveSeats(activeRoom.participants, messages, terminalRows, code, now);
+  const roster = rosterWithActiveSeats(activeRoom.participants, messages, terminalRows, code, now)
+    .filter(p => {
+      if (!dismissedSeats.has(`${p.client}:${p.name}`)) return true;
+      return activeRoom.participants.some(seat => seat.name === p.name && seat.client === p.client);
+    });
   const roomAgents = roster.filter(p => p.client === 'cc');
   const activeRoomAgents = roomAgents.filter(p => p.canSpeak !== false);
   const fallbackAgent = activeRoomAgents[0] ?? roomAgents[0];
@@ -1076,7 +1095,7 @@ export function Room() {
                           )}
                           {canKick && (
                             <button
-                              onClick={() => handleKick({ name: p.name, client: p.client })}
+                              onClick={() => handleKick({ name: p.name, client: p.client, seatId: p.seatId })}
                               title={t('room.removeTitle', { name: p.name })}
                               aria-label={t('room.removeTitle', { name: p.name })}
                               className="flex h-10 w-10 sm:h-8 sm:w-8 items-center justify-center rounded-lg border border-border-faint bg-surface text-ink-soft transition active:scale-[0.98] hover:border-red-300 hover:bg-red-50 hover:text-red-600"

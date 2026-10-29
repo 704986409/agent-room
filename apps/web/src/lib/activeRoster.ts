@@ -1,4 +1,7 @@
-import { PRESENCE_DISCONNECTED_MS, type Participant } from '@agent-room/shared';
+import { type Participant } from '@agent-room/shared';
+
+/** How long a cc chat line may stand in for a seat the room document has not stored yet. */
+const SPEAKER_LAG_MS = 15_000;
 import { colorForName, initialsFor } from './colors.js';
 import { terminalsForRoom, type DesktopTerminalRow } from './desktopTerminal.js';
 
@@ -14,7 +17,8 @@ export interface RosterSpeaker {
  * Chat is the message list. The room document can lag a managed join, or a
  * presence write can land before that seat is visible to this client, while
  * the agent is already sending. The member list unions the stored roster with
- * live PTY seats and cc speakers who posted inside the disconnect window.
+ * live PTY seats and cc speakers from the last few seconds (join lag only).
+ * Older lines must not put a kicked seat back on the member list.
  */
 export function rosterWithActiveSeats(
   participants: readonly Participant[],
@@ -40,7 +44,7 @@ export function rosterWithActiveSeats(
   }
   for (const message of latest.values()) {
     if (hasAgent(message.name)) continue;
-    if (now - message.time > PRESENCE_DISCONNECTED_MS) continue;
+    if (now - message.time > SPEAKER_LAG_MS) continue;
     next.push(agentSeat(message.name, message.time, undefined, message.role));
   }
   return next;

@@ -27,6 +27,47 @@ export function desktopTerminalWsUrl(seatId: string, origin = DESKTOP_CONTROL_OR
   return `${wsOrigin}/api/desktop/terminals/${encodeURIComponent(seatId.trim())}/ws?desktop=1`;
 }
 
+export interface LocalSeatStop {
+  code: string;
+  name: string;
+  seatId?: string;
+}
+
+/**
+ * Stop every local managed seat that matches this room member.
+ * A missing daemon is ignored: the server remove still proceeds.
+ */
+export async function stopLocalManagedSeats(
+  input: LocalSeatStop,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string[]> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/seats/stop`, {
+      method: 'POST',
+      headers: { 'x-agent-room-desktop': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code: input.code,
+        name: input.name,
+        ...(input.seatId ? { seatId: input.seatId } : {}),
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  } finally {
+    clearTimeout(timer);
+  }
+  const body = await response.json().catch(() => ({})) as { error?: string; stopped?: unknown };
+  if (!response.ok) {
+    throw new Error(body.error || `无法停止本机席位（HTTP ${response.status}）`);
+  }
+  return Array.isArray(body.stopped) ? body.stopped.filter((id): id is string => typeof id === 'string') : [];
+}
+
 /** Kill the managed PTY / seat process. Disconnect only closes the view. */
 export async function stopDesktopTerminal(
   seatId: string,

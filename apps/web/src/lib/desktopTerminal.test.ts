@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DESKTOP_CONTROL_ORIGIN } from './desktopHost.js';
-import { desktopTerminalWsUrl, listDesktopTerminals, readDesktopClipboardText, stopDesktopTerminal, terminalsForRoom } from './desktopTerminal.js';
+import { desktopTerminalWsUrl, listDesktopTerminals, readDesktopClipboardText, stopDesktopTerminal, stopLocalManagedSeats, terminalsForRoom } from './desktopTerminal.js';
 
 describe('desktopTerminalWsUrl', () => {
   it('targets the desktop-auth socket and does not carry a control token', () => {
@@ -53,6 +53,21 @@ describe('stopDesktopTerminal', () => {
     expect(url.includes('t=')).toBe(false);
     expect(init.method).toBe('POST');
     expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+  });
+});
+
+describe('stopLocalManagedSeats', () => {
+  it('asks the daemon to stop by room code, name, and seat id', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ ok: true, stopped: ['st_1', 'st_2'] }), { status: 200 }));
+    await expect(stopLocalManagedSeats(
+      { code: 'NJZ-EUM-9ZU', name: '开发工程师', seatId: 'st_1' },
+      fetchImpl as unknown as typeof fetch,
+    )).resolves.toEqual(['st_1', 'st_2']);
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/seats/stop`);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+    expect(JSON.parse(String(init.body))).toEqual({ code: 'NJZ-EUM-9ZU', name: '开发工程师', seatId: 'st_1' });
   });
 });
 

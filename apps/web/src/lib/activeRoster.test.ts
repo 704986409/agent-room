@@ -1,4 +1,4 @@
-import { PRESENCE_DISCONNECTED_MS, type Participant } from '@agent-room/shared';
+import { type Participant } from '@agent-room/shared';
 import { describe, expect, it } from 'vitest';
 import { rosterWithActiveSeats, terminalSeatIdFor } from './activeRoster.js';
 
@@ -30,11 +30,11 @@ describe('rosterWithActiveSeats', () => {
     expect(roster.find(p => p.name === 'Codex')).toMatchObject({ client: 'cc', seatId: 'st_1' });
   });
 
-  it('does not resurrect a cc speaker who went quiet', () => {
+  it('does not resurrect a cc speaker from an older line after the seat was removed', () => {
     const now = 5_000_000;
     const roster = rosterWithActiveSeats(
       [host],
-      [{ name: 'Gone', client: 'cc', type: 'msg', time: now - PRESENCE_DISCONNECTED_MS - 1 }],
+      [{ name: 'Gone', client: 'cc', type: 'msg', time: now - 60_000 }],
       [],
       'ABC-DEF-GHJ',
       now,

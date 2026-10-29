@@ -1,6 +1,6 @@
 import type { Room } from '@agent-room/shared';
 import type { UpstashClient } from '@agent-room/upstash-client';
-import { markRebindRequired, removeManagedSeat } from './_wakeBind.js';
+import { listManagedSeatIds, readBinding, removeManagedSeat } from './_wakeBind.js';
 
 type CommandClient = Pick<UpstashClient, 'command'>;
 
@@ -22,8 +22,19 @@ export async function invalidateRemovedSeats(store: unknown, before: Room, after
   const roomInstanceId = before.roomInstanceId;
   if (!client || !roomInstanceId) return;
   const remaining = new Set(after.participants.map(p => p.seatId).filter(Boolean));
-  for (const participant of before.participants) {
-    if (!participant.seatId || remaining.has(participant.seatId)) continue;
-    await removeManagedSeat(client, roomInstanceId, participant.seatId, reason, now);
+  const gone = before.participants.filter(p => !after.participants.some(
+    next => next.client === p.client && next.name === p.name,
+  ));
+  for (const participant of gone) {
+    if (participant.seatId && !remaining.has(participant.seatId)) {
+      await removeManagedSeat(client, roomInstanceId, participant.seatId, reason, now);
+      continue;
+    }
+    if (participant.seatId || participant.client !== 'cc') continue;
+    for (const seatId of await listManagedSeatIds(client, roomInstanceId)) {
+      const binding = await readBinding(client, seatId);
+      if (!binding || binding.name !== participant.name || binding.code !== before.code) continue;
+      await removeManagedSeat(client, roomInstanceId, seatId, reason, now);
+    }
   }
 }
