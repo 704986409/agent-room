@@ -39,8 +39,17 @@ export interface RecentRoom {
   at?: string;
 }
 
-const settingsHtml = await readFile(fileURLToPath(new URL('./settings.html', import.meta.url)), 'utf8');
-const installHtml = await readFile(fileURLToPath(new URL('./install.html', import.meta.url)), 'utf8');
+/** Static pages must never stop the daemon from starting; fall back to a stub page. */
+async function loadStaticPage(name: string): Promise<string> {
+  try {
+    return await readFile(fileURLToPath(new URL(`./${name}`, import.meta.url)), 'utf8');
+  } catch (err) {
+    console.error(`[agent-room] static page ${name} unavailable (${(err as Error).message}); serving fallback`);
+    return `<!doctype html><meta charset="utf-8"><title>Agent Room</title><p>${name} is missing from this install. Please reinstall Agent Room.</p>`;
+  }
+}
+const settingsHtml = await loadStaticPage('settings.html');
+const installHtml = await loadStaticPage('install.html');
 
 /** Same-origin xterm builds. Pop-out must not block on a CDN (blank window, close stalls). */
 const VENDOR_ASSETS: Record<string, { type: string; files: string[] }> = {

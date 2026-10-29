@@ -178,8 +178,14 @@ async function build_esbuild() {
   });
 }
 
-const html = join(root, 'tools/wake-agent/src/settings.html');
-if (existsSync(html)) cpSync(html, join(out, 'settings.html'));
+for (const page of ['settings.html', 'install.html']) {
+  const src = join(root, 'tools/wake-agent/src', page);
+  if (!existsSync(src)) {
+    console.error(`daemon static page missing: ${src}. Refusing to package daemon-dist.`);
+    process.exit(1);
+  }
+  cpSync(src, join(out, page));
+}
 const vendorOut = join(out, 'vendor');
 mkdirSync(vendorOut, { recursive: true });
 const vendorAssets = [
