@@ -409,7 +409,15 @@
       showError(null);
       startLogPoll();
       try {
-        await api('/api/adapters/install', { method: 'POST', body: { id } });
+        const runId = String(Date.now()) + '-' + Math.random().toString(36).slice(2, 10);
+        const installUrl = location.origin + '/install?t=' + encodeURIComponent(token) + '&adapter=' + encodeURIComponent(id) + '&run=' + encodeURIComponent(runId);
+        if (hasTauri()) {
+          await tauriInvoke('open_terminal_window', { seatId: 'install-' + id, url: installUrl, width: 800, height: 500 });
+        } else {
+          const opened = window.open(installUrl, '_blank');
+          if (!opened) throw new Error('无法打开安装输出窗口，请允许弹出窗口后重试。');
+        }
+        await api('/api/adapters/install', { method: 'POST', body: { id, runId } });
         await refresh();
       } catch (error) {
         try { await refresh(); } catch { /* keep the install error */ }

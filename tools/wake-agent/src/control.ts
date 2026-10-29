@@ -40,6 +40,7 @@ export interface RecentRoom {
 }
 
 const settingsHtml = await readFile(fileURLToPath(new URL('./settings.html', import.meta.url)), 'utf8');
+const installHtml = await readFile(fileURLToPath(new URL('./install.html', import.meta.url)), 'utf8');
 
 /** Same-origin xterm builds. Pop-out must not block on a CDN (blank window, close stalls). */
 const VENDOR_ASSETS: Record<string, { type: string; files: string[] }> = {
@@ -372,6 +373,10 @@ export async function startControlServer(options: ControlServerOptions): Promise
       send(res, 200, settingsHtml, 'text/html; charset=utf-8');
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/install') {
+      send(res, 200, installHtml, 'text/html; charset=utf-8');
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/status') {
       send(res, 200, await statusPayload(), 'application/json; charset=utf-8', cors);
       return;
@@ -522,12 +527,14 @@ export async function startControlServer(options: ControlServerOptions): Promise
     }
     if (url.pathname === '/api/adapters/install') {
       const id = typeof body.id === 'string' ? body.id : '';
+      const runId = typeof body.runId === 'string' && /^[A-Za-z0-9-]{1,64}$/.test(body.runId) ? body.runId : undefined;
       const result = await installAdapterCli(id, {
         adapters: options.adapters,
         run: options.run,
         log: options.log,
         env: options.env,
         nodePath: options.nodePath,
+        runId,
       });
       send(res, 'error' in result ? 400 : 200, result);
       return;
@@ -572,6 +579,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
       return { status: 400, body: { error: 'seat_id' } };
     }
     const session = getPtySession(id);
+    options.log.write(`[leave] terminal stop roomCode=${options.daemon.seats.find(seat => seat.seatId === id)?.code ?? 'unknown'} seatId=${id}`);
     if (session) {
       try { session.kill(); } catch { /* already dead */ }
       // Drop from the rail list immediately; onExit may lag after kill.
@@ -605,9 +613,11 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const model = chosenModels.includes(requestedModel) ? requestedModel : chosenModels[0]!;
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : chosen.id;
     const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : (options.home ?? homedir());
+    options.log.write(`[host] HostLocal start roomCode=${code} adapter=${chosen.id}`);
     const seat = await options.daemon.startAgent({
       server: serverUrl, code, inviteCode, name, adapterId: chosen.id, model, cwd,
     });
+    options.log.write(`[host] HostLocal success roomCode=${code} seatId=${seat.seatId} adapter=${chosen.id}`);
     noteRoom(code, inviteCode, name);
     return { status: 200, body: { ok: true, seat } };
   }

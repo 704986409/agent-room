@@ -31,10 +31,11 @@ export type CommandRunner = (
   input?: string,
   timeoutMs?: number,
   env?: NodeJS.ProcessEnv,
+  onChunk?: (stream: 'stdout' | 'stderr', text: string) => void,
 ) => Promise<CommandResult>;
 
 export function processRunner(): CommandRunner {
-  return (command, args, input, timeoutMs = 5_000, env) => new Promise((resolve, reject) => {
+  return (command, args, input, timeoutMs = 5_000, env, onChunk) => new Promise((resolve, reject) => {
     const spec = spawnCommand(command, args);
     const child = spawn(spec.command, spec.args, {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -55,8 +56,8 @@ export function processRunner(): CommandRunner {
       child.kill();
       finish({ code: 1, stdout, stderr: stderr || 'timeout' });
     }, timeoutMs);
-    child.stdout.on('data', chunk => { stdout += String(chunk); });
-    child.stderr.on('data', chunk => { stderr += String(chunk); });
+    child.stdout.on('data', chunk => { const text = String(chunk); stdout += text; onChunk?.('stdout', text); });
+    child.stderr.on('data', chunk => { const text = String(chunk); stderr += text; onChunk?.('stderr', text); });
     child.on('error', error => {
       if (settled) return;
       settled = true;

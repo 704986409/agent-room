@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Room · CLI 安装</title>
+  <style>
+    body { margin: 0; padding: 16px; background: #17191d; color: #e9edf3; font: 13px/1.5 system-ui, sans-serif; }
+    h1 { margin: 0 0 6px; font-size: 18px; }
+    #status { color: #9ab6e8; margin-bottom: 12px; }
+    #status.failed { color: #ff9797; }
+    #status.success { color: #96e3af; }
+    pre { margin: 0; padding: 12px; height: calc(100vh - 115px); overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border-radius: 6px; background: #090b0e; color: #d7e2d9; font: 12px/1.45 ui-monospace, Consolas, monospace; }
+  </style>
+</head>
+<body>
+  <h1 id="title">CLI 安装</h1>
+  <div id="status" role="status">等待安装输出…</div>
+  <pre id="output"></pre>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const adapter = params.get('adapter') || '';
+    const runId = params.get('run') || '';
+    const token = params.get('t') || '';
+    document.getElementById('title').textContent = '安装 ' + adapter;
+    async function refresh() {
+      try {
+        const response = await fetch('/api/logs', { headers: { 'x-agent-room-control': token } });
+        if (!response.ok) throw new Error('日志读取失败 (HTTP ' + response.status + ')');
+        const data = await response.json();
+        const lines = (data.lines || []).filter(line => line.startsWith('[install]') && line.includes('adapter=' + adapter + ' ') && line.includes('run=' + runId + ' '));
+        const output = document.getElementById('output');
+        const nearBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 60;
+        output.textContent = lines.join('\n');
+        if (nearBottom) output.scrollTop = output.scrollHeight;
+        const status = document.getElementById('status');
+        const last = lines.at(-1) || '';
+        if (lines.some(line => line.startsWith('[install] success adapter=' + adapter + ' '))) {
+          status.textContent = '安装完成，版本检测通过。';
+          status.className = 'success';
+        } else if (lines.some(line => line.startsWith('[install] failed adapter=' + adapter + ' ') || line.startsWith('[install] probe failed adapter=' + adapter + ' '))) {
+          status.textContent = '安装失败。请查看下面的输出和本机设置中的错误提示。';
+          status.className = 'failed';
+        } else if (last) {
+          status.textContent = '正在安装…';
+        }
+      } catch (error) {
+        document.getElementById('status').textContent = error.message || String(error);
+      }
+    }
+    refresh();
+    setInterval(refresh, 750);
+  </script>
+</body>
+</html>

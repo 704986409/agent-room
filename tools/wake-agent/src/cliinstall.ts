@@ -39,6 +39,7 @@ export interface AdapterInstallOptions {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   nodePath?: string;
+  runId?: string;
 }
 
 /** Official one-liners (2026-10). Returned text is what the user can paste. */
@@ -195,11 +196,11 @@ async function npmGlobal(pkg: string, options: AdapterInstallOptions): Promise<I
   };
 }
 
-function logChunks(log: AdapterInstallOptions['log'], text: string): void {
+function logChunks(log: AdapterInstallOptions['log'], text: string, id: string, runId = 'legacy'): void {
   if (!log || !text) return;
   for (const line of text.split(/\r?\n/)) {
     const trimmed = line.trimEnd();
-    if (trimmed) log.write(trimmed);
+    if (trimmed) log.write(`[install] output adapter=${id} run=${runId} ${trimmed}`);
   }
 }
 
@@ -214,15 +215,22 @@ async function runStep(
   id: string,
   options: AdapterInstallOptions & { run: CommandRunner },
 ): Promise<CommandResult> {
-  options.log?.write(`安装 ${id}：$ ${step.display}`);
+  options.log?.write(`[install] start adapter=${id} run=${options.runId ?? 'legacy'} command=${step.display} timeoutMs=${step.timeoutMs}`);
   try {
-    const result = await options.run(step.command, step.args, undefined, step.timeoutMs, step.env);
-    logChunks(options.log, result.stdout);
-    logChunks(options.log, result.stderr);
+    let streamed = false;
+    const result = await options.run(step.command, step.args, undefined, step.timeoutMs, step.env, (_stream, chunk) => {
+      streamed = true;
+      logChunks(options.log, chunk, id, options.runId);
+    });
+    if (!streamed) {
+      logChunks(options.log, result.stdout, id, options.runId);
+      logChunks(options.log, result.stderr, id, options.runId);
+    }
+    if (result.code !== 0) options.log?.write(`[install] failed adapter=${id} run=${options.runId ?? 'legacy'} exitCode=${result.code}`);
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : 'spawn_failed';
-    options.log?.write(`安装 ${id} 失败：${message}`);
+    options.log?.write(`[install] failed adapter=${id} run=${options.runId ?? 'legacy'} reason=${message}`);
     return { code: 1, stdout: '', stderr: message };
   }
 }
@@ -308,6 +316,10 @@ export async function installAdapterCli(id: string, options: AdapterInstallOptio
     await rememberNpmBin(step, runOptions);
     detected = await adapter.detect();
   }
-  if (!detected.installed) return probeFailure(id, detected);
+  if (!detected.installed) {
+    options.log?.write(`[install] probe failed adapter=${id} run=${options.runId ?? 'legacy'}`);
+    return probeFailure(id, detected);
+  }
+  options.log?.write(`[install] success adapter=${id} run=${options.runId ?? 'legacy'} version=${detected.version ?? 'unknown'}`);
   return { ok: true, installed: true, version: detected.version, path: detected.path };
 }

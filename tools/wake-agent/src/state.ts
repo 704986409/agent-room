@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export type SeatRuntime = 'idle' | 'running' | 'revoked';
@@ -87,11 +87,13 @@ async function writeStateBody(path: string, state: DaemonState): Promise<void> {
   const body = JSON.stringify(state, null, 2);
   if (stateWriteBarrier) await stateWriteBarrier();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, body, { mode: 0o600 });
+  const temp = `${path}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
-    await chmod(path, 0o600);
-  } catch {
-    // Windows only honors the read-only bit. The file is already written.
+    await writeFile(temp, body, { mode: 0o600 });
+    try { await chmod(temp, 0o600); } catch { /* Windows ignores POSIX modes. */ }
+    await rename(temp, path);
+  } finally {
+    await rm(temp, { force: true }).catch(() => undefined);
   }
 }
 
