@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26-v1 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v1** / `desktop-v0.1.26-v1`.
+
+- Windows ConPTY embed: Cursor/Codex managed MCP argv + approve flags preserved (listen/wake).
+- Shared WebView2 Environment for settings/pop-outs (Plan A black-screen fix).
+- Tray quit without deferred cmd flash; HostLocal busy spinner/disable; CLI install live log pop-out.
+- Extra wake/listen/leave logs (API + daemon). Listen WAITING_ACK hold and close/leave hardenings from tip.
+
 ## 0.1.26
 
 - 弹出终端：`data:` 启动层 + 每座位独立 WebView 配置目录，避免黑屏/串配置。Pop-out boots from data URL with per-seat WebView profiles.
