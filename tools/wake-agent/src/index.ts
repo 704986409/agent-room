@@ -12,6 +12,7 @@ import { createHttpWakeApi } from './http.js';
 import { acquireDaemonLock } from './instanceLock.js';
 import { DaemonLog } from './log.js';
 import { pairComplete, pairWithLogin, serverOrigin, unpair, deviceCredentialKey } from './pairing.js';
+import { pairedServerUrl } from './mcpconfig.js';
 import { SecretRegistry } from './redact.js';
 import { inspectProcess, readState, writeState } from './state.js';
 
@@ -84,13 +85,7 @@ async function openStores(statePath: string) {
 }
 
 function requireServer(explicit: string | undefined, stateServer: string | undefined): string {
-  const server = explicit ?? process.env.AGENT_ROOM_SERVER ?? stateServer;
-  if (!server) {
-    process.stderr.write('Need --server, AGENT_ROOM_SERVER, or a paired device.server.\n');
-    process.exitCode = 1;
-    return '';
-  }
-  return server;
+  return pairedServerUrl({ server: explicit || stateServer });
 }
 
 async function main(): Promise<void> {

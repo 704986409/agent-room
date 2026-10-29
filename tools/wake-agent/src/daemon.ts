@@ -274,13 +274,14 @@ export class WakeDaemon {
     if (!adapter.models.includes(input.model)) throw new Error('model_not_allowed');
     this.logLine(`[host] start roomCode=${input.code} adapter=${input.adapterId}`);
     const join = this.options.joinRoom ?? joinRoomOverMcp;
-    const joined = await join({
+    const joined = await withTimeout(join({
       server: input.server, code: input.code, name: input.name, inviteCode: input.inviteCode,
-    });
+    }), 20_000, 'join_timeout');
+    this.logLine(`[host] join roomCode=${input.code} name=${joined.name || joined.yourName || input.name}`);
     const seatName = joined.name || joined.yourName || input.name;
-    const registered = await this.options.api.register({
+    const registered = await withTimeout(this.options.api.register({
       code: input.code, name: seatName, seatKey: joined.seatKey, cursor: joined.cursor,
-    });
+    }), 20_000, 'register_timeout');
     this.logLine(`[host] registered roomCode=${input.code} seatId=${registered.seatId}`);
     this.options.secrets?.add(joined.seatKey);
     await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
@@ -552,6 +553,19 @@ export class WakeDaemon {
     this.logLine(`[wake] merge live run roomCode=${seat.code} seatId=${seat.seatId} eventIds=${remote.pending.map(e => e.eventId).join(',')}`);
     await this.options.api.claim({ eventIds: remote.pending.map(event => event.eventId), wakeRunId: seat.wakeRunId });
   }
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number, code: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(code)), ms);
+    work.then(value => {
+      clearTimeout(timer);
+      resolve(value);
+    }, error => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
 }
 
 function stopProcessGroup(pid: number): void {

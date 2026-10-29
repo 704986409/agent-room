@@ -8,6 +8,8 @@ import { startControlServer, type RunningControl } from './src/control.js';
 import { MemoryCredentialStore, type CommandRunner } from './src/credstore.js';
 import { MemoryRunLock, WakeDaemon } from './src/daemon.js';
 import { DaemonLog } from './src/log.js';
+import { pairedServerUrl } from './src/mcpconfig.js';
+import { deviceCredentialKey } from './src/pairing.js';
 import {
   forNodeArgv,
   hookLauncherBat,
@@ -237,6 +239,141 @@ describe('local control server', () => {
         expect.objectContaining({ code: 'OLD-ROOM', names: ['writer'] }),
       ]));
       expect(listed.rooms.find(room => room.code === 'OLD-ROOM')?.inviteCode).toBeUndefined();
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('talks to the default server when the device record is missing, and stops seats by name', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-control-unpaired-'));
+    const secrets = new SecretRegistry();
+    const adapters = adapterMap(async () => ({ installed: true }), ['codex']);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+        async unregister() { return { ok: true }; },
+      },
+      adapters,
+      state: {
+        seats: [
+          { seatId: 'st_keep', code: 'OTHER', name: '开发工程师', adapterId: 'codex', cwd: directory, status: 'idle' },
+          { seatId: 'st_drop', code: 'NJZ-EUM-9ZU', name: '开发工程师', adapterId: 'codex', cwd: directory, status: 'idle' },
+          { seatId: 'st_drop2', code: 'NJZ-EUM-9ZU', name: '开发工程师', adapterId: 'codex', cwd: directory, status: 'idle' },
+        ],
+      },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+      server: pairedServerUrl({}),
+      leaveRoom: async () => undefined,
+    });
+    const started: { server: string }[] = [];
+    daemon.startAgent = async input => {
+      started.push({ server: input.server });
+      if (input.name === 'hang') throw new Error('join_timeout');
+      return {
+        seatId: 'st_new', code: input.code, name: input.name, adapterId: input.adapterId,
+        model: input.model, cwd: input.cwd, status: 'running',
+      };
+    };
+    const roomOrigin = new URL(pairedServerUrl({})).origin;
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      adapters,
+      secrets,
+      log: new DaemonLog(secrets),
+      home: directory,
+      run: async () => { throw new Error('unexpected command'); },
+      getToken: async () => '',
+      setToken: () => undefined,
+    });
+    try {
+      const status = await fetch(`http://127.0.0.1:${control.port}/api/status`, {
+        headers: { origin: roomOrigin, 'x-agent-room-desktop': '1' },
+      });
+      expect(status.status).toBe(200);
+      const statusBody = await status.json() as { paired: boolean; auth: string; server: string };
+      expect(statusBody.paired).toBe(false);
+      expect(statusBody.auth).toBe('unpaired');
+      expect(statusBody.server).toBe(pairedServerUrl({}));
+
+      const hosted = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'NJZ-EUM-9ZU', inviteCode: 'AI-1', name: '开发工程师' }),
+      });
+      expect(hosted.status).toBe(200);
+      expect(started[0]?.server).toBe(pairedServerUrl({}));
+
+      const failed = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'NJZ-EUM-9ZU', inviteCode: 'AI-1', name: 'hang' }),
+      });
+      expect(failed.status).toBe(400);
+      const failure = await failed.json() as { error: string; hint: string };
+      expect(failure.error).toBe('join_timeout');
+      expect(failure.hint).toContain('超时');
+
+      const stopped = await fetch(`http://127.0.0.1:${control.port}/api/desktop/seats/stop`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'NJZ-EUM-9ZU', name: '开发工程师' }),
+      });
+      expect(stopped.status).toBe(200);
+      const body = await stopped.json() as { stopped: string[] };
+      expect(body.stopped.sort()).toEqual(['st_drop', 'st_drop2']);
+      expect(daemon.seats.map(seat => seat.seatId)).toEqual(['st_keep']);
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('rebuilds device when the credential store still has the server token', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-control-restore-'));
+    const secrets = new SecretRegistry();
+    const server = 'https://room.example';
+    const credentials = new MemoryCredentialStore();
+    await credentials.set(deviceCredentialKey(server), 'device-token');
+    const adapters = adapterMap(async () => ({ installed: false }), ['codex']);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    let held = '';
+    const control = await startControlServer({
+      daemon,
+      credentials,
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server,
+      adapters,
+      secrets,
+      log: new DaemonLog(secrets),
+      getToken: async () => held,
+      setToken: value => { held = value; },
+      whoami: async () => ({ deviceId: 'dev_restored', username: 'jie' }),
+    });
+    try {
+      expect(daemon.state.device).toMatchObject({ server, deviceId: 'dev_restored' });
+      expect(held).toBe('device-token');
+      const saved = JSON.parse(await readFile(join(directory, 'daemon.json'), 'utf8')) as { device: { deviceId: string } };
+      expect(saved.device.deviceId).toBe('dev_restored');
     } finally {
       await control.close();
     }

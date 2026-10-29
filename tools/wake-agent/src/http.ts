@@ -1,6 +1,8 @@
 import type { WakeApi } from './daemon.js';
 
-type FetchFn = (input: string, init: { method: string; headers: Record<string, string>; body: string }) => Promise<{
+const WAKE_HTTP_TIMEOUT_MS = 20_000;
+
+type FetchFn = (input: string, init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal }) => Promise<{
   ok: boolean;
   status: number;
   json: () => Promise<unknown>;
@@ -29,6 +31,7 @@ export function createHttpWakeApi(
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${bearer}` },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(WAKE_HTTP_TIMEOUT_MS),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {

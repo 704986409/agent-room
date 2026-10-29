@@ -10,8 +10,8 @@ import type { CredentialStore, CommandRunner } from './credstore.js';
 import type { WakeDaemon } from './daemon.js';
 import type { DaemonLog } from './log.js';
 import { adapterIdForMcp, cliRequiredHint, installAdapterCli } from './cliinstall.js';
-import { installMcp, mcpStatus } from './mcpconfig.js';
-import { deviceCredentialKey, pairComplete, pairWithLogin, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
+import { installMcp, mcpStatus, pairedServerUrl } from './mcpconfig.js';
+import { deviceCredentialKey, pairComplete, pairWithLogin, restoreDeviceFromCredential, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
 import { readOsClipboardText } from './clipboard.js';
@@ -27,6 +27,7 @@ const DESKTOP_PATHS = new Set([
   '/api/desktop/ping',
   '/api/desktop/rooms',
   '/api/desktop/host',
+  '/api/desktop/seats/stop',
   '/api/desktop/terminals',
   '/api/desktop/clipboard',
   '/api/status',
@@ -293,10 +294,12 @@ export async function startControlServer(options: ControlServerOptions): Promise
   }
 
 
+  function configuredServer(): string {
+    return pairedServerUrl({ server: options.server ?? options.daemon.state.device?.server });
+  }
+
   function pairedOrigin(): string | undefined {
-    const serverUrl = options.server ?? options.daemon.state.device?.server;
-    if (!serverUrl) return undefined;
-    try { return serverOrigin(serverUrl); } catch { return undefined; }
+    try { return serverOrigin(configuredServer()); } catch { return undefined; }
   }
 
   function allowOrigin(requestOrigin: string | undefined): string | undefined {
@@ -340,6 +343,22 @@ export async function startControlServer(options: ControlServerOptions): Promise
 
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
   try { await chmod(options.stateDir, 0o700); } catch { /* Windows may ignore mode */ }
+  try {
+    const restored = await restoreDeviceFromCredential(configuredServer(), {
+      ...pairingDeps(),
+      identify: (server, token) => (options.whoami ?? whoami)(server, token),
+    });
+    if (restored) {
+      const tokenValue = await options.credentials.get(deviceCredentialKey(configuredServer()));
+      if (tokenValue) {
+        options.secrets.add(tokenValue);
+        options.setToken(tokenValue);
+      }
+      options.log.write(`[pair] restored device record server=${configuredServer()}`);
+    }
+  } catch (error) {
+    options.log.write(`[pair] restore skipped reason=${error instanceof Error ? error.message : 'unknown'}`);
+  }
   const controlPath = join(options.stateDir, 'control.json');
   await writeFile(controlPath, JSON.stringify({ port, token }, null, 2), { mode: 0o600 });
   try { await chmod(controlPath, 0o600); } catch { /* Windows may ignore mode */ }
@@ -513,6 +532,11 @@ export async function startControlServer(options: ControlServerOptions): Promise
       send(res, hosted.status, hosted.body, undefined, cors);
       return;
     }
+    if (url.pathname === '/api/desktop/seats/stop') {
+      const stopped = await stopMatchingSeats(body);
+      send(res, 200, stopped, undefined, cors);
+      return;
+    }
     if (url.pathname === '/api/mcp/install') {
       const target = typeof body.target === 'string' ? body.target : '';
       const adapterId = adapterIdForMcp(target);
@@ -600,7 +624,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
   }
 
   async function hostFromRoom(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
-    const serverUrl = options.server ?? options.daemon.state.device?.server;
+    const serverUrl = configuredServer();
     if (!serverUrl) return { status: 400, body: { error: 'no_server' } };
     const code = typeof body.code === 'string' ? body.code.trim() : '';
     const inviteCode = typeof body.inviteCode === 'string' ? body.inviteCode.trim() : '';
@@ -623,12 +647,46 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : chosen.id;
     const cwd = typeof body.cwd === 'string' && body.cwd.trim() ? body.cwd.trim() : (options.home ?? homedir());
     options.log.write(`[host] HostLocal start roomCode=${code} adapter=${chosen.id}`);
-    const seat = await options.daemon.startAgent({
-      server: serverUrl, code, inviteCode, name, adapterId: chosen.id, model, cwd,
-    });
-    options.log.write(`[host] HostLocal success roomCode=${code} seatId=${seat.seatId} adapter=${chosen.id}`);
-    noteRoom(code, inviteCode, name);
-    return { status: 200, body: { ok: true, seat } };
+    try {
+      const seat = await options.daemon.startAgent({
+        server: serverUrl, code, inviteCode, name, adapterId: chosen.id, model, cwd,
+      });
+      options.log.write(`[host] HostLocal success roomCode=${code} seatId=${seat.seatId} adapter=${chosen.id}`);
+      noteRoom(code, inviteCode, name);
+      return { status: 200, body: { ok: true, seat } };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'host_failed';
+      options.log.write(`[host] HostLocal failed roomCode=${code} adapter=${chosen.id} reason=${message}`);
+      const hint = message === 'unpaired' || message === 'register_timeout'
+        ? '本机托管没有完成。请打开桌面端主窗口菜单「本机设置」登录后再试。'
+        : message === 'join_timeout'
+          ? '加入房间超时，请检查网络后重试。'
+          : message;
+      return { status: 400, body: { error: message, hint } };
+    }
+  }
+
+  async function stopMatchingSeats(body: Record<string, unknown>): Promise<{ ok: true; stopped: string[] }> {
+    const code = typeof body.code === 'string' ? body.code.trim() : '';
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const seatId = typeof body.seatId === 'string' ? body.seatId.trim() : '';
+    const ids = new Set<string>();
+    for (const seat of options.daemon.seats) {
+      if (seatId && seat.seatId === seatId) ids.add(seat.seatId);
+      if (code && name && seat.code === code && seat.name === name) ids.add(seat.seatId);
+    }
+    if (seatId && getPtySession(seatId)) ids.add(seatId);
+    const stopped: string[] = [];
+    for (const id of ids) {
+      const session = getPtySession(id);
+      if (session) {
+        try { session.kill(); } catch { /* already dead */ }
+        unregisterPtySession(id);
+      }
+      if (await options.daemon.stopManagedSeat(id)) stopped.push(id);
+    }
+    options.log.write(`[leave] desktop seats stop roomCode=${code || 'unknown'} name=${name || 'unknown'} stopped=${stopped.join(',') || 'none'}`);
+    return { ok: true, stopped };
   }
 
   async function rememberCredential(serverUrl: string, credential: string): Promise<void> {
@@ -639,7 +697,7 @@ export async function startControlServer(options: ControlServerOptions): Promise
 
   async function statusPayload(): Promise<unknown> {
     const device = options.daemon.state.device;
-    const serverUrl = device?.server ?? options.server;
+    const serverUrl = device?.server ?? configuredServer();
     const tokenValue = await options.getToken();
     let user: { username?: string; userId?: string; deviceId?: string } | null = null;
     if (device && tokenValue && serverUrl) {

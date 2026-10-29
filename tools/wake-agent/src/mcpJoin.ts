@@ -63,7 +63,7 @@ async function mcpCall(url: string, method: string, params?: Record<string, unkn
     method: 'POST',
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) throw new Error('join_failed');
   const json = await response.json() as { result?: unknown; error?: unknown };

@@ -23,6 +23,8 @@ export interface PairingDeps {
   hostname?: string;
   platform?: string;
   now?: () => string;
+  /** Override whoami during restore. Production uses the real device endpoint. */
+  identify?: (server: string, token: string) => Promise<{ username?: string; userId?: string; deviceId?: string } | null>;
 }
 
 export function serverOrigin(server: string): string {
@@ -138,6 +140,30 @@ export async function pairWithLogin(
   } finally {
     await postJson(fetchFn, new URL('/api/account/logout', server).toString(), {}, { cookie }).catch(() => undefined);
   }
+}
+
+/**
+ * daemon.json can lose `device` while the credential store still has the token.
+ * Rebuild the record so wake register and the desktop status report stay paired.
+ * A credential the server rejects is left unset so the settings page can re-pair.
+ */
+export async function restoreDeviceFromCredential(server: string, deps: PairingDeps): Promise<boolean> {
+  const state = await deps.readState();
+  if (state.device?.server && state.device.deviceId) return false;
+  const token = await deps.credentials.get(deviceCredentialKey(server));
+  if (!token) return false;
+  let deviceId = 'restored';
+  try {
+    const identify = deps.identify ?? ((srv: string, tok: string) => whoami(srv, tok, deps.fetch));
+    const user = await identify(server, token);
+    if (!user) return false;
+    if (user.deviceId) deviceId = user.deviceId;
+  } catch {
+    deviceId = 'restored';
+  }
+  state.device = { server, deviceId, pairedAt: deps.now?.() ?? new Date().toISOString() };
+  await deps.writeState(state);
+  return true;
 }
 
 export async function unpair(server: string | undefined, deps: Pick<PairingDeps, 'credentials' | 'readState' | 'writeState'>): Promise<void> {
