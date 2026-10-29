@@ -1,6 +1,6 @@
 import type { Room } from '@agent-room/shared';
 import type { UpstashClient } from '@agent-room/upstash-client';
-import { listManagedSeatIds, readBinding, removeManagedSeat } from './_wakeBind.js';
+import { listManagedSeatIds, markRebindRequired, readBinding, removeManagedSeat } from './_wakeBind.js';
 
 type CommandClient = Pick<UpstashClient, 'command'>;
 
