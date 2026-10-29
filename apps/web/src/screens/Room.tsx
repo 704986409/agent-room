@@ -476,12 +476,13 @@ export function Room() {
     });
   }, []);
   const onTerminalStopped = useCallback((seatId: string) => {
+    console.info(`[leave] terminal stopped roomCode=${code} seatId=${seatId}; refreshing roster`);
     // Drop preferred so the rail cannot stub a ghost tab for a closed seat.
     setHostedSeatId(prev => (prev === seatId ? undefined : prev));
     setTerminalExpanded(false);
     // room_leave runs in the daemon; refresh so the roster drops the seat.
     void refreshRoom();
-  }, [refreshRoom]);
+  }, [code, refreshRoom]);
   const openSeatTerminal = useCallback((seatId: string) => {
     setHostedSeatId(seatId);
     setTerminalFocus(n => n + 1);

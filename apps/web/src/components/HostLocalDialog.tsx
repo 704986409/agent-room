@@ -28,11 +28,12 @@ function adapterLabel(id: string): string {
  * Host-only dialog: pick a role (and optional profile), an installed CLI, and a model,
  * then create a one-time invite and start that seat on this machine.
  */
-export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
+export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChange }: {
   roomCode: string;
   ended: boolean;
   onClose: () => void;
   onHosted?: (seat: DesktopHostResult['seat']) => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const { t } = useLocale();
   const tRef = useRef(t);
@@ -46,6 +47,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -82,12 +84,15 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
   }
 
   async function host() {
+    if (busyRef.current || !canHost) return;
     const trimmed = role.trim();
     if (!trimmed) { setError(t('inviteAgent.roleRequired')); return; }
     if (!adapterId || !model) { setError(t('desktopHost.noAdapters')); return; }
     const hostKey = storedRoomHostKey(roomCode);
     if (!hostKey) { setError(t('inviteAgent.hostKeyMissing')); return; }
+    busyRef.current = true;
     setBusy(true);
+    onBusyChange?.(true);
     setError(null);
     try {
       const invite = await requestAgentInvite(roomCode, hostKey, trimmed, roleProfile.trim() || undefined);
@@ -102,7 +107,9 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
     } catch (e) {
       setError(e instanceof Error ? e.message : t('common.unknownError'));
     } finally {
+      busyRef.current = false;
       setBusy(false);
+      onBusyChange?.(false);
     }
   }
 
@@ -119,7 +126,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
             <h2 id="host-local-title" className="text-sm font-semibold text-ink">{t('desktopHost.title')}</h2>
             <p className="mt-0.5 text-[11px] text-ink-soft">{t('desktopHost.description')}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-md px-2 py-1 text-lg leading-none text-ink-muted hover:bg-surface-softer" aria-label={t('desktopHost.closeAria')}>×</button>
+          <button type="button" onClick={onClose} disabled={busy} className="rounded-md px-2 py-1 text-lg leading-none text-ink-muted hover:bg-surface-softer disabled:opacity-50" aria-label={t('desktopHost.closeAria')}>×</button>
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 space-y-4">
           <label className="block">
@@ -212,7 +219,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted }: {
             disabled={!canHost}
             className="min-h-9 rounded-lg bg-emerald-700 px-4 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
           >
-            {busy ? t('desktopHost.starting') : t('desktopHost.host')}
+            {busy ? <span role="status" className="inline-flex items-center gap-2"><span aria-hidden="true" className="inline-block size-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />{t('desktopHost.starting')}</span> : t('desktopHost.host')}
           </button>
         </div>
       </section>

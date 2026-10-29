@@ -123,8 +123,16 @@ export function useRoom(code: string, selfName: string) {
   const pullRoom = useCallback(async () => {
     try {
       const r = await getRoom(clientRef.current, code);
-      setState(s => ({ ...s, room: r, error: null }));
+      setState(s => {
+        const before = s.room?.participants.map(p => `${p.client}:${p.seatId ?? p.name}`).join(',') ?? '';
+        const after = r.participants.map(p => `${p.client}:${p.seatId ?? p.name}`).join(',');
+        if (before !== after || s.room?.status !== r.status) {
+          console.info(`[roster] refresh roomCode=${code} status=${r.status} seats=${r.participants.map(p => p.seatId).filter(Boolean).join(',')}`);
+        }
+        return { ...s, room: r, error: null };
+      });
     } catch (e) {
+      console.info(`[roster] refresh failed roomCode=${code} reason=${e instanceof Error ? e.message : String(e)}`);
       setState(s => ({ ...s, error: String(e) }));
     }
   }, [code]);

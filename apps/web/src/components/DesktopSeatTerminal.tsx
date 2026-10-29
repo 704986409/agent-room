@@ -286,9 +286,10 @@ export function DesktopSeatTerminal({
         onTerminalsRef.current?.(payload.terminals);
         setSeatId(current => {
           if (current && payload.terminals.some(row => row.seatId === current)) return current;
-          if (preferredSeatId && payload.terminals.some(row => row.seatId === preferredSeatId)) return preferredSeatId;
+          if (preferredSeatId && !closedByUserRef.current.has(preferredSeatId)
+            && payload.terminals.some(row => row.seatId === preferredSeatId)) return preferredSeatId;
           const roomRows = terminalsForRoom(payload.terminals, roomCode);
-          if (roomRows.length === 1) return roomRows[0]!.seatId;
+          if (roomRows.length === 1 && !closedByUserRef.current.has(roomRows[0]!.seatId)) return roomRows[0]!.seatId;
           // Seat closed / PTY gone — drop selection so the rail does not keep a ghost tab.
           if (current && !payload.terminals.some(row => row.seatId === current)) return '';
           return current;
@@ -346,6 +347,7 @@ export function DesktopSeatTerminal({
     let unlisten: (() => void) | null = null;
     let closed = false;
     const onDock = (id: string) => {
+      if (closedByUserRef.current.has(id)) return;
       if (poppedRef.current === id) poppedRef.current = null;
       setSeatId(id);
       connectRef.current(id);
