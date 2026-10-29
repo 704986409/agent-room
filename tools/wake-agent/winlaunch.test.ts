@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { CODEX_MANAGED_MCP_APPROVAL, embeddedSeatCommand } from './src/adapter.js';
-import { prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleArg } from './src/winlaunch.js';
+import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleArg } from './src/winlaunch.js';
 
 const PROMPT = '你是房间 "甲"\n1) room_listen({ code: "ABC", name: "席" })\n说 ""你好""\n第二行';
 
@@ -66,6 +66,13 @@ async function deliver(kind: 'npm' | 'cursor') {
   return { directory, prepared, argvOut, shim };
 }
 
+describe('existingDirectory', () => {
+  it('falls back when the requested cwd is missing', () => {
+    expect(existingDirectory('/no/such/agent-room-cwd', '/tmp')).toBe('/tmp');
+    expect(existingDirectory('   ', '/tmp')).toBe('/tmp');
+  });
+});
+
 describe('windows seat launcher', () => {
   it('routes embedded ConPTY seats through the prompt-file launcher with managed approval argv', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'Agent Room embedded '));
@@ -77,9 +84,11 @@ describe('windows seat launcher', () => {
         : ['--resume', 'thread-id', '--trust', '--approve-mcps', prompt];
       const logFile = join(directory, `${adapter}.log`);
       const spec = embeddedSeatCommand(`${adapter}.cmd`, args, { cwd: directory, env, prompt }, logFile, 'win32');
-      expect(spec.command.toLowerCase()).toContain('cmd');
-      expect(spec.args.slice(0, 3)).toEqual(['/d', '/s', '/c']);
+      expect(spec.command).toBe(process.execPath);
+      expect(spec.args[0]).toMatch(/seat-launch\.mjs$/);
+      expect(spec.args[1]).toMatch(new RegExp(`${adapter}\\.launch\\.json$`));
       expect(spec.args.join(' ')).not.toContain('secret');
+      expect(spec.args.join(' ')).not.toContain('.cmd');
       const launch = JSON.parse(await readFile(join(directory, `${adapter}.launch.json`), 'utf8')) as { args: string[]; env: typeof env };
       expect(launch.args).toContain(adapter === 'codex' ? CODEX_MANAGED_MCP_APPROVAL : '--approve-mcps');
       expect(launch.env).toMatchObject(env);

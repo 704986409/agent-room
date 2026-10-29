@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, closeSync, constants, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, delimiter, dirname, join } from 'node:path';
-import { prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleSpawn } from './winlaunch.js';
+import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleSpawn } from './winlaunch.js';
 import { shouldEmbedTerminal } from './terminalMode.js';
 import { seatIdFromLogFile, spawnPtySession } from './pty.js';
 import { homedir, tmpdir } from 'node:os';
@@ -798,7 +798,11 @@ function windowsSeatConsole(
   }).spawn;
 }
 
-/** ConPTY runs cmd.exe, while the UTF-8 launch spec preserves CLI argv/env and prompt. */
+/**
+ * ConPTY cannot CreateProcess a `.cmd` shim (nvm's codex.cmd / cursor-agent.cmd).
+ * That returns ERROR_BAD_NETPATH, which Windows shows as 找不到网络路径.
+ * Spawn bundled node.exe and let seat-launch.mjs resolve the shim to a real exe.
+ */
 export function embeddedSeatCommand(
   command: string,
   args: readonly string[],
@@ -807,8 +811,22 @@ export function embeddedSeatCommand(
   platform: NodeJS.Platform = process.platform,
 ): { command: string; args: readonly string[] } {
   if (platform !== 'win32') return { command, args };
-  const wrapped = windowsSeatConsole(command, args, opts, logFile);
-  return { command: wrapped.command, args: ['/d', '/s', '/c', wrapped.args.at(-1)!] };
+  const split = splitPromptArg(args, opts.prompt ?? '');
+  const seatId = basename(logFile).replace(/\.log$/i, '') || 'seat';
+  const prepared = prepareWindowsSeatLaunch({
+    directory: dirname(logFile),
+    seatId,
+    command,
+    args: split.args,
+    promptIndex: split.promptIndex,
+    prompt: opts.prompt ?? '',
+    cwd: existingDirectory(opts.cwd),
+    env: opts.env,
+    nodePath: process.execPath,
+    title: opts.terminalTitle,
+    comspec: process.env.ComSpec || process.env.comspec || 'cmd.exe',
+  });
+  return { command: prepared.node.command, args: prepared.node.args };
 }
 
 /**
@@ -847,15 +865,16 @@ export function nodeSpawner(): ProcessSpawner {
       // Embedded managed seat: real PTY (Unix / ConPTY), not system CMD / xfce4-terminal.
       if (shouldEmbedTerminal(opts)) {
         const seatId = seatIdFromLogFile(opts.logFile) ?? `seat-${process.pid}-${Date.now()}`;
+        const cwd = existingDirectory(opts.cwd);
         // ConPTY cannot execute npm/Cursor .cmd shims as a native process, and
         // passing the multiline prompt through cmd.exe splits it into commands.
         // Use the same UTF-8 prompt-file launcher as the system console path.
-        const embedded = embeddedSeatCommand(command, args, opts, logFile);
+        const embedded = embeddedSeatCommand(command, args, { ...opts, cwd }, logFile);
         const session = spawnPtySession({
           seatId,
           command: embedded.command,
           args: embedded.args,
-          cwd: opts.cwd,
+          cwd,
           env: opts.env,
           logFile,
         });
@@ -907,7 +926,7 @@ export function nodeSpawner(): ProcessSpawner {
         writeFileSync(logFile, `# spawn ${wrapped.command} ${JSON.stringify(wrapped.args)}\n`, { flag: 'a', mode: 0o600 });
       } catch { /* log best-effort */ }
       const child = spawn(wrapped.command, wrapped.args, {
-        cwd: opts.cwd,
+        cwd: existingDirectory(opts.cwd),
         env: { ...process.env, ...opts.env },
         // Windows: detached gives the seat its own visible console. Without it the
         // CLI inherits the daemon's hidden console and no window ever appears.

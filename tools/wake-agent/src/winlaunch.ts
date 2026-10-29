@@ -1,6 +1,18 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/** ConPTY rejects a missing cwd with ERROR_BAD_NETPATH (找不到网络路径). */
+export function existingDirectory(cwd: string | undefined, fallback = homedir()): string {
+  const candidate = cwd?.trim() ?? '';
+  if (candidate) {
+    try {
+      if (statSync(candidate).isDirectory()) return candidate;
+    } catch { /* missing, not a directory, or a dead junction */ }
+  }
+  return fallback;
+}
 
 /**
  * Visible console for one seat launcher. `/s` strips the outer quotes, so the
@@ -75,6 +87,8 @@ export interface WindowsSeatLaunch {
   specPath: string;
   scriptPath: string;
   launcherPath: string;
+  /** Real node.exe + seat-launch.mjs. ConPTY must not execute nvm `*.cmd` shims. */
+  node: { command: string; args: string[] };
   spawn: ReturnType<typeof windowsConsoleSpawn>;
 }
 
@@ -100,7 +114,7 @@ export function prepareWindowsSeatLaunch(input: WindowsSeatLaunchInput): Windows
     args: [...input.args],
     promptIndex: input.promptIndex,
     promptFile: promptPath,
-    cwd: input.cwd,
+    cwd: existingDirectory(input.cwd),
     env: input.env,
   };
   writeText(specPath, JSON.stringify(spec), 0o600);
@@ -117,6 +131,7 @@ export function prepareWindowsSeatLaunch(input: WindowsSeatLaunchInput): Windows
     specPath,
     scriptPath,
     launcherPath,
+    node: { command: input.nodePath, args: [scriptPath, specPath] },
     spawn: windowsConsoleSpawn(launcherPath, input.comspec || 'cmd.exe'),
   };
 }

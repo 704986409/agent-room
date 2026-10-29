@@ -37,6 +37,7 @@ type PtyModule = {
       rows?: number;
       cwd?: string;
       env?: Record<string, string>;
+      useConptyDll?: boolean;
     },
   ) => {
     pid: number;
@@ -191,6 +192,9 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
     rows,
     cwd: input.cwd,
     env: { ...process.env, ...input.env, TERM: 'xterm-256color' } as Record<string, string>,
+    // conpty.dll skips the helper that calls AttachConsole and fails when the
+    // daemon was started with CREATE_NO_WINDOW.
+    ...(process.platform === 'win32' ? { useConptyDll: true } : {}),
   });
 
   const listeners = new Set<(data: string) => void>();

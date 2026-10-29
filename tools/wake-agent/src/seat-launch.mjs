@@ -5,7 +5,8 @@
 // `codex exec -` reads stdin, but that is non-interactive and would take the console.
 // cursor-agent and agy also take the prompt on argv (`--trust <prompt>`, `-i <prompt>`).
 import { spawn } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join, sep } from 'node:path';
 
 const specPath = process.argv[2];
@@ -120,8 +121,17 @@ if (spec.env && typeof spec.env === 'object') {
     if (typeof value === 'string') env[key] = value;
   }
 }
+function launchCwd(value) {
+  if (typeof value === 'string' && value) {
+    try {
+      if (statSync(value).isDirectory()) return value;
+    } catch { /* missing cwd or a dead nvm junction */ }
+  }
+  return homedir();
+}
+
 const child = spawn(resolved.command, [...resolved.args, ...cliArgs], {
-  cwd: typeof spec.cwd === 'string' && spec.cwd ? spec.cwd : process.cwd(),
+  cwd: launchCwd(spec.cwd),
   env,
   stdio: 'inherit',
   shell: false,
