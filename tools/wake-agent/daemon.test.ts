@@ -327,7 +327,7 @@ describe('wake daemon', () => {
       adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
       state: { seats: [{
         seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
-        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242,
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242, wakeRunId: 'wr_1',
       }] },
       lock: new MemoryRunLock(),
       inspect: () => ({ alive, cmdline: 'xfce4-terminal --title Agent Room · codex' }),
@@ -627,6 +627,73 @@ describe('state file round trip', () => {
     expect(surface.calls).toContain('renew');
     expect(surface.calls).not.toContain('resume_failed');
     expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 400, wakeRunId: 'wr_1' });
+  });
+
+  it('skips resume grace when room_sleep left no wakeRunId so @ wakes immediately', async () => {
+    const child = spawner([THREAD]);
+    let now = 1_000;
+    const stopped: number[] = [];
+    let alive = true;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:2', preview: '@ wake' }],
+          inFlight: [],
+          failed: [],
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400,
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      now: () => now,
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([400]);
+    expect(child.calls).toHaveLength(1);
+    expect(child.calls[0]!.args[0]).toBe('resume');
+  });
+
+  it('rolls back cloud join when launch fails so the room has no ghost seat', async () => {
+    const left: { code: string; name: string }[] = [];
+    const unregistered: string[] = [];
+    const surface = api();
+    surface.unregister = async ({ seatId }) => { unregistered.push(seatId); return { ok: true }; };
+    const failing: ProcessSpawner = {
+      spawn() {
+        throw new Error('spawn -NoProfile ENOENT');
+      },
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(failing, codexOpts)]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+      server: 'http://127.0.0.1:9',
+      credentials: new MemoryCredentialStore(),
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 3, name: '测试工程师' }),
+      leaveRoom: async (input) => { left.push({ code: input.code, name: input.name }); },
+    });
+    await expect(daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: '测试工程师',
+      cwd: '/work', adapterId: 'codex', model: 'gpt-6-sol',
+    })).rejects.toThrow(/ENOENT|spawn/);
+    expect(unregistered).toEqual(['st_a']);
+    expect(left).toEqual([{ code: 'ABC-DEF-GHJ', name: '测试工程师' }]);
+    expect(daemon.seats).toEqual([]);
   });
 
   it('closes a seat with wake unregister and room leave', async () => {

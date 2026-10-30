@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { LauncherAdapter } from './adapter.js';
@@ -274,47 +275,99 @@ export class WakeDaemon {
     if (!adapter.models.includes(input.model)) throw new Error('model_not_allowed');
     this.logLine(`[host] start roomCode=${input.code} adapter=${input.adapterId}`);
     const join = this.options.joinRoom ?? joinRoomOverMcp;
-    const joined = await withTimeout(join({
-      server: input.server, code: input.code, name: input.name, inviteCode: input.inviteCode,
-    }), 20_000, 'join_timeout');
-    this.logLine(`[host] join roomCode=${input.code} name=${joined.name || joined.yourName || input.name}`);
-    const seatName = joined.name || joined.yourName || input.name;
-    const registered = await withTimeout(this.options.api.register({
-      code: input.code, name: seatName, seatKey: joined.seatKey, cursor: joined.cursor,
-    }), 20_000, 'register_timeout');
-    this.logLine(`[host] registered roomCode=${input.code} seatId=${registered.seatId}`);
-    this.options.secrets?.add(joined.seatKey);
-    await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
-    const prompt = firstRunPrompt({
-      code: input.code, name: seatName, readFrom: joined.cursor, seatKey: joined.seatKey,
-    });
-    this.logLine(prompt);
-    const launched = await adapter.launch({
-      cwd: input.cwd,
-      prompt,
-      model: input.model,
-      env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor),
-      logFile: this.logFile(registered.seatId),
-    });
-    this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid}`);
-    const seat: SeatRecord = {
-      seatId: registered.seatId,
-      roomInstanceId: registered.roomInstanceId,
-      code: input.code,
-      name: seatName,
-      adapterId: input.adapterId,
-      model: input.model,
-      sessionId: launched.sessionId,
-      cwd: input.cwd,
-      pid: launched.pid,
-      status: 'running',
-      startedAt: new Date().toISOString(),
-    };
-    this.options.state.seats.push(seat);
-    this.stoppedByUser.delete(seat.seatId);
-    this.watchExit(seat.seatId, launched.pid, launched.exited);
-    await this.options.persist?.(this.options.state);
-    return seat;
+    const leave = this.options.leaveRoom ?? leaveRoomOverMcp;
+    let joined: Awaited<ReturnType<RoomJoin>> | undefined;
+    let registered: { roomInstanceId: string; seatId: string; scanFrom: number } | undefined;
+    let seatName = input.name;
+    try {
+      joined = await withTimeout(join({
+        server: input.server, code: input.code, name: input.name, inviteCode: input.inviteCode,
+      }), 20_000, 'join_timeout');
+      seatName = joined.name || joined.yourName || input.name;
+      this.logLine(`[host] join roomCode=${input.code} name=${seatName}`);
+      registered = await withTimeout(this.options.api.register({
+        code: input.code, name: seatName, seatKey: joined.seatKey, cursor: joined.cursor,
+      }), 20_000, 'register_timeout');
+      this.logLine(`[host] registered roomCode=${input.code} seatId=${registered.seatId}`);
+      this.options.secrets?.add(joined.seatKey);
+      await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
+      const prompt = firstRunPrompt({
+        code: input.code, name: seatName, readFrom: joined.cursor, seatKey: joined.seatKey,
+      });
+      this.logLine(prompt);
+      const launched = await adapter.launch({
+        cwd: input.cwd,
+        prompt,
+        model: input.model,
+        env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor),
+        logFile: this.logFile(registered.seatId),
+      });
+      this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid}`);
+      const seat: SeatRecord = {
+        seatId: registered.seatId,
+        roomInstanceId: registered.roomInstanceId,
+        code: input.code,
+        name: seatName,
+        adapterId: input.adapterId,
+        model: input.model,
+        sessionId: launched.sessionId,
+        cwd: input.cwd,
+        pid: launched.pid,
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      };
+      this.options.state.seats.push(seat);
+      this.stoppedByUser.delete(seat.seatId);
+      this.watchExit(seat.seatId, launched.pid, launched.exited);
+      await this.options.persist?.(this.options.state);
+      return seat;
+    } catch (error) {
+      // Launch/register failed after cloud join → roll back so the room has no
+      // ghost seat and no premature Hi from a half-hosted agent.
+      await this.rollbackFailedHost({
+        server: input.server,
+        code: input.code,
+        name: seatName,
+        joined,
+        registered,
+        leave,
+      });
+      throw error;
+    }
+  }
+
+  /** Best-effort cloud cleanup when join/register succeeded but launch failed. */
+  private async rollbackFailedHost(input: {
+    server: string;
+    code: string;
+    name: string;
+    joined?: { seatKey: string };
+    registered?: { seatId: string };
+    leave: RoomLeave;
+  }): Promise<void> {
+    const seatId = input.registered?.seatId;
+    if (seatId) {
+      try {
+        await this.options.api.unregister?.({ seatId });
+      } catch (error) {
+        this.logLine(`[host] rollback unregister failed seatId=${seatId} reason=${messageOf(error)}`);
+      }
+    }
+    // Only leave when join succeeded — otherwise there is no cloud seat to remove.
+    if (input.joined && input.server && input.code && input.name) {
+      try {
+        const seatKey = input.joined.seatKey
+          || (seatId ? await this.options.credentials?.get(`seat:${seatId}`) ?? '' : '');
+        this.logLine(`[host] rollback leave roomCode=${input.code} name=${input.name}`);
+        await input.leave({ server: input.server, code: input.code, name: input.name, seatKey });
+      } catch (error) {
+        this.logLine(`[host] rollback leave failed roomCode=${input.code} reason=${messageOf(error)}`);
+      }
+    }
+    if (seatId) {
+      try { await this.options.credentials?.delete(`seat:${seatId}`); } catch { /* ignore */ }
+      this.options.state.seats = this.options.state.seats.filter(item => item.seatId !== seatId);
+    }
   }
 
   /**
@@ -442,6 +495,9 @@ export class WakeDaemon {
    */
   private deferForLiveListen(seat: SeatRecord, remote: WakeSeatView): boolean {
     if (seat.status !== 'running' || !seat.pid || !this.options.inspect(seat.pid).alive) return false;
+    // First-run / room_sleep never claimed a wake run — the idle CLI will not
+    // ack cloud @ on its own. Skip grace and resume immediately.
+    if (!seat.wakeRunId) return false;
     const grace = this.options.resumeGraceMs ?? 8_000;
     if (grace <= 0) return false;
     const now = this.options.now?.() ?? Date.now();
@@ -569,6 +625,16 @@ function withTimeout<T>(work: Promise<T>, ms: number, code: string): Promise<T> 
 }
 
 function stopProcessGroup(pid: number): void {
+  if (process.platform === 'win32') {
+    try {
+      // Negative PIDs / POSIX signals do not tear down a Windows console tree.
+      spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      return;
+    } catch { /* fall through */ }
+  }
   try { process.kill(-pid, 'SIGTERM'); }
   catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ } }
 }
