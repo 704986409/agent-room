@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useLocale } from '../i18n/LocaleProvider.js';
-import { isDesktopShell, type DesktopHostResult } from '../lib/desktopHost.js';
+import { isDesktopShell, prefetchInstalledDesktopAdapters, type DesktopHostResult } from '../lib/desktopHost.js';
 import { HostLocalDialog } from './HostLocalDialog.js';
 
 /** Host-only, desktop-webview-only. Opens the host dialog; it does not start a seat by itself. */
@@ -14,7 +14,15 @@ export function HostLocalButton({ roomCode, isHost, ended, onHosted }: {
   const [open, setOpen] = useState(false);
   const [hosting, setHosting] = useState(false);
   const [done, setDone] = useState<string | null>(null);
-  if (!isHost || !isDesktopShell()) return null;
+  const desktop = isDesktopShell();
+
+  // Warm the CLI/model/auth cache as soon as the host room loads so the dialog is instant.
+  useEffect(() => {
+    if (!isHost || !desktop) return;
+    void prefetchInstalledDesktopAdapters().catch(() => { /* dialog will surface errors */ });
+  }, [isHost, desktop]);
+
+  if (!isHost || !desktop) return null;
 
   return (
     <div className="mt-2">

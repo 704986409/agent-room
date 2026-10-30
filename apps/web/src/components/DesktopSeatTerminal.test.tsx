@@ -306,17 +306,13 @@ describe('DesktopSeatTerminal', () => {
     expect(termIo.fits).toBeGreaterThan(fitsExpanded);
   });
 
-  it('stops the managed process and leaves disconnect as detach-only', async () => {
+  it('stops the managed process via 关闭 and has no 断开 button', async () => {
     const confirm = vi.fn(() => true);
     vi.stubGlobal('confirm', confirm);
     const onStopped = vi.fn();
     const renderer = await renderPanel('st_1', { onStopped });
-    expect(button(renderer, '断开')).toBeTruthy();
+    expect(button(renderer, '断开')).toBeUndefined();
     expect(button(renderer, '关闭')).toBeTruthy();
-    await act(async () => {
-      button(renderer, '断开')!.props.onClick();
-    });
-    expect(state.stop).not.toHaveBeenCalled();
 
     await act(async () => {
       button(renderer, '关闭')!.props.onClick();

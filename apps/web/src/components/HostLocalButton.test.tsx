@@ -12,6 +12,8 @@ vi.mock('../lib/desktopHost.js', () => ({
   hostOnThisMachine: (...args: unknown[]) => hostOnThisMachine(...args),
   revealManagedTerminal: (...args: unknown[]) => revealManagedTerminal(...args),
   listInstalledDesktopAdapters: (...args: unknown[]) => listInstalledDesktopAdapters(...args),
+  prefetchInstalledDesktopAdapters: (...args: unknown[]) => listInstalledDesktopAdapters(...args),
+  peekInstalledDesktopAdapters: () => null,
 }));
 
 vi.mock('../lib/agentInvite.js', () => ({

@@ -140,6 +140,23 @@ export interface DesktopHostInput {
 export interface DesktopAdapterChoice {
   id: string;
   models: string[];
+  /** CLI account login. false → HostLocal disables Host and shows login CTA. */
+  loggedIn?: boolean | null;
+}
+
+/** Process/window cache so HostLocal does not flash "reading CLIs" on every open. */
+let adapterChoicesCache: DesktopAdapterChoice[] | null = null;
+let adapterChoicesInflight: Promise<DesktopAdapterChoice[]> | null = null;
+
+/** Synchronous peek for dialog first paint. */
+export function peekInstalledDesktopAdapters(): DesktopAdapterChoice[] | null {
+  return adapterChoicesCache;
+}
+
+/** Test helper / logout path. */
+export function clearInstalledDesktopAdaptersCache(): void {
+  adapterChoicesCache = null;
+  adapterChoicesInflight = null;
 }
 
 /** Installed adapters that can actually launch (have a model list). */
@@ -151,20 +168,20 @@ export function installedAdapterChoices(payload: unknown): DesktopAdapterChoice[
   const choices: DesktopAdapterChoice[] = [];
   for (const row of adapters) {
     if (!row || typeof row !== 'object') continue;
-    const item = row as { id?: unknown; installed?: unknown; models?: unknown };
+    const item = row as { id?: unknown; installed?: unknown; models?: unknown; loggedIn?: unknown };
     if (item.installed !== true || typeof item.id !== 'string' || !item.id.trim()) continue;
     const models = Array.isArray(item.models)
       ? item.models.filter((model): model is string => typeof model === 'string' && model.trim().length > 0)
       : [];
     if (models.length === 0) continue;
-    choices.push({ id: item.id, models });
+    const loggedIn = item.loggedIn === true ? true : item.loggedIn === false ? false : null;
+    choices.push({ id: item.id, models, loggedIn });
   }
   return choices;
 }
 
-/** Installed CLI adapters from the local daemon status payload. */
-export async function listInstalledDesktopAdapters(
-  fetchImpl: typeof fetch = fetch,
+async function fetchInstalledDesktopAdapters(
+  fetchImpl: typeof fetch,
 ): Promise<DesktopAdapterChoice[]> {
   let response: Response;
   try {
@@ -180,6 +197,37 @@ export async function listInstalledDesktopAdapters(
     throw new Error(body.hint || body.error || `无法读取本机 CLI（HTTP ${response.status}）`);
   }
   return installedAdapterChoices(body);
+}
+
+/**
+ * Prefetch into the window/module cache (call when the host room mounts).
+ * Concurrent callers share one request.
+ */
+export function prefetchInstalledDesktopAdapters(
+  fetchImpl: typeof fetch = fetch,
+): Promise<DesktopAdapterChoice[]> {
+  if (adapterChoicesInflight) return adapterChoicesInflight;
+  adapterChoicesInflight = fetchInstalledDesktopAdapters(fetchImpl)
+    .then(rows => {
+      adapterChoicesCache = rows;
+      return rows;
+    })
+    .finally(() => {
+      adapterChoicesInflight = null;
+    });
+  return adapterChoicesInflight;
+}
+
+/** Installed CLI adapters from cache or the local daemon status payload. */
+export async function listInstalledDesktopAdapters(
+  fetchImpl: typeof fetch = fetch,
+): Promise<DesktopAdapterChoice[]> {
+  if (adapterChoicesCache) {
+    // Refresh in the background; dialog can render immediately from cache.
+    void prefetchInstalledDesktopAdapters(fetchImpl).catch(() => { /* keep stale */ });
+    return adapterChoicesCache;
+  }
+  return prefetchInstalledDesktopAdapters(fetchImpl);
 }
 
 export interface DesktopHostResult {

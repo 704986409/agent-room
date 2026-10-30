@@ -515,7 +515,7 @@ export function DesktopSeatTerminal({
           );
         })}
       </div>
-      <div className="mt-2 grid shrink-0 grid-cols-5 gap-1 px-3">
+      <div className="mt-2 grid shrink-0 grid-cols-4 gap-1 px-3">
         <button
           type="button"
           disabled={!seatId || connected || popped}
@@ -523,14 +523,6 @@ export function DesktopSeatTerminal({
           className="min-h-8 rounded-md bg-accent px-1 text-[11px] font-semibold text-white disabled:opacity-50"
         >
           {t('desktopTerminal.connect')}
-        </button>
-        <button
-          type="button"
-          disabled={!connected}
-          onClick={() => { disconnectRef.current(false); }}
-          className="min-h-8 rounded-md border border-border bg-white px-1 text-[11px] font-semibold text-ink disabled:opacity-50"
-        >
-          {t('desktopTerminal.disconnect')}
         </button>
         <button
           type="button"

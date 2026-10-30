@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { closeManagedTerminal, DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, installedAdapterChoices, isDesktopShell, listInstalledDesktopAdapters, listenDesktopEvent, revealManagedTerminal } from './desktopHost.js';
+import { clearInstalledDesktopAdaptersCache, closeManagedTerminal, DESKTOP_CONTROL_ORIGIN, hostOnThisMachine, installedAdapterChoices, isDesktopShell, listInstalledDesktopAdapters, listenDesktopEvent, peekInstalledDesktopAdapters, prefetchInstalledDesktopAdapters, revealManagedTerminal } from './desktopHost.js';
 
 describe('isDesktopShell', () => {
   it('is false in a normal browser window', () => {
@@ -61,8 +61,17 @@ describe('installed adapters', () => {
         { id: '', installed: true, models: ['x'] },
       ],
     })).toEqual([
-      { id: 'codex', models: ['default', 'gpt-6-sol'] },
-      { id: 'agy', models: ['gemini-3.8-flash-high'] },
+      { id: 'codex', models: ['default', 'gpt-6-sol'], loggedIn: null },
+      { id: 'agy', models: ['gemini-3.8-flash-high'], loggedIn: null },
+    ]);
+    expect(installedAdapterChoices({
+      adapters: [
+        { id: 'codex', installed: true, models: ['default'], loggedIn: false },
+        { id: 'agy', installed: true, models: ['g'], loggedIn: true },
+      ],
+    })).toEqual([
+      { id: 'codex', models: ['default'], loggedIn: false },
+      { id: 'agy', models: ['g'], loggedIn: true },
     ]);
     expect(installedAdapterChoices({})).toEqual([]);
   });
@@ -71,12 +80,30 @@ describe('installed adapters', () => {
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       adapters: [{ id: 'codex', installed: true, models: ['default'] }],
     }), { status: 200 }));
+    clearInstalledDesktopAdaptersCache();
     await expect(listInstalledDesktopAdapters(fetchImpl as unknown as typeof fetch)).resolves.toEqual([
-      { id: 'codex', models: ['default'] },
+      { id: 'codex', models: ['default'], loggedIn: null },
     ]);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe(`${DESKTOP_CONTROL_ORIGIN}/api/status`);
     expect((init.headers as Record<string, string>)['x-agent-room-desktop']).toBe('1');
+  });
+
+  it('serves cached adapters without a second blocking status fetch', async () => {
+    clearInstalledDesktopAdaptersCache();
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      adapters: [{ id: 'agy', installed: true, models: ['gemini'], loggedIn: false }],
+    }), { status: 200 }));
+    await prefetchInstalledDesktopAdapters(fetchImpl as unknown as typeof fetch);
+    expect(peekInstalledDesktopAdapters()).toEqual([
+      { id: 'agy', models: ['gemini'], loggedIn: false },
+    ]);
+    fetchImpl.mockClear();
+    await expect(listInstalledDesktopAdapters(fetchImpl as unknown as typeof fetch)).resolves.toEqual([
+      { id: 'agy', models: ['gemini'], loggedIn: false },
+    ]);
+    // Background refresh may fire, but the cached return is immediate and same payload.
+    expect(peekInstalledDesktopAdapters()?.[0]?.loggedIn).toBe(false);
   });
 });
 

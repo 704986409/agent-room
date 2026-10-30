@@ -9,6 +9,7 @@ import {
 import {
   hostOnThisMachine,
   listInstalledDesktopAdapters,
+  peekInstalledDesktopAdapters,
   type DesktopAdapterChoice,
   type DesktopHostResult,
 } from '../lib/desktopHost.js';
@@ -18,6 +19,13 @@ const ADAPTER_LABELS: Record<string, string> = {
   'cursor-agent': 'Cursor',
   agy: 'Gemini',
   claude: 'Claude',
+};
+
+const LOGIN_HINT_KEYS: Record<string, 'desktopHost.loginHintCodex' | 'desktopHost.loginHintCursor' | 'desktopHost.loginHintAgy' | 'desktopHost.loginHintClaude'> = {
+  codex: 'desktopHost.loginHintCodex',
+  'cursor-agent': 'desktopHost.loginHintCursor',
+  agy: 'desktopHost.loginHintAgy',
+  claude: 'desktopHost.loginHintClaude',
 };
 
 function adapterLabel(id: string): string {
@@ -38,30 +46,37 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
   const { t } = useLocale();
   const tRef = useRef(t);
   tRef.current = t;
+  const cached = peekInstalledDesktopAdapters();
   const [role, setRole] = useState('');
   const [customRole, setCustomRole] = useState(false);
   const [roleProfile, setRoleProfile] = useState('');
-  const [adapters, setAdapters] = useState<DesktopAdapterChoice[]>([]);
+  const [adapters, setAdapters] = useState<DesktopAdapterChoice[]>(cached ?? []);
   const [adapterId, setAdapterId] = useState('');
   const [model, setModel] = useState('');
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cached);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  const [loginHint, setLoginHint] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setLoadError(null);
+    const hadCache = peekInstalledDesktopAdapters() != null;
+    // Cache hit → no loading flash. Still refresh in the background.
+    if (!hadCache) {
+      setLoading(true);
+      setLoadError(null);
+    }
     void listInstalledDesktopAdapters()
       .then(rows => {
         if (cancelled) return;
         setAdapters(rows);
+        setLoadError(null);
       })
       .catch(e => {
         if (cancelled) return;
-        setAdapters([]);
+        if (!hadCache) setAdapters([]);
         setLoadError(tRef.current('desktopHost.adaptersFailed', {
           error: e instanceof Error ? e.message : tRef.current('common.unknownError'),
         }));
@@ -74,13 +89,23 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
 
   const selected = adapters.find(item => item.id === adapterId);
   const models = selected?.models ?? [];
+  const needsLogin = selected?.loggedIn === false;
   const canHost = !ended && !busy && !loading && !loadError && adapters.length > 0
-    && role.trim().length > 0 && adapterId.length > 0 && model.length > 0 && models.includes(model);
+    && role.trim().length > 0 && adapterId.length > 0 && model.length > 0 && models.includes(model)
+    && !needsLogin;
 
   function chooseAdapter(id: string) {
     setAdapterId(id);
     const next = adapters.find(item => item.id === id);
     setModel(next?.models[0] ?? '');
+    setLoginHint(null);
+    setError(null);
+  }
+
+  function showLoginHelp() {
+    if (!selected) return;
+    const key = LOGIN_HINT_KEYS[selected.id];
+    setLoginHint(key ? t(key) : t('desktopHost.loginHintGeneric'));
   }
 
   async function host() {
@@ -88,6 +113,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
     const trimmed = role.trim();
     if (!trimmed) { setError(t('inviteAgent.roleRequired')); return; }
     if (!adapterId || !model) { setError(t('desktopHost.noAdapters')); return; }
+    if (needsLogin) { showLoginHelp(); return; }
     const hostKey = storedRoomHostKey(roomCode);
     if (!hostKey) { setError(t('inviteAgent.hostKeyMissing')); return; }
     busyRef.current = true;
@@ -209,18 +235,29 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
           {!loading && !loadError && adapters.length === 0 && (
             <div role="alert" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{t('desktopHost.noAdapters')}</div>
           )}
-          {error && (
-            <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{error}</div>
+          {(error || loginHint) && (
+            <div role="status" className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{error || loginHint}</div>
           )}
 
-          <button
-            type="button"
-            onClick={() => { void host(); }}
-            disabled={!canHost}
-            className="min-h-9 rounded-lg bg-emerald-700 px-4 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
-          >
-            {busy ? <span role="status" className="inline-flex items-center gap-2"><span aria-hidden="true" className="inline-block size-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />{t('desktopHost.starting')}</span> : t('desktopHost.host')}
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => { void host(); }}
+              disabled={!canHost}
+              className="min-h-9 rounded-lg bg-emerald-700 px-4 text-xs font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
+            >
+              {busy ? <span role="status" className="inline-flex items-center gap-2"><span aria-hidden="true" className="inline-block size-3 animate-spin rounded-full border-2 border-white/40 border-t-white" />{t('desktopHost.starting')}</span> : t('desktopHost.host')}
+            </button>
+            {needsLogin && (
+              <button
+                type="button"
+                onClick={showLoginHelp}
+                className="min-h-9 rounded-lg border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-900 transition hover:bg-amber-100"
+              >
+                {t('desktopHost.loginRequired')}
+              </button>
+            )}
+          </div>
         </div>
       </section>
     </div>
