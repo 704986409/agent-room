@@ -641,6 +641,38 @@ export function createDefaultAdapters(spawner: ProcessSpawner = nodeSpawner(), o
   ]);
 }
 
+/** True when PATH resolved a Microsoft Store / WindowsApps execution alias. */
+export function isWindowsAppsPath(path: string | undefined): boolean {
+  if (!path) return false;
+  return /(?:^|[\\/])WindowsApps(?:[\\/]|$)/i.test(path);
+}
+
+/** OpenAI desktop Codex `bin/<hash>/codex.exe` installs (newest mtime first). */
+export function openAiCodexExeCandidates(home = homedir(), env: NodeJS.ProcessEnv = process.env): string[] {
+  const local = env.LOCALAPPDATA || join(home, 'AppData', 'Local');
+  const root = join(local, 'OpenAI', 'Codex', 'bin');
+  let entries: string[] = [];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return [];
+  }
+  const ranked = entries
+    .map(name => {
+      const file = join(root, name, 'codex.exe');
+      try {
+        const st = statSync(file);
+        if (!st.isFile()) return undefined;
+        return { file, mtime: st.mtimeMs };
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((item): item is { file: string; mtime: number } => !!item)
+    .sort((a, b) => b.mtime - a.mtime);
+  return ranked.map(item => item.file);
+}
+
 /** Directories installers use when they do not update the daemon PATH. */
 export function extraCliBinDirs(home = homedir(), platform = process.platform, env: NodeJS.ProcessEnv = process.env): string[] {
   const dirs = [join(home, '.local', 'bin')];
@@ -648,6 +680,12 @@ export function extraCliBinDirs(home = homedir(), platform = process.platform, e
     const local = env.LOCALAPPDATA || join(home, 'AppData', 'Local');
     const roaming = env.APPDATA || join(home, 'AppData', 'Roaming');
     dirs.push(join(local, 'cursor-agent'), join(roaming, 'npm'));
+    // Desktop-launched daemons often miss nvm in PATH; still find npm global shims.
+    const nvmSymlink = env.NVM_SYMLINK?.trim();
+    if (nvmSymlink) dirs.push(nvmSymlink);
+    for (const guess of ['C:\\nvm4w\\nodejs', 'C:\\Program Files\\nodejs']) {
+      dirs.push(guess);
+    }
   }
   return dirs;
 }
@@ -669,12 +707,19 @@ export function commandCandidates(
       names.push(`${name}.cmd`, `${name}.exe`);
     }
   }
+  const preferred: string[] = [];
+  if (platform === 'win32' && id === 'codex') {
+    // Prefer real binaries over Microsoft Store `WindowsApps\codex.cmd` aliases.
+    preferred.push(...openAiCodexExeCandidates(home, env));
+  }
   const absolute: string[] = [];
   for (const name of names) {
     if (isCommandPath(name)) continue;
     for (const dir of extraCliBinDirs(home, platform, env)) absolute.push(join(dir, name));
   }
-  return [...names, ...absolute];
+  // Absolute preferred exes / installer dirs before bare PATH names so a Store
+  // alias earlier on PATH does not win detect.
+  return [...preferred, ...absolute, ...names];
 }
 
 /**
@@ -698,17 +743,26 @@ export async function detectCli(options: {
   const extra = extraCliBinDirs(home, platform, env).filter(Boolean).join(delimiter);
   const pathEnv = [extra, basePath].filter(Boolean).join(delimiter);
   let broken: DetectResult | undefined;
+  let windowsApps: DetectResult | undefined;
   const seen = new Set<string>();
   for (const candidate of commandCandidates(options.id, options.command, home, platform, env)) {
     const result = await probeVersion(candidate, timeoutMs, isCommandPath(candidate) ? undefined : pathEnv);
     if (result.path) {
-      if (seen.has(result.path)) continue;
-      seen.add(result.path);
+      const key = result.path.replace(/\\/g, '/').toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
     }
-    if (result.installed) return result;
+    if (result.installed) {
+      // Store aliases often only `call` another .cmd; keep looking for a real exe.
+      if (isWindowsAppsPath(result.path)) {
+        if (!windowsApps) windowsApps = result;
+        continue;
+      }
+      return result;
+    }
     if (result.path && !broken) broken = result;
   }
-  return broken ?? { installed: false };
+  return windowsApps ?? broken ?? { installed: false };
 }
 
 function clipProbe(text: string): string {

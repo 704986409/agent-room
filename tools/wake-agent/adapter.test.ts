@@ -8,6 +8,8 @@ import {
   createClaudeAdapter,
   createCursorAdapter,
   commandCandidates,
+  isWindowsAppsPath,
+  openAiCodexExeCandidates,
   detectCli,
   newestAgyConversationId,
   newestCodexSessionId,
@@ -325,5 +327,72 @@ describe('interactive launcher adapters', () => {
     } finally {
       try { process.kill(-child.pid, 'SIGTERM'); } catch { try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ } }
     }
+  });
+});
+
+describe('Windows Codex resolve preference', () => {
+  it('marks Store alias paths', () => {
+    expect(isWindowsAppsPath('C:\\Users\\x\\AppData\\Local\\Microsoft\\WindowsApps\\codex.cmd')).toBe(true);
+    expect(isWindowsAppsPath('C:\\nvm4w\\nodejs\\codex.cmd')).toBe(false);
+  });
+
+  it('lists OpenAI desktop codex.exe under Local\\OpenAI\\Codex\\bin', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-openai-'));
+    const hash = join(home, 'AppData', 'Local', 'OpenAI', 'Codex', 'bin', 'abc123');
+    await mkdir(hash, { recursive: true });
+    const exe = join(hash, 'codex.exe');
+    await writeFile(exe, 'MZ');
+    expect(openAiCodexExeCandidates(home, { LOCALAPPDATA: join(home, 'AppData', 'Local') })).toEqual([exe]);
+    const candidates = commandCandidates('codex', 'codex', home, 'win32', {
+      LOCALAPPDATA: join(home, 'AppData', 'Local'),
+      APPDATA: join(home, 'AppData', 'Roaming'),
+    });
+    expect(candidates[0]).toBe(exe);
+  });
+
+  it('prefers ~/.local/bin over a WindowsApps PATH hit', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-store-'));
+    const realDir = join(home, '.local', 'bin');
+    const storeDir = join(home, 'WindowsApps');
+    await mkdir(realDir, { recursive: true });
+    await mkdir(storeDir, { recursive: true });
+    const real = join(realDir, 'codex');
+    const store = join(storeDir, 'codex');
+    await writeFile(real, '#!/bin/sh\necho codex-cli 0.156.1\n', { mode: 0o755 });
+    await writeFile(store, '#!/bin/sh\necho store-alias 1\n', { mode: 0o755 });
+    await chmod(real, 0o755);
+    await chmod(store, 0o755);
+    const detected = await detectCli({
+      id: 'codex',
+      command: 'codex',
+      home,
+      platform: 'linux',
+      pathEnv: storeDir,
+      timeoutMs: 2_000,
+    });
+    expect(detected.installed).toBe(true);
+    expect(detected.path).toBe(real);
+    expect(detected.version).toContain('0.156.1');
+    expect(isWindowsAppsPath(detected.path)).toBe(false);
+  });
+
+  it('falls back to WindowsApps when it is the only working install', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'wake-store-only-'));
+    const storeDir = join(home, 'WindowsApps');
+    await mkdir(storeDir, { recursive: true });
+    const store = join(storeDir, 'codex');
+    await writeFile(store, '#!/bin/sh\necho store-alias 1\n', { mode: 0o755 });
+    await chmod(store, 0o755);
+    const detected = await detectCli({
+      id: 'codex',
+      command: 'codex',
+      home,
+      platform: 'linux',
+      pathEnv: storeDir,
+      timeoutMs: 2_000,
+    });
+    expect(detected.installed).toBe(true);
+    expect(detected.path).toBe(store);
+    expect(isWindowsAppsPath(detected.path)).toBe(true);
   });
 });

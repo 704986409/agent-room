@@ -34,3 +34,47 @@ describe('resolveCli PowerShell Cursor shim', () => {
     expect(resolved.args.some(arg => /agent\.ps1$/i.test(arg))).toBe(true);
   });
 });
+
+describe('resolveCli WindowsApps call shim', () => {
+  it('unwraps a Store codex.cmd that only calls an npm codex.cmd', async () => {
+    const { mkdir } = await import('node:fs/promises');
+    const directory = await mkdtemp(join(tmpdir(), 'seat-launch-store-'));
+    const npmDir = join(directory, 'nvm');
+    const storeDir = join(directory, 'WindowsApps');
+    await mkdir(npmDir, { recursive: true });
+    await mkdir(join(npmDir, 'node_modules', '@openai', 'codex', 'bin'), { recursive: true });
+    await mkdir(storeDir, { recursive: true });
+    const script = join(npmDir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    await writeFile(script, 'export {}\n');
+    const npmShim = join(npmDir, 'codex.cmd');
+    await writeFile(npmShim, [
+      '@ECHO off',
+      'GOTO start',
+      ':find_dp0',
+      'SET dp0=%~dp0',
+      'EXIT /b',
+      ':start',
+      'SETLOCAL',
+      'CALL :find_dp0',
+      'IF EXIST "%dp0%\\node.exe" (',
+      '  SET "_prog=%dp0%\\node.exe"',
+      ') ELSE (',
+      '  SET "_prog=node"',
+      ')',
+      'endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
+      '',
+    ].join('\r\n'));
+    const storeShim = join(storeDir, 'codex.cmd');
+    await writeFile(storeShim, [
+      '@echo off',
+      'setlocal',
+      `call "${npmShim}" %*`,
+      'exit /b %ERRORLEVEL%',
+      '',
+    ].join('\r\n'));
+    const resolved = resolveCli(storeShim);
+    expect(resolved.command.toLowerCase()).toMatch(/node(\.exe)?$/);
+    expect(resolved.args.some(arg => /codex\.js$/i.test(arg))).toBe(true);
+    expect(resolved.command.toLowerCase()).not.toMatch(/\.cmd$/);
+  });
+});

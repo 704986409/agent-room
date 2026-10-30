@@ -58,9 +58,19 @@ function concreteTokens(rawTokens, cmdPath, env) {
  * Resolve a Windows .cmd/.bat shim to a real executable + args.
  * Expands %SystemRoot% / %~dp0 before dropping unresolved % tokens so
  * PowerShell-based Cursor shims do not leave `-NoProfile` as the command.
+ * Store / WindowsApps shims that only `call` another `.cmd` are unwrapped
+ * recursively (nvm npm shims) so the prompt never passes through cmd.exe.
  */
-export function resolveCli(command, env = process.env) {
+export function resolveCli(command, env = process.env, seen = new Set()) {
   if (!/\.(cmd|bat)$/i.test(command)) return { command, args: [] };
+  const key = command.replace(/\\/g, '/').toLowerCase();
+  if (seen.has(key)) {
+    throw new Error(`seat-launch: ${command} shim cycle`);
+  }
+  if (seen.size >= 8) {
+    throw new Error(`seat-launch: ${command} shim chain too deep`);
+  }
+  seen.add(key);
   let text = '';
   try {
     text = readFileSync(command, 'utf8');
@@ -96,6 +106,10 @@ export function resolveCli(command, env = process.env) {
     if (script && !existsSync(file)) {
       return { command: nodeBin, args: [script, ...rest.filter(arg => arg !== script)] };
     }
+  }
+  if (/\.(cmd|bat)$/i.test(file)) {
+    const nested = resolveCli(file, env, seen);
+    return { command: nested.command, args: [...nested.args, ...rest] };
   }
   return { command: file, args: rest };
 }
