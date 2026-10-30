@@ -23,6 +23,12 @@ import {
   getCachedDetect,
   setCachedDetect,
 } from './detectCache.js';
+import {
+  authCacheAgeMs,
+  beginAuthRefresh,
+  getCachedAuth,
+  loginHintFor,
+} from './cliAuth.js';
 import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
@@ -34,11 +40,27 @@ export const DESKTOP_CONTROL_PORT = 17421;
 const STATUS_DETECT_WAIT_MS = 1_500;
 /** Background re-detect interval; status never blocks on a stale refresh. */
 const DETECT_STALE_MS = 60_000;
+/** Background auth re-probe interval (login state only). */
+const AUTH_STALE_MS = 60_000;
+/** How long /api/status may wait for the first auth warm-up. */
+const STATUS_AUTH_WAIT_MS = 1_500;
 /** Cap whoami so a slow/offline server cannot stall HostLocal. */
 const STATUS_WHOAMI_TIMEOUT_MS = 2_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => { setTimeout(resolve, ms); });
+}
+
+function authTargets(adapters: Iterable<LauncherAdapter>) {
+  return [...adapters].map(adapter => ({
+    id: adapter.id,
+    command: adapter.command,
+    detect: getCachedDetect(adapter.id),
+  }));
+}
+
+function kickAuthRefresh(adapters: Iterable<LauncherAdapter>): Promise<void> {
+  return beginAuthRefresh(authTargets(adapters));
 }
 
 const DESKTOP_PATHS = new Set([
@@ -187,9 +209,11 @@ export async function startControlServer(options: ControlServerOptions): Promise
   if (detectCacheSize() === 0) {
     void beginDetectRefresh(options.adapters.values()).then(() => {
       void refreshAdapterModels(options.adapters.values());
+      void kickAuthRefresh(options.adapters.values());
     });
   } else {
     void refreshAdapterModels(options.adapters.values());
+    void kickAuthRefresh(options.adapters.values());
   }
   const pairingDeps = (): PairingDeps => ({
     credentials: options.credentials,
@@ -687,6 +711,19 @@ export async function startControlServer(options: ControlServerOptions): Promise
     if (!chosen) return { status: 400, body: { error: 'launcher_unavailable' } };
     const chosenModels = modelsForAdapter(chosen);
     if (chosenModels.length === 0) return { status: 400, body: { error: 'launcher_unavailable' } };
+    let auth = getCachedAuth(chosen.id);
+    if (!auth) {
+      await Promise.race([
+        kickAuthRefresh(options.adapters.values()),
+        sleep(STATUS_AUTH_WAIT_MS),
+      ]);
+      auth = getCachedAuth(chosen.id);
+    }
+    if (auth?.loggedIn === false) {
+      const hint = loginHintFor(chosen.id);
+      options.log.write(`[host] HostLocal blocked roomCode=${code} adapter=${chosen.id} reason=cli_not_logged_in`);
+      return { status: 400, body: { error: 'cli_not_logged_in', hint } };
+    }
     const requestedModel = typeof body.model === 'string' ? body.model : '';
     const model = chosenModels.includes(requestedModel) ? requestedModel : chosenModels[0]!;
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : chosen.id;
@@ -706,7 +743,9 @@ export async function startControlServer(options: ControlServerOptions): Promise
         ? '本机托管没有完成。请打开桌面端主窗口菜单「本机设置」登录后再试。'
         : message === 'join_timeout'
           ? '加入房间超时，请检查网络后重试。'
-          : message;
+          : message === 'cli_not_logged_in'
+            ? loginHintFor(chosen.id)
+            : message;
       return { status: 400, body: { error: message, hint } };
     }
   }
@@ -758,16 +797,32 @@ export async function startControlServer(options: ControlServerOptions): Promise
     // Prefer process cache: never serialize a full detect() on the request path.
     if (detectCacheSize() === 0) {
       await Promise.race([
-        beginDetectRefresh(options.adapters.values()),
+        beginDetectRefresh(options.adapters.values()).then(() => kickAuthRefresh(options.adapters.values())),
         sleep(STATUS_DETECT_WAIT_MS),
       ]);
     } else if (detectCacheAgeMs() > DETECT_STALE_MS) {
-      void beginDetectRefresh(options.adapters.values());
+      void beginDetectRefresh(options.adapters.values()).then(() => kickAuthRefresh(options.adapters.values()));
+    }
+    if (authCacheAgeMs() === Number.POSITIVE_INFINITY) {
+      await Promise.race([
+        kickAuthRefresh(options.adapters.values()),
+        sleep(STATUS_AUTH_WAIT_MS),
+      ]);
+    } else if (authCacheAgeMs() > AUTH_STALE_MS) {
+      void kickAuthRefresh(options.adapters.values());
     }
     const adapters = [];
     for (const adapter of options.adapters.values()) {
       const detected = getCachedDetect(adapter.id) ?? { installed: false };
-      adapters.push({ id: adapter.id, command: adapter.command, models: [...modelsForAdapter(adapter)], ...detected });
+      const auth = getCachedAuth(adapter.id);
+      adapters.push({
+        id: adapter.id,
+        command: adapter.command,
+        models: [...modelsForAdapter(adapter)],
+        ...detected,
+        loggedIn: auth ? auth.loggedIn : null,
+        authDetail: auth?.detail,
+      });
     }
     return {
       paired: !!device,

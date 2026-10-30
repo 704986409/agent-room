@@ -20,6 +20,7 @@ import {
   windowsHookInvocation,
 } from './src/mcpconfig.js';
 import { SecretRegistry } from './src/redact.js';
+import { clearAuthCache, setCachedAuth } from './src/cliAuth.js';
 import { clearDetectCache } from './src/detectCache.js';
 
 function tomlAssigned(toml: string, key: string): string {
@@ -40,6 +41,12 @@ function quietSpawner(): ProcessSpawner {
 describe('local control server', () => {
   beforeEach(() => {
     clearDetectCache();
+    clearAuthCache();
+    // Host path blocks on loggedIn===false; tests seed logged-in so probes
+    // against a missing real CLI do not fail HostLocal.
+    for (const id of ['codex', 'cursor-agent', 'agy', 'claude']) {
+      setCachedAuth(id, { loggedIn: true, detail: 'test' });
+    }
   });
 
   it('requires the token, rejects a foreign Origin, and exposes status and pair', async () => {
@@ -335,6 +342,61 @@ describe('local control server', () => {
       const body = await stopped.json() as { stopped: string[] };
       expect(body.stopped.sort()).toEqual(['st_drop', 'st_drop2']);
       expect(daemon.seats.map(seat => seat.seatId)).toEqual(['st_keep']);
+    } finally {
+      await control.close();
+    }
+  });
+
+  it('blocks HostLocal when the chosen CLI is not logged in', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'wake-control-auth-'));
+    const secrets = new SecretRegistry();
+    clearAuthCache();
+    setCachedAuth('codex', { loggedIn: false, detail: 'not logged in' });
+    const adapters = adapterMap(async () => ({ installed: true }), ['codex']);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+      server: pairedServerUrl({}),
+    });
+    let started = 0;
+    daemon.startAgent = async () => {
+      started += 1;
+      throw new Error('should not start');
+    };
+    const roomOrigin = new URL(pairedServerUrl({})).origin;
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      adapters,
+      secrets,
+      log: new DaemonLog(secrets),
+      home: directory,
+      run: async () => { throw new Error('unexpected command'); },
+      getToken: async () => '',
+      setToken: () => undefined,
+    });
+    try {
+      const hosted = await fetch(`http://127.0.0.1:${control.port}/api/desktop/host`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: roomOrigin, 'x-agent-room-desktop': '1' },
+        body: JSON.stringify({ code: 'NJZ-EUM-9ZU', inviteCode: 'AI-1', name: '测试工程师' }),
+      });
+      expect(hosted.status).toBe(400);
+      const body = await hosted.json() as { error: string; hint: string };
+      expect(body.error).toBe('cli_not_logged_in');
+      expect(body.hint).toContain('codex login');
+      expect(started).toBe(0);
     } finally {
       await control.close();
     }

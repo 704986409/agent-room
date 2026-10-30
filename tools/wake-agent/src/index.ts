@@ -4,7 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createDefaultAdapters, nodeSpawner, shouldDirectSpawn } from './adapter.js';
 import { clearLiveModels, refreshAdapterModels } from './modelsList.js';
-import { beginDetectRefresh, clearDetectCache } from './detectCache.js';
+import { beginDetectRefresh, clearDetectCache, getCachedDetect } from './detectCache.js';
+import { beginAuthRefresh, clearAuthCache } from './cliAuth.js';
 import { resolveTerminalMode } from './terminalMode.js';
 import { DESKTOP_CONTROL_PORT, startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
@@ -213,6 +214,11 @@ async function runDaemonLocked(statePath: string, mode: {
   void (async () => {
     await beginDetectRefresh(adapters.values());
     await refreshAdapterModels(adapters.values());
+    await beginAuthRefresh([...adapters.values()].map(adapter => ({
+      id: adapter.id,
+      command: adapter.command,
+      detect: getCachedDetect(adapter.id),
+    })));
   })();
   const daemon = new WakeDaemon({
     api: createHttpWakeApi(server, tokenOf),
@@ -257,7 +263,7 @@ async function runDaemonLocked(statePath: string, mode: {
   }
   const shutdown = () => {
     clearLiveModels();
-    clearDetectCache();
+    clearDetectCache(); clearAuthCache();
     daemon.stop();
   };
   process.once('SIGTERM', shutdown);
