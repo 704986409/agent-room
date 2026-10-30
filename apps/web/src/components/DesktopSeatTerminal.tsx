@@ -23,6 +23,19 @@ function isPasteShortcut(event: KeyboardEvent): boolean {
   return ctrlOrMetaV || shiftInsert;
 }
 
+/**
+ * xterm.js answers OSC 10/11/12 (fg/bg/cursor color) queries by emitting the
+ * report through onData. Forwarding that to PTY stdin lands as garbage in the
+ * Codex/Cursor prompt (e.g. `]10;rgb:ffff/ffff/ffff`).
+ */
+export function isOscColorReport(data: string): boolean {
+  if (!data) return false;
+  if (/\x1b\](10|11|12);/i.test(data)) return true;
+  if (/^\]?\s*(10|11|12);rgb:/i.test(data)) return true;
+  if (/\](10|11|12);rgb:/i.test(data) && /rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
+  return false;
+}
+
 function resetTerm(term: Terminal | null | undefined) {
   term?.reset();
 }
@@ -201,6 +214,8 @@ export function DesktopSeatTerminal({
     term.onData(data => {
       // Ctrl+V is 0x16. Codex treats that byte as image paste.
       if (data === '\x16') return;
+      // Do not echo xterm OSC color replies into the CLI prompt.
+      if (isOscColorReport(data)) return;
       const ws = socketRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'stdin', data }));
@@ -439,6 +454,9 @@ export function DesktopSeatTerminal({
     const label = options.find(row => row.seatId === id)?.name?.trim() || id;
     if (!confirmStop(tRef.current('desktopTerminal.stopConfirm', { seat: label }))) return;
     const wasPopped = poppedRef.current === id;
+    // Drop the WS first so ResizeObserver cannot send resize after PTY kill
+    // (that race crashed the Windows daemon: "Cannot resize a pty that has already exited").
+    disconnectRef.current(true);
     try {
       await stopDesktopTerminal(id);
     } catch {
@@ -446,7 +464,6 @@ export function DesktopSeatTerminal({
       setNote(tRef.current('desktopTerminal.stopFailed'));
       return;
     }
-    disconnectRef.current(true);
     if (wasPopped) {
       poppedRef.current = null;
       await closeManagedTerminal(id);

@@ -161,6 +161,8 @@ describe('wake daemon', () => {
     expect(child.calls[0]!.args).toEqual([
       'resume', 'thr_9', '-m', 'gpt-6-sol',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.airoom-e2e.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.airoom.default_tools_approval_mode="approve"',
       expect.any(String),
     ]);
     const promptLog = logs.find(line => line.includes('since: 183'))!;
@@ -306,7 +308,11 @@ describe('wake daemon', () => {
     expect(child.calls[0]!.args).toEqual([
       'resume', 'thr_9', '-m', 'gpt-6-sol',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.airoom-e2e.default_tools_approval_mode="approve"',
+      '-c', 'mcp_servers.airoom.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.agent-room.url="http://127.0.0.1:9/mcp"',
+      '-c', 'mcp_servers.airoom-e2e.url="http://127.0.0.1:9/mcp"',
+      '-c', 'mcp_servers.airoom.url="http://127.0.0.1:9/mcp"',
       expect.any(String),
     ]);
     expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "seat-key-secret"');

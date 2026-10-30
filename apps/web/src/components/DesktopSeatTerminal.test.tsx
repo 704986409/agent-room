@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DesktopSeatTerminal } from './DesktopSeatTerminal.js';
+import { DesktopSeatTerminal, isOscColorReport } from './DesktopSeatTerminal.js';
 
 const state = vi.hoisted(() => ({
   desktop: true,
@@ -331,6 +331,18 @@ describe('DesktopSeatTerminal', () => {
     expect(state.stop).not.toHaveBeenCalled();
   });
 
+  it('drops OSC color reports from xterm onData so they never reach PTY stdin', async () => {
+    await renderPanel('st_1');
+    const socket = FakeSocket.latest!;
+    socket.readyState = FakeSocket.OPEN;
+    expect(termIo.onDataHandler).toBeTruthy();
+    termIo.onDataHandler!('\x1b]10;rgb:ffff/ffff/ffff\x07');
+    termIo.onDataHandler!(']11;rgb:1e1e/1e1e/1e1e');
+    termIo.onDataHandler!('real-key');
+    expect(socket.sent.some(line => line.includes('rgb:'))).toBe(false);
+    expect(socket.sent.some(line => line.includes('"data":"real-key"'))).toBe(true);
+  });
+
   it('pastes clipboardData text from the paste event and drops the image-paste control character', async () => {
     const readText = vi.fn(async () => 'SHOULD-NOT-USE');
     vi.stubGlobal('navigator', { clipboard: { readText } });
@@ -480,4 +492,14 @@ describe('DesktopSeatTerminal', () => {
     expect(JSON.stringify(renderer.toJSON())).toContain('剪贴板里没有可粘贴的文本');
   });
 
+});
+
+describe('isOscColorReport', () => {
+  it('detects xterm OSC 10/11/12 color replies that must not reach PTY stdin', () => {
+    expect(isOscColorReport('\x1b]10;rgb:ffff/ffff/ffff\x07')).toBe(true);
+    expect(isOscColorReport(']10;rgb:ffff/ffff/ffff\\]11;rgb:1e1e/1e1e/1e1e\\')).toBe(true);
+    expect(isOscColorReport(']11;rgb:1e1e/1e1e/1e1e')).toBe(true);
+    expect(isOscColorReport('hello')).toBe(false);
+    expect(isOscColorReport('\x16')).toBe(false);
+  });
 });

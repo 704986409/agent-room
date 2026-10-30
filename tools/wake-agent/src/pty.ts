@@ -200,8 +200,13 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
   const listeners = new Set<(data: string) => void>();
   const scrollback = createScrollback();
   let exitCode: number | undefined;
+  // Mark dead immediately on kill/exit so late resize/write cannot throw
+  // (Windows node-pty: "Cannot resize a pty that has already exited").
+  let dead = false;
+  const markDead = () => { dead = true; };
   const exited = new Promise<number>(resolve => {
     term.onExit(({ exitCode: code }) => {
+      markDead();
       exitCode = code ?? 1;
       if (logFd !== undefined) {
         try { closeSync(logFd); } catch { /* ignore */ }
@@ -228,16 +233,25 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
     cols,
     rows,
     write(data: string) {
-      if (exitCode !== undefined) return;
-      term.write(data);
+      if (dead || exitCode !== undefined) return;
+      try {
+        term.write(data);
+      } catch {
+        markDead();
+      }
     },
     resize(nextCols: number, nextRows: number) {
-      if (exitCode !== undefined) return;
+      if (dead || exitCode !== undefined) return;
       const c = Math.max(2, Math.floor(nextCols));
       const r = Math.max(1, Math.floor(nextRows));
-      term.resize(c, r);
-      session.cols = c;
-      session.rows = r;
+      try {
+        term.resize(c, r);
+        session.cols = c;
+        session.rows = r;
+      } catch {
+        // Already exited under ConPTY before onExit set exitCode — no-op.
+        markDead();
+      }
     },
     scrollback() {
       return scrollback.text();
@@ -247,6 +261,7 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
       return () => { listeners.delete(listener); };
     },
     kill() {
+      markDead();
       try { term.kill(); } catch { /* already dead */ }
     },
     exited,

@@ -16,6 +16,8 @@ import {
   resolveCommand,
   CODEX_MANAGED_MCP_APPROVAL,
   managedApprovalArgs,
+  CODEX_MANAGED_MCP_NAMES,
+  codexMcpApprovalArg,
   shouldDirectSpawn,
   spawnCommand,
   winCmdLine,
@@ -51,12 +53,12 @@ describe('interactive launcher adapters', () => {
     });
     const launched = await codex.launch({ ...opts, model: 'gpt-6-sol' });
     expect(launched.sessionId).toBe('11111111-1111-4111-8111-111111111111');
-    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6-sol', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['-m', 'gpt-6-sol', ...CODEX_MANAGED_MCP_NAMES.flatMap(name => ['-c', codexMcpApprovalArg(name)]), 'hello room']);
     expect(codexSpawn.calls[0]!.args).not.toContain('exec');
     expect(codexSpawn.calls[0]!.args).not.toContain('--json');
     codexSpawn.calls.length = 0;
     await codex.resume({ ...opts, model: 'gpt-6-luna', sessionId: '11111111-1111-4111-8111-111111111111' });
-    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', '-c', CODEX_MANAGED_MCP_APPROVAL, 'hello room']);
+    expect(codexSpawn.calls[0]!.args).toEqual(['resume', '11111111-1111-4111-8111-111111111111', '-m', 'gpt-6-luna', ...CODEX_MANAGED_MCP_NAMES.flatMap(name => ['-c', codexMcpApprovalArg(name)]), 'hello room']);
     await expect(codex.launch({ ...opts, model: 'gpt-4' })).rejects.toThrow('model_not_allowed');
 
     const cursorSpawn = fake();
@@ -105,12 +107,18 @@ describe('interactive launcher adapters', () => {
   });
 
   it('auto-approves MCP tools only for managed seats, without yolo or full-auto', async () => {
-    expect(managedApprovalArgs('codex')).toEqual(['-c', CODEX_MANAGED_MCP_APPROVAL]);
+    const approvals = CODEX_MANAGED_MCP_NAMES.flatMap(name => ['-c', codexMcpApprovalArg(name)]);
+    expect(managedApprovalArgs('codex')).toEqual(approvals);
+    expect(approvals).toContain('-c');
+    expect(approvals).toContain(CODEX_MANAGED_MCP_APPROVAL);
+    expect(approvals).toContain('mcp_servers.airoom-e2e.default_tools_approval_mode="approve"');
     expect(managedApprovalArgs('codex', { AGENT_ROOM_SERVER: 'http://127.0.0.1:3300/' })).toEqual([
-      '-c', CODEX_MANAGED_MCP_APPROVAL,
+      ...approvals,
       '-c', 'mcp_servers.agent-room.url="http://127.0.0.1:3300/mcp"',
+      '-c', 'mcp_servers.airoom-e2e.url="http://127.0.0.1:3300/mcp"',
+      '-c', 'mcp_servers.airoom.url="http://127.0.0.1:3300/mcp"',
     ]);
-    expect(managedApprovalArgs('codex', { AGENT_ROOM_SERVER: 'not a url' })).toEqual(['-c', CODEX_MANAGED_MCP_APPROVAL]);
+    expect(managedApprovalArgs('codex', { AGENT_ROOM_SERVER: 'not a url' })).toEqual(approvals);
     expect(managedApprovalArgs('cursor-agent')).toEqual(['--approve-mcps']);
     expect(CODEX_MANAGED_MCP_APPROVAL).not.toMatch(/yolo|full-auto|--force/);
 

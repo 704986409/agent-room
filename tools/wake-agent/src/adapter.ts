@@ -166,21 +166,37 @@ export function shouldDirectSpawn(
 export const CODEX_MANAGED_MCP_APPROVAL = 'mcp_servers.agent-room.default_tools_approval_mode="approve"';
 
 /**
+ * Codex MCP server keys we auto-approve + URL-override for managed seats.
+ * Users may name the server `airoom-e2e` / `airoom` instead of `agent-room`.
+ */
+export const CODEX_MANAGED_MCP_NAMES = ['agent-room', 'airoom-e2e', 'airoom'] as const;
+
+export function codexMcpApprovalArg(name: string): string {
+  return `mcp_servers.${name}.default_tools_approval_mode="approve"`;
+}
+
+/**
  * Point this process at the paired room server.
  * `~/.codex/config.toml` often names a different host; a managed seat must not follow it.
  */
-export function codexMcpUrlArg(server: string | undefined): string | undefined {
+export function codexMcpUrlArg(server: string | undefined, name = 'agent-room'): string | undefined {
   const base = server?.trim().replace(/\/+$/, '');
   if (!base || !/^https?:\/\/[^\s"'\\]+$/i.test(base)) return undefined;
-  return `mcp_servers.agent-room.url="${base}/mcp"`;
+  return `mcp_servers.${name}.url="${base}/mcp"`;
 }
 
 /** Extra argv inserted before the prompt when `AGENT_ROOM_MANAGED=1`. */
 export function managedApprovalArgs(adapterId: string, env?: Record<string, string>): readonly string[] {
   if (adapterId === 'codex') {
-    const args = ['-c', CODEX_MANAGED_MCP_APPROVAL];
-    const url = codexMcpUrlArg(env?.AGENT_ROOM_SERVER || env?.AGENT_ROOM_BASE_URL);
-    if (url) args.push('-c', url);
+    const args: string[] = [];
+    for (const name of CODEX_MANAGED_MCP_NAMES) {
+      args.push('-c', codexMcpApprovalArg(name));
+    }
+    const server = env?.AGENT_ROOM_SERVER || env?.AGENT_ROOM_BASE_URL;
+    for (const name of CODEX_MANAGED_MCP_NAMES) {
+      const url = codexMcpUrlArg(server, name);
+      if (url) args.push('-c', url);
+    }
     return args;
   }
   if (adapterId === 'cursor-agent') return ['--approve-mcps'];

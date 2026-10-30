@@ -323,17 +323,21 @@ export async function startControlServer(options: ControlServerOptions): Promise
       if (ws.readyState === ws.OPEN) ws.send(data);
     });
     ws.on('message', raw => {
-      const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
-      let msg: { type?: string; data?: string; cols?: number; rows?: number };
-      try { msg = JSON.parse(text) as typeof msg; }
-      catch {
-        // Treat non-JSON as raw stdin (paste-friendly).
-        session.write(text);
-        return;
-      }
-      if (msg.type === 'stdin' && typeof msg.data === 'string') session.write(msg.data);
-      else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-        session.resize(msg.cols, msg.rows);
+      try {
+        const text = typeof raw === 'string' ? raw : Buffer.isBuffer(raw) ? raw.toString('utf8') : String(raw);
+        let msg: { type?: string; data?: string; cols?: number; rows?: number };
+        try { msg = JSON.parse(text) as typeof msg; }
+        catch {
+          // Treat non-JSON as raw stdin (paste-friendly).
+          session.write(text);
+          return;
+        }
+        if (msg.type === 'stdin' && typeof msg.data === 'string') session.write(msg.data);
+        else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+          session.resize(msg.cols, msg.rows);
+        }
+      } catch {
+        // Never let a late resize/write after PTY exit crash the daemon process.
       }
     });
     ws.on('close', () => {

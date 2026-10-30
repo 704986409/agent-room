@@ -128,4 +128,29 @@ describe.skipIf(!ptyAvailable())('pty smoke', () => {
     session.kill();
     await session.exited;
   }, 15_000);
+
+  it('treats resize/write after kill as a no-op and never throws', async () => {
+    const seatId = `test-pty-dead-resize-${Date.now()}`;
+    const session = spawnPtySession({
+      seatId,
+      command: 'bash',
+      args: ['-lc', 'printf "alive\n"; exec cat'],
+      cwd: process.cwd(),
+      env: {},
+      cols: 80,
+      rows: 24,
+    });
+    const deadline = Date.now() + 5000;
+    while (!session.scrollback().includes('alive') && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 30));
+    }
+    session.kill();
+    // Immediate resize/write must not throw even before onExit lands (Windows ConPTY race).
+    expect(() => session.resize(120, 40)).not.toThrow();
+    expect(() => session.write('should-not-throw\n')).not.toThrow();
+    await session.exited;
+    expect(() => session.resize(90, 20)).not.toThrow();
+    expect(() => session.write('still-noop\n')).not.toThrow();
+    unregisterPtySession(seatId);
+  }, 15_000);
 });
