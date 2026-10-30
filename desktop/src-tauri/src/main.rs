@@ -1020,6 +1020,47 @@ fn queue_terminal_control_navigate(window: tauri::WebviewWindow, control: tauri:
     });
 }
 
+/// Schedule pop-out creation after the invoking IPC returns.
+///
+/// Room-page `open_managed_terminal` runs while the main WebView2 is mid-IPC on the
+/// shared Environment. Building another controller on that stack hangs after
+/// "[popout] create start" with a titled black window and never reaches create done.
+/// Settings avoids this by opening from a worker thread + `run_on_main_thread`; mirror that.
+fn schedule_terminal_popout(
+    app: AppHandle,
+    seat_id: String,
+    url: String,
+    x: Option<f64>,
+    y: Option<f64>,
+    width: Option<f64>,
+    height: Option<f64>,
+) {
+    shell_log(&format!(
+        "[popout] schedule seatId={seat_id} origin={}",
+        control_origin_label(&url)
+    ));
+    std::thread::spawn(move || {
+        // Let the Tauri invoke unwind before CreateCoreWebView2Controller.
+        std::thread::sleep(Duration::from_millis(50));
+        let app_main = app.clone();
+        let seat = seat_id.clone();
+        let url2 = url.clone();
+        if let Err(error) = app.run_on_main_thread(move || {
+            if let Err(err) =
+                open_terminal_window_inner(&app_main, &seat, &url2, x, y, width, height)
+            {
+                shell_log(&format!(
+                    "[popout] create failed seatId={seat} reason={err}"
+                ));
+            }
+        }) {
+            shell_log(&format!(
+                "[popout] schedule main-thread failed seatId={seat_id} reason={error}"
+            ));
+        }
+    });
+}
+
 fn open_terminal_window_inner(
     app: &AppHandle,
     seat_id: &str,
@@ -1030,29 +1071,20 @@ fn open_terminal_window_inner(
     height: Option<f64>,
 ) -> Result<(), String> {
     let label = terminal_window_label(seat_id);
-    shell_log(&format!("[popout] create start seatId={seat_id} label={label}"));
+    shell_log(&format!(
+        "[popout] create start seatId={seat_id} label={label} origin={}",
+        control_origin_label(url)
+    ));
     let control: tauri::Url = url
         .parse()
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
-    if let Some(w) = app.get_webview_window(&label) {
-        remember_terminal_seat(&label, seat_id);
-        // Stuck black pop-outs (data: boot hang) stay titled but never load control.
-        // Re-navigate; if that fails, destroy and recreate below.
-        match w.navigate(control.clone()) {
-            Ok(()) => {
-                let _ = w.unminimize();
-                let _ = w.show();
-                let _ = w.set_focus();
-                shell_log(&format!("[popout] recover navigate seatId={seat_id} label={label}"));
-                return Ok(());
-            }
-            Err(error) => {
-                shell_log(&format!(
-                    "[popout] recover navigate failed label={label} reason={error}; recreating"
-                ));
-                close_labeled_window(app, &label);
-            }
-        }
+    // Never navigate a wedged black pop-out: navigate() can hang on shared
+    // WebView2 the same way build() did. Destroy and recreate instead.
+    if app.get_webview_window(&label).is_some() {
+        shell_log(&format!(
+            "[popout] destroy existing before recreate seatId={seat_id} label={label}"
+        ));
+        close_labeled_window(app, &label);
     }
     let (width, height) = clamp_terminal_size(
         width.unwrap_or(TERM_DEFAULT_W),
@@ -1085,6 +1117,7 @@ fn open_terminal_window_inner(
     if let Some((x, y)) = clamp_terminal_position(x, y) {
         builder = builder.position(x, y);
     }
+    shell_log(&format!("[popout] build begin seatId={seat_id} label={label}"));
     #[cfg(windows)]
     let created = builder
         .on_page_load(move |window, payload| {
@@ -1140,7 +1173,8 @@ fn open_terminal_window(
     if !(url.starts_with("http://127.0.0.1:") || url.starts_with("http://localhost:")) {
         return Err("terminal pop-out URL must be http://127.0.0.1 or http://localhost".into());
     }
-    open_terminal_window_inner(&app, &seat_id, &url, x, y, width, height)
+    schedule_terminal_popout(app, seat_id, url, x, y, width, height);
+    Ok(())
 }
 
 /// Open the embedded PTY pop-out for a seat the desktop daemon just hosted.
@@ -1151,8 +1185,13 @@ fn open_managed_terminal(
     daemon: tauri::State<'_, Daemon>,
     seat_id: String,
 ) -> Result<(), String> {
-    let url = open_managed_terminal_url(daemon.control_url().as_deref(), &seat_id)?;
-    open_terminal_window_inner(&app, seat_id.trim(), &url, None, None, None, None)
+    let seat = seat_id.trim().to_string();
+    if seat.is_empty() {
+        return Err("seatId required".into());
+    }
+    let url = open_managed_terminal_url(daemon.control_url().as_deref(), &seat)?;
+    schedule_terminal_popout(app, seat, url, None, None, None, None);
+    Ok(())
 }
 
 #[tauri::command]
