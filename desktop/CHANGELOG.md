@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.26-v6 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v6** / `desktop-v0.1.26-v6`.
+
+- Daemon: PTY resize/write after exit is no-op; WS handler never crashes process (Windows ConPTY race).
+- Terminal: disconnect socket before 「关闭」 stop; filter xterm OSC 10/11/12 color reports from stdin.
+- Codex managed: approve + URL override for `agent-room` / `airoom-e2e` / `airoom` via `-c` only.
+
 ## 0.1.26-v5 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v5** / `desktop-v0.1.26-v5`.
