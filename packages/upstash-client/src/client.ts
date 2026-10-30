@@ -34,7 +34,11 @@ export function createClient(env: UpstashEnv): UpstashClient {
       throw new NetworkError(e);
     }
     if (resp.status === 429) throw new RateLimitError();
-    if (!resp.ok) throw new UpstashError(`Upstash HTTP ${resp.status}`);
+    if (!resp.ok) {
+      let detail = '';
+      try { detail = (await resp.text()).trim().slice(0, 300); } catch { /* ignore */ }
+      throw new UpstashError(detail ? `Upstash HTTP ${resp.status}: ${detail}` : `Upstash HTTP ${resp.status}`);
+    }
     return resp.clone().json();
   }
 

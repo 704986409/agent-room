@@ -15,11 +15,13 @@ export const wakeKeys = {
 };
 
 // NX and seat membership must be atomic: a crash cannot leave an unindexed event.
+// VPS Redis ACL user `backend` allows TTL/EXPIREAT/PEXPIREAT but NOT PTTL/PEXPIRE.
+// Bind already avoids PTTL; create must too or poll/scan throws Upstash HTTP 400 and pending stays empty.
 export const CREATE_EVENT_SCRIPT = `
 local created = redis.call('SET', KEYS[1], ARGV[1], 'NX', 'PXAT', ARGV[3])
 redis.call('SADD', KEYS[2], ARGV[2])
-local ttl = redis.call('PTTL', KEYS[2])
-if ttl < 0 or tonumber(ARGV[3]) > tonumber(ARGV[4]) + ttl then
+local ttl = redis.call('TTL', KEYS[2])
+if ttl < 0 or tonumber(ARGV[3]) > tonumber(ARGV[4]) + (ttl * 1000) then
   redis.call('PEXPIREAT', KEYS[2], ARGV[3])
 end
 if created then return 1 else return 0 end`;

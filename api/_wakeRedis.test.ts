@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { Message } from '@agent-room/shared';
 import { MAX_WAIT_MS, messageEvent, type ManagedSeat } from './_wakeCore.js';
-import { EVENT_CAS_SCRIPT, HANDOFF_SCRIPT, RedisWakeStore, wakeKeys } from './_wakeRedis.js';
+import { CREATE_EVENT_SCRIPT, EVENT_CAS_SCRIPT, HANDOFF_SCRIPT, RedisWakeStore, wakeKeys } from './_wakeRedis.js';
 import { WakeTestRedis } from './_wakeTestRedis.js';
 
 const seat: ManagedSeat = { roomInstanceId: 'ri', seatId: 'st', name: 'bot', facts: { sole: false, humanBroadcastsToMe: false } };
@@ -224,5 +224,14 @@ describe('atomic absolute message snapshots', () => {
     redis.values.set('room-msg-count:ABC', '0');
     redis.lists.set('room-msgs:ABC', [JSON.stringify(message())]);
     await expect(store.loadMessages('ABC', 0)).rejects.toThrow('invalid absolute message count');
+  });
+});
+
+describe('CREATE_EVENT_SCRIPT Redis ACL compatibility', () => {
+  it('must not call PTTL/PEXPIRE (VPS backend ACL denies them → Upstash HTTP 400)', () => {
+    expect(CREATE_EVENT_SCRIPT).not.toMatch(/\bPTTL\b/);
+    expect(CREATE_EVENT_SCRIPT).not.toMatch(/\bPEXPIRE\b(?!AT)/);
+    expect(CREATE_EVENT_SCRIPT).toMatch(/redis\.call\('TTL'/);
+    expect(CREATE_EVENT_SCRIPT).toMatch(/ttl \* 1000/);
   });
 });
