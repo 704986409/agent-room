@@ -30,6 +30,7 @@ import {
   loginHintFor,
 } from './cliAuth.js';
 import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
+import { shouldDropPtyStdin, stripOscColorSequences } from './oscFilter.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
 
@@ -317,10 +318,21 @@ export async function startControlServer(options: ControlServerOptions): Promise
     }
     // Snapshot first, then subscribe. Live chunks already in the ring are not
     // emitted again; bytes that arrive after this point go only through onData.
-    const prior = session.scrollback();
+    // Strip historical OSC 10/11/12 so a late xterm does not re-answer them
+    // into stdin (popout attach used to interrupt room_listen this way).
+    const prior = stripOscColorSequences(session.scrollback());
     if (prior && ws.readyState === ws.OPEN) ws.send(prior);
     const unsub = session.onData(data => {
       if (ws.readyState === ws.OPEN) ws.send(data);
+    });
+    // Wake resume replaces the PTY under the same seatId — close viewers so
+    // the rail / popout reconnect to the new session instead of a dead WS.
+    void session.exited.then(() => {
+      try {
+        if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
+          ws.close(1000, 'pty_exited');
+        }
+      } catch { /* ignore */ }
     });
     ws.on('message', raw => {
       try {
@@ -329,12 +341,19 @@ export async function startControlServer(options: ControlServerOptions): Promise
         try { msg = JSON.parse(text) as typeof msg; }
         catch {
           // Treat non-JSON as raw stdin (paste-friendly).
-          session.write(text);
+          if (!shouldDropPtyStdin(text)) session.write(text);
           return;
         }
-        if (msg.type === 'stdin' && typeof msg.data === 'string') session.write(msg.data);
-        else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          session.resize(msg.cols, msg.rows);
+        if (msg.type === 'stdin' && typeof msg.data === 'string') {
+          // Defense in depth: docked React + popout settings.html both filter,
+          // but never let OSC color replies / Ctrl+V reach the CLI.
+          if (!shouldDropPtyStdin(msg.data)) session.write(msg.data);
+        } else if (msg.type === 'resize' && typeof msg.cols === 'number' && typeof msg.rows === 'number') {
+          const cols = Math.max(2, Math.floor(msg.cols));
+          const rows = Math.max(1, Math.floor(msg.rows));
+          // Skip no-op resize so popout attach does not SIGWINCH a live listen.
+          if (cols === session.cols && rows === session.rows) return;
+          session.resize(cols, rows);
         }
       } catch {
         // Never let a late resize/write after PTY exit crash the daemon process.

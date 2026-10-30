@@ -499,6 +499,7 @@ describe('isOscColorReport', () => {
     expect(isOscColorReport('\x1b]10;rgb:ffff/ffff/ffff\x07')).toBe(true);
     expect(isOscColorReport(']10;rgb:ffff/ffff/ffff\\]11;rgb:1e1e/1e1e/1e1e\\')).toBe(true);
     expect(isOscColorReport(']11;rgb:1e1e/1e1e/1e1e')).toBe(true);
+    expect(isOscColorReport('10;rgb:aaaa/bbbb/cccc')).toBe(true);
     expect(isOscColorReport('hello')).toBe(false);
     expect(isOscColorReport('\x16')).toBe(false);
   });

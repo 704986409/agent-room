@@ -33,6 +33,8 @@ export function isOscColorReport(data: string): boolean {
   if (/\x1b\](10|11|12);/i.test(data)) return true;
   if (/^\]?\s*(10|11|12);rgb:/i.test(data)) return true;
   if (/\](10|11|12);rgb:/i.test(data) && /rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
+  // Partial / glued chunks seen on the popout path after scrollback replay.
+  if (/(^|[^0-9])(10|11|12);rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
   return false;
 }
 
@@ -98,6 +100,9 @@ export function DesktopSeatTerminal({
   const connectRef = useRef<(id: string) => void>(() => {});
   const disconnectRef = useRef<(silent?: boolean) => void>(() => {});
   const generationRef = useRef(0);
+  /** PTY pid last attached for seatId — wake resume changes pid under the same id. */
+  const attachedPidRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const expandedLayoutRef = useRef(false);
   const onTerminalsRef = useRef(onTerminals);
   onTerminalsRef.current = onTerminals;
@@ -171,6 +176,10 @@ export function DesktopSeatTerminal({
 
   disconnectRef.current = (silent = false) => {
     generationRef.current += 1;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     const ws = socketRef.current;
     socketRef.current = null;
     detachSocket(ws);
@@ -281,7 +290,25 @@ export function DesktopSeatTerminal({
       socketRef.current = null;
       setConnected(false);
       setNoteErr(false);
-      setNote(poppedRef.current ? tRef.current('desktopTerminal.popped') : tRef.current('desktopTerminal.disconnected'));
+      if (poppedRef.current === next) {
+        setNote(tRef.current('desktopTerminal.popped'));
+        return;
+      }
+      if (closedByUserRef.current.has(next)) {
+        setNote(tRef.current('desktopTerminal.disconnected'));
+        return;
+      }
+      setNote(tRef.current('desktopTerminal.disconnected'));
+      // Wake resume kills the old PTY (daemon closes WS with pty_exited) then
+      // spawns a new one under the same seatId — reattach so the rail refreshes.
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = setTimeout(() => {
+        reconnectTimerRef.current = null;
+        if (generationRef.current !== generation) return;
+        if (poppedRef.current === next || closedByUserRef.current.has(next)) return;
+        if (seatRef.current !== next) return;
+        connectRef.current(next);
+      }, 600);
     };
     ws.onerror = () => {
       if (!current()) return;
@@ -299,16 +326,50 @@ export function DesktopSeatTerminal({
         if (stopped) return;
         setRows(payload.terminals);
         onTerminalsRef.current?.(payload.terminals);
+        let nextSeat = seatRef.current;
         setSeatId(current => {
-          if (current && payload.terminals.some(row => row.seatId === current)) return current;
+          if (current && payload.terminals.some(row => row.seatId === current)) {
+            nextSeat = current;
+            return current;
+          }
           if (preferredSeatId && !closedByUserRef.current.has(preferredSeatId)
-            && payload.terminals.some(row => row.seatId === preferredSeatId)) return preferredSeatId;
+            && payload.terminals.some(row => row.seatId === preferredSeatId)) {
+            nextSeat = preferredSeatId;
+            return preferredSeatId;
+          }
           const roomRows = terminalsForRoom(payload.terminals, roomCode);
-          if (roomRows.length === 1 && !closedByUserRef.current.has(roomRows[0]!.seatId)) return roomRows[0]!.seatId;
+          if (roomRows.length === 1 && !closedByUserRef.current.has(roomRows[0]!.seatId)) {
+            nextSeat = roomRows[0]!.seatId;
+            return roomRows[0]!.seatId;
+          }
+          // Brief gap during wake resume (old PTY killed, new not listed yet):
+          // keep preferred selection so the rail can reattach instead of going stale.
+          if (current && preferredSeatId === current && !closedByUserRef.current.has(current)) {
+            nextSeat = current;
+            return current;
+          }
           // Seat closed / PTY gone — drop selection so the rail does not keep a ghost tab.
-          if (current && !payload.terminals.some(row => row.seatId === current)) return '';
+          if (current && !payload.terminals.some(row => row.seatId === current)) {
+            nextSeat = '';
+            return '';
+          }
+          nextSeat = current;
           return current;
         });
+        const row = nextSeat
+          ? payload.terminals.find(entry => entry.seatId === nextSeat)
+          : undefined;
+        if (row && nextSeat && poppedRef.current !== nextSeat && !closedByUserRef.current.has(nextSeat)) {
+          const ws = socketRef.current;
+          const pidChanged = attachedPidRef.current != null && attachedPidRef.current !== row.pid;
+          const socketDead = !ws || ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED;
+          if (pidChanged || socketDead || seatRef.current !== nextSeat) {
+            attachedPidRef.current = row.pid;
+            connectRef.current(nextSeat);
+          } else {
+            attachedPidRef.current = row.pid;
+          }
+        }
       } catch {
         if (!stopped) {
           setNoteErr(true);
@@ -470,6 +531,7 @@ export function DesktopSeatTerminal({
     }
     // Clear the rail tab immediately; do not keep a ghost stub for a closed seat.
     closedByUserRef.current.add(id);
+    attachedPidRef.current = null;
     setRows(prev => prev.filter(row => row.seatId !== id));
     setSeatId(prev => (prev === id ? '' : prev));
     resetTerm(termRef.current);

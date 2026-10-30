@@ -461,6 +461,8 @@ describe('pop-out assets and stop', () => {
       expect(html).not.toMatch(/id="term-wrap"\s+hidden/);
       expect(html).toContain("get('popout')");
       expect(html).toContain('id="term-stop"');
+      expect(html).toContain('isOscColorReport');
+      expect(html).toContain('rgb:');
 
       const vendor = await fetch(`http://127.0.0.1:${control.port}/vendor/xterm.js`);
       expect(vendor.status).toBe(200);
@@ -508,6 +510,99 @@ describe('pop-out assets and stop', () => {
         expect(stopped.status).toBe(200);
         expect(daemon.seats.find(s => s.seatId === seatId)).toBeUndefined();
       }
+    } finally {
+      await control.close();
+    }
+  }, 20_000);
+});
+
+describe('terminal WS stdin OSC hygiene', () => {
+  it('drops OSC color reports on stdin and strips them from scrollback replay', async () => {
+    if (!ptyAvailable()) return;
+    const directory = await mkdtemp(join(tmpdir(), 'wake-osc-'));
+    const secrets = new SecretRegistry();
+    const log = new DaemonLog(secrets);
+    const adapters = new Map([['codex', new CodexCliAdapter(quietSpawner(), {
+      probe: async () => ({ installed: true, version: 'x', path: '/bin/codex' }),
+    })]]);
+    const daemon = new WakeDaemon({
+      api: {
+        async register() { return { roomInstanceId: 'ri', seatId: 'st', scanFrom: 0 }; },
+        async poll() { return { seats: [] }; },
+        async claim() { return { wakeRunId: 'wr', claims: [] }; },
+        async renew() { return {}; },
+        async progress() { return {}; },
+      },
+      adapters,
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: false, cmdline: '' }),
+    });
+    const control = await startControlServer({
+      daemon,
+      credentials: new MemoryCredentialStore(),
+      statePath: join(directory, 'daemon.json'),
+      stateDir: directory,
+      server: 'http://127.0.0.1:9',
+      adapters,
+      secrets,
+      log,
+      getToken: async () => '',
+      setToken: () => {},
+    });
+    try {
+      const seatId = `osc-pty-${Date.now()}`;
+      const session = spawnPtySession({
+        seatId,
+        command: 'bash',
+        args: ['-lc', 'printf "\\033]10;?\\007visible-line\\n"; exec cat'],
+        cwd: directory,
+        env: {},
+      });
+      const priorDeadline = Date.now() + 5000;
+      while (!session.scrollback().includes('visible-line') && Date.now() < priorDeadline) {
+        await new Promise(r => setTimeout(r, 30));
+      }
+      expect(session.scrollback()).toContain('visible-line');
+
+      const ws = new WebSocket(`ws://127.0.0.1:${control.port}/api/terminals/${encodeURIComponent(seatId)}/ws?t=${control.token}`);
+      const got: string[] = [];
+      ws.on('message', data => { got.push(String(data)); });
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('ws timeout')), 5000);
+        ws.once('open', () => { clearTimeout(timer); resolve(); });
+        ws.once('error', reject);
+      });
+      const replayDeadline = Date.now() + 5000;
+      while (!got.join('').includes('visible-line') && Date.now() < replayDeadline) {
+        await new Promise(r => setTimeout(r, 30));
+      }
+      const replay = got.join('');
+      expect(replay).toContain('visible-line');
+      // Historical OSC query must not be replayed (would make xterm re-answer into stdin).
+      expect(replay).not.toMatch(/\x1b\]10;\?/);
+
+      // OSC report must be dropped (cat would otherwise echo it).
+      ws.send(JSON.stringify({ type: 'stdin', data: ']10;rgb:ffff/ffff/ffff' }));
+      ws.send(JSON.stringify({ type: 'stdin', data: 'safe-key\n' }));
+      const deadline = Date.now() + 5000;
+      while (!got.join('').includes('safe-key') && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 50));
+      }
+      expect(got.join('')).toContain('safe-key');
+      expect(got.join('')).not.toMatch(/rgb:ffff/);
+
+      const beforeCols = session.cols;
+      ws.send(JSON.stringify({ type: 'resize', cols: session.cols, rows: session.rows }));
+      await new Promise(r => setTimeout(r, 50));
+      expect(getPtySession(seatId)?.cols).toBe(beforeCols);
+      ws.send(JSON.stringify({ type: 'resize', cols: beforeCols + 1, rows: session.rows }));
+      await new Promise(r => setTimeout(r, 100));
+      expect(getPtySession(seatId)?.cols).toBe(beforeCols + 1);
+
+      ws.close();
+      session.kill();
+      await session.exited;
     } finally {
       await control.close();
     }

@@ -456,6 +456,8 @@
     let term = null;
     let fitAddon = null;
     let termSocket = null;
+    var lastSentCols = 0;
+    var lastSentRows = 0;
     let termResizeObserver = null;
     let poppedOutSeatId = null;
     let liveTerminalIds = [];
@@ -618,7 +620,17 @@
       }
     }
 
+    function isOscColorReport(data) {
+      if (!data) return false;
+      if (/\x1b\](10|11|12);/i.test(data)) return true;
+      if (/^\]?\s*(10|11|12);rgb:/i.test(data)) return true;
+      if (/\](10|11|12);rgb:/i.test(data) && /rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
+      if (/(^|[^0-9])(10|11|12);rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
+      return false;
+    }
+
     function ensureTerm() {
+
       if (typeof Terminal !== 'function' || !window.FitAddon || typeof FitAddon.FitAddon !== 'function') {
         termNote('终端组件未加载（/vendor/xterm.js）。', true);
         return null;
@@ -643,6 +655,10 @@
       term.open(wrap);
       fitAddon.fit();
       term.onData(function (data) {
+        // Ctrl+V is 0x16 — Codex treats it as image paste.
+        if (data === '\x16') return;
+        // Do not echo xterm OSC color replies into the CLI prompt (popout path).
+        if (isOscColorReport(data)) return;
         if (termSocket && termSocket.readyState === WebSocket.OPEN) {
           termSocket.send(JSON.stringify({ type: 'stdin', data: data }));
         }
@@ -652,7 +668,13 @@
           if (!fitAddon || !term) return;
           fitAddon.fit();
           if (termSocket && termSocket.readyState === WebSocket.OPEN) {
-            termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+            var c = term.cols;
+            var r = term.rows;
+            if (c !== lastSentCols || r !== lastSentRows) {
+              lastSentCols = c;
+              lastSentRows = r;
+              termSocket.send(JSON.stringify({ type: 'resize', cols: c, rows: r }));
+            }
           }
         });
         termResizeObserver.observe(wrap);
@@ -666,6 +688,8 @@
         try { termSocket.close(); } catch (e) {}
         termSocket = null;
       }
+      lastSentCols = 0;
+      lastSentRows = 0;
       document.getElementById('term-disconnect').disabled = true;
       document.getElementById('term-connect').disabled = false;
       if (!silent) {
@@ -700,7 +724,13 @@
           : ('已连接 ' + seatId + '（断开不会结束进程；可弹出到独立窗口）'));
         if (fitAddon && term) {
           fitAddon.fit();
-          termSocket.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+          var c2 = term.cols;
+          var r2 = term.rows;
+          if (c2 !== lastSentCols || r2 !== lastSentRows) {
+            lastSentCols = c2;
+            lastSentRows = r2;
+            termSocket.send(JSON.stringify({ type: 'resize', cols: c2, rows: r2 }));
+          }
         }
         updatePopoutButton();
       };
