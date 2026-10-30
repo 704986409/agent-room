@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26-v7 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v7** / `desktop-v0.1.26-v7`.
+
+- Wake: CREATE_EVENT uses Redis TTL (not PTTL) so @ pending events survive Upstash ACL.
+- Pop-out: External URL + deferred WebView create (hotpopout2) — no black window.
+- HostLocal Codex: unwrap WindowsApps codex.cmd → real exe/node (no launcher_unavailable).
+- Terminal: rail reconnect after wake resume; strip OSC in pop-out; skip no-op resize so listen is not interrupted.
+
 ## 0.1.26-v6 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v6** / `desktop-v0.1.26-v6`.
