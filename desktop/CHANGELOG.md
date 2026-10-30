@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.26-v5 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v5** / `desktop-v0.1.26-v5`.
+
+- HostLocal: window-level CLI/model/auth cache + room-mount prefetch (less/no loading flash).
+- Wake: skip resume grace when seat has no `wakeRunId` after `room_sleep`; Windows `taskkill /T`.
+- Terminal: remove unused「断开」button.
+- Cursor shim: expand `%SystemRoot%` so seat-launch does not spawn `-NoProfile`.
+- Auth precheck for installed CLIs; Host gray +「请先登录」when logged out.
+- Failed host: unregister + leave rollback (no ghost seat / premature Hi).
+
 ## 0.1.26-v4 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v4** / `desktop-v0.1.26-v4`.
