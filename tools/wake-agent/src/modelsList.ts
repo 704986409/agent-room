@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import type { LauncherAdapter } from './adapter.js';
 import { resolveCommand, spawnCommand } from './adapter.js';
+import { getCachedDetect, setCachedDetect } from './detectCache.js';
 
 /**
  * Process-only model cache. Filled asynchronously at daemon start; cleared on exit.
@@ -146,10 +147,18 @@ export async function refreshAdapterModels(
   for (const adapter of adapters) {
     try {
       let exe = adapter.command;
-      try {
-        const detected = await adapter.detect();
-        if (detected.installed && detected.path) exe = detected.path;
-      } catch { /* use command name */ }
+      let detected = getCachedDetect(adapter.id);
+      if (!detected) {
+        try {
+          detected = await adapter.detect();
+          setCachedDetect(adapter.id, detected);
+        } catch {
+          detected = { installed: false };
+          setCachedDetect(adapter.id, detected);
+        }
+      }
+      if (!detected.installed) continue;
+      if (detected.path) exe = detected.path;
       const models = await runner(adapter.id, exe);
       if (models.length) {
         setLiveModels(adapter.id, models);

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { clearDetectCache } from './src/detectCache.js';
 import {
   clearLiveModels,
   getLiveModels,
@@ -40,6 +41,7 @@ grok-4.7-high - Grok 4.7 High
     });
     expect(parseCodexDebugModels(json)).toEqual(['gpt-6-sol', 'gpt-6-luna', 'default']);
     clearLiveModels();
+    clearDetectCache();
     let models: readonly string[] = ['default', 'gpt-6-sol'];
     const adapter: LauncherAdapter = {
       id: 'codex',
@@ -60,15 +62,18 @@ grok-4.7-high - Grok 4.7 High
     expect(getLiveModels('codex')).toEqual(['default', 'gpt-6-sol', 'gpt-6-luna']);
     expect(adapter.models).toEqual(['default', 'gpt-6-sol', 'gpt-6-luna']);
     clearLiveModels();
+    clearDetectCache();
     expect(getLiveModels('codex')).toBeUndefined();
   });
 
   it('setLiveModels ignores empty', () => {
     clearLiveModels();
+    clearDetectCache();
     setLiveModels('agy', []);
     expect(getLiveModels('agy')).toBeUndefined();
     setLiveModels('agy', ['gemini-3.8-flash-high']);
     expect(getLiveModels('agy')).toEqual(['gemini-3.8-flash-high']);
     clearLiveModels();
+    clearDetectCache();
   });
 });

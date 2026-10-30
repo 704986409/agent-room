@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, stat, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { CodexCliAdapter, createAgyAdapter, createClaudeAdapter, createCursorAdapter, type LauncherAdapter, type ProcessSpawner, type VersionProbe } from './src/adapter.js';
 import { adapterIdForMcp, installAdapterCli, officialInstallScript, resolveNpmInvocation } from './src/cliinstall.js';
 import { startControlServer, type RunningControl } from './src/control.js';
@@ -20,6 +20,7 @@ import {
   windowsHookInvocation,
 } from './src/mcpconfig.js';
 import { SecretRegistry } from './src/redact.js';
+import { clearDetectCache } from './src/detectCache.js';
 
 function tomlAssigned(toml: string, key: string): string {
   const line = toml.split('\n').find(entry => entry.startsWith(`${key} = `));
@@ -37,6 +38,10 @@ function quietSpawner(): ProcessSpawner {
 }
 
 describe('local control server', () => {
+  beforeEach(() => {
+    clearDetectCache();
+  });
+
   it('requires the token, rejects a foreign Origin, and exposes status and pair', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wake-control-'));
     const statePath = join(directory, 'daemon.json');

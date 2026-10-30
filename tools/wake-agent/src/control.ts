@@ -15,13 +15,31 @@ import { deviceCredentialKey, pairComplete, pairWithLogin, restoreDeviceFromCred
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
 import { readOsClipboardText } from './clipboard.js';
-import { modelsForAdapter } from './modelsList.js';
+import { modelsForAdapter, refreshAdapterModels } from './modelsList.js';
+import {
+  beginDetectRefresh,
+  detectCacheAgeMs,
+  detectCacheSize,
+  getCachedDetect,
+  setCachedDetect,
+} from './detectCache.js';
 import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
 
 /** Stable loopback port so the desktop webview can call the daemon without a Tauri rebuild. */
 export const DESKTOP_CONTROL_PORT = 17421;
+
+/** How long /api/status may wait for the first detect warm-up. */
+const STATUS_DETECT_WAIT_MS = 1_500;
+/** Background re-detect interval; status never blocks on a stale refresh. */
+const DETECT_STALE_MS = 60_000;
+/** Cap whoami so a slow/offline server cannot stall HostLocal. */
+const STATUS_WHOAMI_TIMEOUT_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => { setTimeout(resolve, ms); });
+}
 
 const DESKTOP_PATHS = new Set([
   '/api/desktop/ping',
@@ -164,6 +182,15 @@ function corsHeaders(allowOrigin: string | undefined): Record<string, string> {
 
 export async function startControlServer(options: ControlServerOptions): Promise<RunningControl> {
   const token = options.token ?? randomBytes(24).toString('hex');
+  // Background warm so HostLocal can read cache without a blocking detect round-trip.
+  // Skip detect when another boot path (or a prior warm) already filled the cache.
+  if (detectCacheSize() === 0) {
+    void beginDetectRefresh(options.adapters.values()).then(() => {
+      void refreshAdapterModels(options.adapters.values());
+    });
+  } else {
+    void refreshAdapterModels(options.adapters.values());
+  }
   const pairingDeps = (): PairingDeps => ({
     credentials: options.credentials,
     readState: async () => options.daemon.state,
@@ -569,6 +596,18 @@ export async function startControlServer(options: ControlServerOptions): Promise
         nodePath: options.nodePath,
         runId,
       });
+      if (!('error' in result) && result.ok) {
+        setCachedDetect(id, {
+          installed: true,
+          version: result.version,
+          path: result.path,
+        });
+        const installed = options.adapters.get(id);
+        if (installed) void refreshAdapterModels([installed]);
+      } else {
+        // Install may have changed PATH; refresh detects in the background.
+        void beginDetectRefresh(options.adapters.values());
+      }
       send(res, 'error' in result ? 400 : 200, result);
       return;
     }
@@ -632,9 +671,15 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const requestedId = typeof body.adapterId === 'string' ? body.adapterId : '';
     let chosen = requestedId ? options.adapters.get(requestedId) : undefined;
     if (!chosen) {
+      if (detectCacheSize() === 0) {
+        await Promise.race([
+          beginDetectRefresh(options.adapters.values()),
+          sleep(STATUS_DETECT_WAIT_MS),
+        ]);
+      }
       const ready = [];
       for (const adapter of options.adapters.values()) {
-        const detected = await adapter.detect();
+        const detected = getCachedDetect(adapter.id) ?? { installed: false };
         if (detected.installed && modelsForAdapter(adapter).length > 0) ready.push(adapter);
       }
       chosen = ready.find(adapter => adapter.id === 'codex') ?? ready[0];
@@ -702,14 +747,26 @@ export async function startControlServer(options: ControlServerOptions): Promise
     let user: { username?: string; userId?: string; deviceId?: string } | null = null;
     if (device && tokenValue && serverUrl) {
       try {
-        user = await (options.whoami ?? whoami)(serverUrl, tokenValue);
+        user = await Promise.race([
+          (options.whoami ?? whoami)(serverUrl, tokenValue).catch(() => null),
+          sleep(STATUS_WHOAMI_TIMEOUT_MS).then(() => null),
+        ]);
       } catch {
         user = null;
       }
     }
+    // Prefer process cache: never serialize a full detect() on the request path.
+    if (detectCacheSize() === 0) {
+      await Promise.race([
+        beginDetectRefresh(options.adapters.values()),
+        sleep(STATUS_DETECT_WAIT_MS),
+      ]);
+    } else if (detectCacheAgeMs() > DETECT_STALE_MS) {
+      void beginDetectRefresh(options.adapters.values());
+    }
     const adapters = [];
     for (const adapter of options.adapters.values()) {
-      const detected = await adapter.detect();
+      const detected = getCachedDetect(adapter.id) ?? { installed: false };
       adapters.push({ id: adapter.id, command: adapter.command, models: [...modelsForAdapter(adapter)], ...detected });
     }
     return {

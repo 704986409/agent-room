@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createDefaultAdapters, nodeSpawner, shouldDirectSpawn } from './adapter.js';
 import { clearLiveModels, refreshAdapterModels } from './modelsList.js';
+import { beginDetectRefresh, clearDetectCache } from './detectCache.js';
 import { resolveTerminalMode } from './terminalMode.js';
 import { DESKTOP_CONTROL_PORT, startControlServer } from './control.js';
 import { openCredentialStore, processRunner } from './credstore.js';
@@ -208,8 +209,11 @@ async function runDaemonLocked(statePath: string, mode: {
     ? process.env.AGENT_ROOM_DIRECT_SPAWN === '1'
     : shouldDirectSpawn();
   const adapters = createDefaultAdapters(nodeSpawner(), { directSpawn: direct });
-  // Fire-and-forget live model list (process cache only; cleared on exit).
-  void refreshAdapterModels(adapters.values());
+  // Fire-and-forget: detect CLIs then refresh live model lists (process cache only).
+  void (async () => {
+    await beginDetectRefresh(adapters.values());
+    await refreshAdapterModels(adapters.values());
+  })();
   const daemon = new WakeDaemon({
     api: createHttpWakeApi(server, tokenOf),
     adapters,
@@ -253,6 +257,7 @@ async function runDaemonLocked(statePath: string, mode: {
   }
   const shutdown = () => {
     clearLiveModels();
+    clearDetectCache();
     daemon.stop();
   };
   process.once('SIGTERM', shutdown);
