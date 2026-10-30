@@ -236,4 +236,29 @@ describe('POST /api/wake', () => {
     await generateForCommittedMessage(redis, CODE, 7, message('@codex-a later', 70));
     expect(await api.store.list({ roomInstanceId: 'ri_1', seatId: 'st_a' })).toHaveLength(1);
   });
+
+  it('isolates a seat event-parse failure so the device poll still returns 200', async () => {
+    const redis = new WakeTestRedis();
+    const api = service(redis);
+    seed(redis, room(), [message('@codex-a look', 1)], 1);
+    await api.register('dev-a', { code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 });
+    const deadCode = 'ZZZ-YYY-XXX';
+    redis.values.set('wake-bind:st_dead', JSON.stringify({
+      deviceId: 'dev-a', roomInstanceId: 'ri_dead', code: deadCode, name: 'ghost',
+      seatId: 'st_dead', seatKeyHash: 'x', status: 'active', expiresAt: Date.now() + 60_000,
+    }));
+    redis.values.set('wake-meta:st_dead', deadCode + '\t' + 'ri_dead');
+    // Non-idle via corrupt event: list()/JSON.parse throws for this seat only.
+    redis.values.set(`room-msg-count:${deadCode}`, '0');
+    redis.values.set('wake-scan:ri_dead:st_dead', '0');
+    redis.values.set('wake-evt:bad_evt', '{not-json');
+    await redis.command(['SADD', 'wake-seat:ri_dead:st_dead', 'bad_evt']);
+    await redis.command(['SADD', 'wake-device:dev-a', 'st_dead']);
+    const body = await api.poll('dev-a') as { seats: { seatId: string; pending: unknown[] }[] };
+    const ids = body.seats.map(s => s.seatId).sort();
+    expect(ids).toContain('st_a');
+    expect(ids).toContain('st_dead');
+    expect(body.seats.find(s => s.seatId === 'st_dead')!.pending).toEqual([]);
+    expect(body.seats.find(s => s.seatId === 'st_a')).toBeTruthy();
+  });
 });

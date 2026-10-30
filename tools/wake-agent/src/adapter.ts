@@ -165,6 +165,9 @@ export function shouldDirectSpawn(
 /** Session `-c` override. Approves agent-room MCP tools without `--yolo` / `--full-auto`. */
 export const CODEX_MANAGED_MCP_APPROVAL = 'mcp_servers.agent-room.default_tools_approval_mode="approve"';
 
+/** Quiet Codex's "unstable features" stderr banner on managed launch/resume. */
+export const CODEX_SUPPRESS_UNSTABLE_FEATURES_WARNING = 'suppress_unstable_features_warning=true';
+
 /**
  * Codex MCP server keys we auto-approve + URL-override for managed seats.
  * Users may name the server `airoom-e2e` / `airoom` instead of `agent-room`.
@@ -188,7 +191,7 @@ export function codexMcpUrlArg(server: string | undefined, name = 'agent-room'):
 /** Extra argv inserted before the prompt when `AGENT_ROOM_MANAGED=1`. */
 export function managedApprovalArgs(adapterId: string, env?: Record<string, string>): readonly string[] {
   if (adapterId === 'codex') {
-    const args: string[] = [];
+    const args: string[] = ['-c', CODEX_SUPPRESS_UNSTABLE_FEATURES_WARNING];
     for (const name of CODEX_MANAGED_MCP_NAMES) {
       args.push('-c', codexMcpApprovalArg(name));
     }

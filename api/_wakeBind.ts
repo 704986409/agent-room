@@ -141,9 +141,16 @@ export async function readPollSnapshot(client: CommandClient, deviceId: string):
   const list = Array.isArray(rows) ? rows : [];
   return list.map(row => {
     const [seatId, bindRaw, countRaw, scanRaw, eventsRaw] = row as [string, string | false | null, string | number | false | null, string | number | false | null, number | null | undefined];
+    let binding: WakeBinding | null = null;
+    if (bindRaw) {
+      try { binding = JSON.parse(String(bindRaw)) as WakeBinding; }
+      catch (error) {
+        console.error(`[wake] poll snapshot bind JSON seatId=${String(seatId)} reason=${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     return {
       seatId: String(seatId),
-      binding: bindRaw ? JSON.parse(String(bindRaw)) as WakeBinding : null,
+      binding,
       count: asNumber(countRaw),
       scan: asNumber(scanRaw),
       events: Number(eventsRaw ?? 0),

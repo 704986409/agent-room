@@ -228,7 +228,9 @@ export class WakeDaemon {
       if (messageOf(failure) === 'unpaired') skipped = true;
       else {
         networkError = true;
-        if (statusOf(failure) === 401) this.markUnauthorized();
+        const status = statusOf(failure);
+        if (status === 401) this.markUnauthorized();
+        this.logLine(`[wake] poll failed status=${status ?? 0} reason=${messageOf(failure) || 'unknown'}`);
       }
     } finally {
       this.polling = false;

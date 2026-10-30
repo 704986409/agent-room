@@ -118,6 +118,7 @@ describe('wake daemon', () => {
     expect(seat).toMatchObject({ seatId: 'st_a', roomInstanceId: 'ri', sessionId: 'thr_9', pid: 400, status: 'running', model: 'gpt-6-sol' });
     expect(seat.startedAt).toEqual(expect.any(String));
     expect(child.calls[0]!.args.slice(0, 2)).toEqual(['-m', 'gpt-6-sol']);
+    expect(child.calls[0]!.args).toContain('suppress_unstable_features_warning=true');
     expect(child.calls[0]!.args).toContain('mcp_servers.agent-room.default_tools_approval_mode="approve"');
     expect(child.calls[0]!.args.at(-1)).toContain('seatKey: "super-secret-key"');
     expect(child.calls[0]!.args.at(-1)).toContain('AGENT_ROOM_SEAT_KEY');
@@ -160,6 +161,7 @@ describe('wake daemon', () => {
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args).toEqual([
       'resume', 'thr_9', '-m', 'gpt-6-sol',
+      '-c', 'suppress_unstable_features_warning=true',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.airoom-e2e.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.airoom.default_tools_approval_mode="approve"',
@@ -307,6 +309,7 @@ describe('wake daemon', () => {
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args).toEqual([
       'resume', 'thr_9', '-m', 'gpt-6-sol',
+      '-c', 'suppress_unstable_features_warning=true',
       '-c', 'mcp_servers.agent-room.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.airoom-e2e.default_tools_approval_mode="approve"',
       '-c', 'mcp_servers.airoom.default_tools_approval_mode="approve"',

@@ -1036,19 +1036,39 @@ fn open_terminal_window_inner(
         .map_err(|e| format!("终端窗口地址无效: {e}\n{url}"))?;
     if let Some(w) = app.get_webview_window(&label) {
         remember_terminal_seat(&label, seat_id);
-        // Already open: focus only. Re-applying saved geometry would fight an in-progress move.
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-        return Ok(());
+        // Stuck black pop-outs (data: boot hang) stay titled but never load control.
+        // Re-navigate; if that fails, destroy and recreate below.
+        match w.navigate(control.clone()) {
+            Ok(()) => {
+                let _ = w.unminimize();
+                let _ = w.show();
+                let _ = w.set_focus();
+                shell_log(&format!("[popout] recover navigate seatId={seat_id} label={label}"));
+                return Ok(());
+            }
+            Err(error) => {
+                shell_log(&format!(
+                    "[popout] recover navigate failed label={label} reason={error}; recreating"
+                ));
+                close_labeled_window(app, &label);
+            }
+        }
     }
-    let boot = terminal_boot_data_url(seat_id, url);
-    let boot_url = boot.parse().map_err(|e| format!("终端启动页无效: {e}"))?;
     let (width, height) = clamp_terminal_size(
         width.unwrap_or(TERM_DEFAULT_W),
         height.unwrap_or(TERM_DEFAULT_H),
     );
-    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(boot_url));
+    // Windows: open the loopback control URL directly (same path as settings).
+    // data: boot + shared WebView2 env has hung after "create start" with a black window.
+    #[cfg(windows)]
+    let initial = WebviewUrl::External(control.clone());
+    #[cfg(not(windows))]
+    let initial = {
+        let boot = terminal_boot_data_url(seat_id, url);
+        let boot_url = boot.parse().map_err(|e| format!("终端启动页无效: {e}"))?;
+        WebviewUrl::External(boot_url)
+    };
+    let mut builder = WebviewWindowBuilder::new(app, &label, initial);
     if let Some(data_dir) = webview_data_directory(app, &label)? {
         builder = builder.data_directory(data_dir);
     }
@@ -1065,6 +1085,21 @@ fn open_terminal_window_inner(
     if let Some((x, y)) = clamp_terminal_position(x, y) {
         builder = builder.position(x, y);
     }
+    #[cfg(windows)]
+    let created = builder
+        .on_page_load(move |window, payload| {
+            if payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            shell_log(&format!(
+                "[popout] page loaded label={} scheme={}",
+                window.label(),
+                payload.url().scheme()
+            ));
+        })
+        .build()
+        .map_err(|e| format!("无法打开终端窗口: {e}"))?;
+    #[cfg(not(windows))]
     let created = builder
         .on_page_load(move |window, payload| {
             if payload.event() != PageLoadEvent::Finished {

@@ -94,6 +94,7 @@ export class WakeService {
       const code = error instanceof Error ? error.message : '';
       const status = ERROR_STATUS[code];
       if (status) return { status, body: { error: code } };
+      console.error(`[wake] handle failed reason=${error instanceof Error ? error.message : String(error)}`);
       return { status: 500, body: { error: 'internal' } };
     }
   }
@@ -140,48 +141,59 @@ export class WakeService {
     return { unregistered: true, seatId: binding.seatId };
   }
 
-  /** Binding snapshot is one EVAL. Room JSON is read only when a seat actually has unscanned messages. */
+  /** Binding snapshot is one EVAL. Room JSON is read only when a seat actually has unscanned messages.
+   *  Per-seat isolation matches patrol: one bad bind/scan/JSON must not 500 the whole device poll. */
   async poll(deviceId: string): Promise<unknown> {
     const now = this.now();
     const seats = [];
     for (const snap of await readPollSnapshot(this.client, deviceId)) {
       const binding = snap.binding;
       if (!binding || binding.deviceId !== deviceId) continue;
-      if (binding.status !== 'active') {
-        seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: binding.status, pending: [], inFlight: [], failed: [] });
-        continue;
-      }
-      const seat = { roomInstanceId: binding.roomInstanceId, seatId: binding.seatId };
-      // Idle fast path (design §3.4/P1-4): no unscanned messages and no events for this seat ->
-      // the snapshot EVAL was the only Redis work. Room expiry and leases are left to patrol.
-      if (snap.count !== null && snap.scan !== null && snap.count <= snap.scan && snap.events === 0) {
-        seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const, pending: [], inFlight: [], failed: [] });
-        continue;
-      }
-      if (snap.count !== null && snap.scan !== null && snap.count > snap.scan) {
-        const managed = await this.managedSeat(binding);
-        if (managed) {
-          await this.store.scan(managed.seat, async from => {
-            const snapshot = await this.store.loadMessages(binding.code, from);
-            if (!snapshot) throw new Error('room_expired');
-            return snapshot;
-          }, now, managed.expiresAt);
+      try {
+        if (binding.status !== 'active') {
+          seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: binding.status, pending: [], inFlight: [], failed: [] });
+          continue;
         }
+        const seat = { roomInstanceId: binding.roomInstanceId, seatId: binding.seatId };
+        // Idle fast path (design §3.4/P1-4): no unscanned messages and no events for this seat ->
+        // the snapshot EVAL was the only Redis work. Room expiry and leases are left to patrol.
+        if (snap.count !== null && snap.scan !== null && snap.count <= snap.scan && snap.events === 0) {
+          seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const, pending: [], inFlight: [], failed: [] });
+          continue;
+        }
+        if (snap.count !== null && snap.scan !== null && snap.count > snap.scan) {
+          const managed = await this.managedSeat(binding);
+          if (managed) {
+            await this.store.scan(managed.seat, async from => {
+              const snapshot = await this.store.loadMessages(binding.code, from);
+              if (!snapshot) throw new Error('room_expired');
+              return snapshot;
+            }, now, managed.expiresAt);
+          }
+        }
+        const length = Number(await this.client.command(['LLEN', `room-msgs:${binding.code}`]) ?? 0);
+        const oldest = snap.count === null ? 0 : Math.max(0, snap.count - length);
+        await this.store.maintain(seat, snap.count !== null, oldest, now);
+        const events = await this.store.list(seat);
+        if (events.some(e => e.state === 'PENDING' || inFlight(e))) {
+          console.info(`[wake] poll roomCode=${binding.code} seatId=${binding.seatId} pendingEventIds=${events.filter(e => e.state === 'PENDING').map(e => e.eventId).join(',')} inFlightEventIds=${events.filter(inFlight).map(e => e.eventId).join(',')}`);
+        }
+        await this.noteFailures(binding, events);
+        seats.push({
+          seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const,
+          pending: events.filter(e => e.state === 'PENDING').map(summarize),
+          inFlight: events.filter(e => inFlight(e) && e.deviceId === deviceId).map(summarize),
+          failed: events.filter(e => e.state === 'FAILED' || e.state === 'EXPIRED').map(summarize),
+        });
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`[wake] poll seat failed roomCode=${binding.code} seatId=${binding.seatId} reason=${reason}`);
+        seats.push({
+          seatId: binding.seatId, code: binding.code, name: binding.name,
+          status: binding.status === 'active' ? 'active' as const : binding.status,
+          pending: [], inFlight: [], failed: [],
+        });
       }
-      const length = Number(await this.client.command(['LLEN', `room-msgs:${binding.code}`]) ?? 0);
-      const oldest = snap.count === null ? 0 : Math.max(0, snap.count - length);
-      await this.store.maintain(seat, snap.count !== null, oldest, now);
-      const events = await this.store.list(seat);
-      if (events.some(e => e.state === 'PENDING' || inFlight(e))) {
-        console.info(`[wake] poll roomCode=${binding.code} seatId=${binding.seatId} pendingEventIds=${events.filter(e => e.state === 'PENDING').map(e => e.eventId).join(',')} inFlightEventIds=${events.filter(inFlight).map(e => e.eventId).join(',')}`);
-      }
-      await this.noteFailures(binding, events);
-      seats.push({
-        seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const,
-        pending: events.filter(e => e.state === 'PENDING').map(summarize),
-        inFlight: events.filter(e => inFlight(e) && e.deviceId === deviceId).map(summarize),
-        failed: events.filter(e => e.state === 'FAILED' || e.state === 'EXPIRED').map(summarize),
-      });
     }
     return { seats, nextPollMs: this.options.nextPollMs ?? 5000 };
   }
