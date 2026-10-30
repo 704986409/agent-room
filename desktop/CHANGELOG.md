@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.26-v4 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v4** / `desktop-v0.1.26-v4`.
+
+- HostLocal: process-cache CLI detect + models; `/api/status` no longer serial-detects on every open.
+- Boot background warm-up; 60s stale background refresh; whoami on status capped at 2s.
+- CLI install success writes detect cache immediately.
+
 ## 0.1.26-v1 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v1** / `desktop-v0.1.26-v1`.
