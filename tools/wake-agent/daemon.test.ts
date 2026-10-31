@@ -724,6 +724,7 @@ describe('state file round trip', () => {
       resumeGraceMs: 8_000,
       stopProcess: pid => { stopped.push(pid); alive = false; },
       credentials: creds,
+      injectEnterDelayMs: 0,
       writeSeatStdin: (seatId, data) => {
         writes.push({ seatId, data });
         return true;
@@ -732,11 +733,12 @@ describe('state file round trip', () => {
     await daemon.tick();
     expect(stopped).toEqual([]);
     expect(child.calls).toHaveLength(0);
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
     expect(writes[0]!.seatId).toBe('st_a');
-    expect(writes[0]!.data.endsWith('\r') || writes[0]!.data.includes('\r') || writes[0]!.data.charCodeAt(writes[0]!.data.length - 1) === 13).toBe(true);
     expect(writes[0]!.data).toContain('since: 183');
     expect(writes[0]!.data).toContain('seatKey: "seat-key-secret"');
+    expect(writes[0]!.data.includes('\r')).toBe(false);
+    expect(writes[1]).toEqual({ seatId: 'st_a', data: '\r' });
     expect(writes[0]!.data.length).toBeLessThan(wakePrompt({
       code: 'ABC-DEF-GHJ', name: 'cursor-a', readFrom: 183, seatKey: 'seat-key-secret',
     }).length);
@@ -762,7 +764,8 @@ describe('state file round trip', () => {
     await daemon.tick();
     expect(stopped).toEqual([]);
     expect(child.calls).toHaveLength(0);
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]).toEqual({ seatId: 'st_a', data: '\r' });
     expect(daemon.seats[0]!.pid).toBe(400);
   });
 
@@ -824,6 +827,7 @@ describe('state file round trip', () => {
       stopProcess: pid => { stopped.push(pid); alive = false; },
       server: 'http://127.0.0.1:9',
       credentials: creds,
+      injectEnterDelayMs: 0,
       writeSeatStdin: (_seatId, data) => { writes.push(data); return true; },
     });
     await daemon.tick();
@@ -834,10 +838,10 @@ describe('state file round trip', () => {
     await daemon.tick();
     expect(stopped).toEqual([]);
     expect(child.calls).toHaveLength(0);
-    expect(writes).toHaveLength(1);
-    expect(writes[0]).toContain(reuseWakePrompt({
+    const expected = reuseWakePrompt({
       code: 'ABC-DEF-GHJ', name: 'codex-a', readFrom: 183, seatKey: 'seat-key-secret',
-    }).slice(0, 20));
+    });
+    expect(writes).toEqual([expected, '\r']);
     expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, sessionId: 'thr_9' });
   });
 

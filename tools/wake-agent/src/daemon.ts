@@ -133,6 +133,12 @@ export interface WakeDaemonOptions {
    * (caller falls back to stop+codex resume).
    */
   writeSeatStdin?: (seatId: string, data: string) => boolean;
+  /**
+   * Delay between typing the inject prompt and sending Enter (CR).
+   * Default 80ms so ConPTY/Codex do not treat text+CR as one unsubmitted paste.
+   * Tests set 0.
+   */
+  injectEnterDelayMs?: number;
 }
 
 export class WakeDaemon {
@@ -601,11 +607,12 @@ export class WakeDaemon {
     const prompt = reuseWakePrompt({
       code: seat.code, name: seat.name, readFrom: claimed.readFrom, seatKey,
     });
-    // Enter as CR — matches xterm.js default for the Return key.
-    const payload = `${prompt}\r`;
+    // Two-step inject: type the short prompt, then send Enter as its own
+    // keystroke. Appending \r in the same write leaves Codex/Cursor TUIs with
+    // text sitting in the composer (ConPTY treats the burst like a paste).
     let written = false;
     try {
-      written = write(seat.seatId, payload);
+      written = write(seat.seatId, prompt);
     } catch (error) {
       this.logLine(`[wake] inject write threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
       written = false;
@@ -615,6 +622,32 @@ export class WakeDaemon {
       await this.options.lock.release(seat.seatId);
       return false;
     }
+    this.logLine(`[wake] inject text ok roomCode=${seat.code} seatId=${seat.seatId} promptChars=${prompt.length}`);
+    const enterDelayMs = this.options.injectEnterDelayMs ?? 80;
+    if (enterDelayMs > 0) {
+      await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
+    }
+    // Enter as CR — matches xterm.js default for the Return key.
+    let enterOk = false;
+    try {
+      enterOk = write(seat.seatId, '\r');
+    } catch (error) {
+      this.logLine(`[wake] inject enter threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+      enterOk = false;
+    }
+    if (!enterOk) {
+      // One retry after a short pause — still prefer not to kill the live PTY.
+      if (enterDelayMs > 0) {
+        await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
+      }
+      try {
+        enterOk = write(seat.seatId, '\r');
+      } catch (error) {
+        this.logLine(`[wake] inject enter retry threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+        enterOk = false;
+      }
+    }
+    this.logLine(`[wake] inject enter ${enterOk ? 'ok' : 'failed'} roomCode=${seat.code} seatId=${seat.seatId}`);
     try {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
     } catch (error) {
@@ -626,8 +659,10 @@ export class WakeDaemon {
     // @. Holding the lock (resumeSeat style) would force the next wake down the
     // stop+resume path and blank the rail again.
     await this.options.lock.release(seat.seatId);
-    this.logLine(`[wake] inject ok roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} wakeRunId=${claimed.wakeRunId} promptChars=${prompt.length}`);
+    this.logLine(`[wake] inject ok roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} wakeRunId=${claimed.wakeRunId} promptChars=${prompt.length} enter=${enterOk ? '1' : '0'}`);
     this.logLine(prompt);
+    // Text reached the PTY; even if Enter failed we must not stop+resume (would
+    // blank the rail and duplicate the prompt). Operator can press Enter once.
     return true;
   }
 
