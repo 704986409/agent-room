@@ -735,6 +735,8 @@ describe('state file round trip', () => {
     expect(child.calls).toHaveLength(0);
     expect(writes).toHaveLength(2);
     expect(writes[0]!.seatId).toBe('st_a');
+    expect(writes[0]!.data.startsWith('\x1b[200~')).toBe(true);
+    expect(writes[0]!.data.endsWith('\x1b[201~')).toBe(true);
     expect(writes[0]!.data).toContain('since: 183');
     expect(writes[0]!.data).toContain('seatKey: "seat-key-secret"');
     expect(writes[0]!.data.includes('\r')).toBe(false);
@@ -765,6 +767,7 @@ describe('state file round trip', () => {
     expect(stopped).toEqual([]);
     expect(child.calls).toHaveLength(0);
     expect(writes).toHaveLength(2);
+    expect(writes[0]!.data.startsWith('\x1b[200~')).toBe(true);
     expect(writes[1]).toEqual({ seatId: 'st_a', data: '\r' });
     expect(daemon.seats[0]!.pid).toBe(400);
   });
@@ -841,7 +844,7 @@ describe('state file round trip', () => {
     const expected = reuseWakePrompt({
       code: 'ABC-DEF-GHJ', name: 'codex-a', readFrom: 183, seatKey: 'seat-key-secret',
     });
-    expect(writes).toEqual([expected, '\r']);
+    expect(writes).toEqual([`\x1b[200~${expected}\x1b[201~`, '\r']);
     expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, sessionId: 'thr_9' });
   });
 

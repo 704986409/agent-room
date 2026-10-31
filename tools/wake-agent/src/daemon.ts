@@ -135,8 +135,8 @@ export interface WakeDaemonOptions {
   writeSeatStdin?: (seatId: string, data: string) => boolean;
   /**
    * Delay between typing the inject prompt and sending Enter (CR).
-   * Default 80ms so ConPTY/Codex do not treat text+CR as one unsubmitted paste.
-   * Tests set 0.
+   * Default 250ms — must exceed Codex paste-burst Enter suppress (120ms) plus
+   * Windows idle flush (60ms). Tests set 0.
    */
   injectEnterDelayMs?: number;
 }
@@ -607,12 +607,19 @@ export class WakeDaemon {
     const prompt = reuseWakePrompt({
       code: seat.code, name: seat.name, readFrom: claimed.readFrom, seatKey,
     });
-    // Two-step inject: type the short prompt, then send Enter as its own
-    // keystroke. Appending \r in the same write leaves Codex/Cursor TUIs with
-    // text sitting in the composer (ConPTY treats the burst like a paste).
+    // Codex (Windows ConPTY) classifies a fast char burst as paste and keeps an
+    // Enter-suppress window (~120ms after last burst activity; idle flush ~60ms).
+    // Enter inside that window becomes a newline and *extends* the window — so a
+    // short delay + retry never submits. Beat it by: (1) bracketed paste for
+    // Codex (clears the window via clear_after_explicit_paste), (2) wait past
+    // the suppress window, (3) optional End key to clear residual state, (4)
+    // one CR. Never rapid-fire Enter.
+    const isCodex = seat.adapterId === 'codex';
+    const textPayload = isCodex ? `\x1b[200~${prompt}\x1b[201~` : prompt;
+    const injectMode = isCodex ? 'bracketed' : 'plain';
     let written = false;
     try {
-      written = write(seat.seatId, prompt);
+      written = write(seat.seatId, textPayload);
     } catch (error) {
       this.logLine(`[wake] inject write threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
       written = false;
@@ -622,10 +629,20 @@ export class WakeDaemon {
       await this.options.lock.release(seat.seatId);
       return false;
     }
-    this.logLine(`[wake] inject text ok roomCode=${seat.code} seatId=${seat.seatId} promptChars=${prompt.length}`);
-    const enterDelayMs = this.options.injectEnterDelayMs ?? 80;
+    const enterDelayMs = this.options.injectEnterDelayMs ?? 250;
+    this.logLine(`[wake] inject text ok roomCode=${seat.code} seatId=${seat.seatId} promptChars=${prompt.length} mode=${injectMode} delayMs=${enterDelayMs}`);
     if (enterDelayMs > 0) {
       await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
+    }
+    // Non-char clears Codex paste-burst Enter-suppress (paste_burst.rs).
+    // Skip when delay is 0 (unit tests assert a single CR write).
+    if (isCodex && enterDelayMs > 0) {
+      try {
+        write(seat.seatId, '\x1b[F');
+      } catch (error) {
+        this.logLine(`[wake] inject clear threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, Math.min(50, enterDelayMs)));
     }
     // Enter as CR — matches xterm.js default for the Return key.
     let enterOk = false;
@@ -636,7 +653,8 @@ export class WakeDaemon {
       enterOk = false;
     }
     if (!enterOk) {
-      // One retry after a short pause — still prefer not to kill the live PTY.
+      // Retry only after a full delay — a quick second Enter would re-open the
+      // Codex suppress window if the first one landed as a newline.
       if (enterDelayMs > 0) {
         await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
       }
@@ -647,7 +665,7 @@ export class WakeDaemon {
         enterOk = false;
       }
     }
-    this.logLine(`[wake] inject enter ${enterOk ? 'ok' : 'failed'} roomCode=${seat.code} seatId=${seat.seatId}`);
+    this.logLine(`[wake] inject enter ${enterOk ? 'ok' : 'failed'} roomCode=${seat.code} seatId=${seat.seatId} mode=${injectMode}`);
     try {
       await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
     } catch (error) {
