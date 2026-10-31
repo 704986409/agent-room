@@ -69,6 +69,23 @@ function api(): WakeApi & { calls: string[]; polls: number; registered: { seatKe
 }
 
 describe('wake daemon', () => {
+  it('keeps polling after a poll timeout instead of throwing out of run()', async () => {
+    const client = api();
+    let calls = 0;
+    const timeout = Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+    client.poll = async () => { calls++; if (calls <= 2) throw timeout; return { seats: [], nextPollMs: 5 } as never; };
+    let sleeps = 0;
+    const daemon: WakeDaemon = new WakeDaemon({
+      api: client,
+      adapters: new Map(),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      sleep: async () => { sleeps++; if (sleeps >= 3) daemon.stop(); },
+    });
+    await expect(daemon.run()).resolves.toBeUndefined();
+    expect(calls).toBeGreaterThanOrEqual(3);
+  });
+
   it('releases a stale file lock left by a killed daemon so idle seats can resume', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'wake-lock-'));
     const lock = new FileRunLock(directory);

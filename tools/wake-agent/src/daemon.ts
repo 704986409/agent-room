@@ -266,9 +266,15 @@ export class WakeDaemon {
       }, ms);
     }));
     while (!this.stopped) {
-      await this.tick();
+      try {
+        await this.tick();
+      } catch (error) {
+        // Never let one bad tick (sleep/resume, network abort) end the loop.
+        this.polling = false;
+        this.logLine(`[wake] tick error reason=${error instanceof Error ? error.message : String(error)}`);
+      }
       if (this.stopped) break;
-      await sleep(this.waitMs);
+      try { await sleep(this.waitMs); } catch { /* ignore */ }
     }
   }
 
@@ -450,7 +456,7 @@ export class WakeDaemon {
     seat.status = 'revoked';
     seat.pid = undefined;
     seat.wakeRunId = undefined;
-    void this.options.lock.release(seat.seatId);
+    void Promise.resolve().then(() => this.options.lock.release(seat.seatId)).catch(() => {});
   }
 
   private markUnauthorized(): void {
@@ -468,11 +474,11 @@ export class WakeDaemon {
     seat.status = 'idle';
     seat.pid = undefined;
     seat.wakeRunId = undefined;
-    void this.options.lock.release(seat.seatId);
+    void Promise.resolve().then(() => this.options.lock.release(seat.seatId)).catch(() => {});
   }
 
   private watchExit(seatId: string, pid: number, exited: Promise<number>): void {
-    void exited.then(code => {
+    void exited.catch(() => -1).then(code => {
       const seat = this.options.state.seats.find(item => item.seatId === seatId);
       if (!seat || seat.pid !== pid || seat.status !== 'running') return;
       const claims = this.claimsBySeat.get(seatId) ?? [];
@@ -481,11 +487,12 @@ export class WakeDaemon {
       seat.pid = undefined;
       seat.wakeRunId = undefined;
       this.claimsBySeat.delete(seatId);
-      void this.options.lock.release(seatId);
+      void Promise.resolve().then(() => this.options.lock.release(seatId)).catch(() => {});
       if (code !== 0 && claims.length) {
-        void this.options.api.progress({ claims: claims.map(claimId => ({ claimId, status: 'resume_failed' as const })) });
+        void Promise.resolve().then(() => this.options.api.progress({ claims: claims.map(claimId => ({ claimId, status: 'resume_failed' as const })) }))
+          .catch(error => this.logLine(`[wake] progress failed seatId=${seatId} reason=${error instanceof Error ? error.message : String(error)}`));
       }
-      void this.options.persist?.(this.options.state);
+      void Promise.resolve().then(() => this.options.persist?.(this.options.state)).catch(() => {});
     });
   }
 

@@ -203,6 +203,14 @@ async function runDaemonLocked(statePath: string, mode: {
   if (holder) secrets.add(holder);
   const tokenOf = async () => holder;
   const log = new DaemonLog(secrets, join(stateDir, 'daemon.log'));
+  // Safety net: network/async errors (undici AbortSignal.timeout, PTY races)
+  // must never kill the daemon or the :17421 control server.
+  process.on('unhandledRejection', reason => {
+    try { log.write(`[daemon] unhandledRejection (kept alive): ${reason instanceof Error ? (reason.stack ?? reason.message) : String(reason)}`); } catch { /* ignore */ }
+  });
+  process.on('uncaughtException', error => {
+    try { log.write(`[daemon] uncaughtException (kept alive): ${error?.stack ?? String(error)}`); } catch { /* ignore */ }
+  });
   // Embedded mode uses an in-app PTY even without DISPLAY; only force direct
   // spawn when system mode would (or AGENT_ROOM_DIRECT_SPAWN=1).
   const terminalMode = resolveTerminalMode();
