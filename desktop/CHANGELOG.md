@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26-v8 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v8** / `desktop-v0.1.26-v8`.
+
+- MCP: managed Quiet returns `listenStatus=sleep`; tool/server copy carve out managed sleep (no endless re-listen).
+- Daemon: catch wake progress/lock/persist rejections; process-level unhandledRejection/uncaughtException safety net (TimeoutError no longer kills background).
+- Web: full-page gray frosted offline overlay — instant on offline / failed fetch; clears after health probe succeeds.
+
+
 ## 0.1.26-v7 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v7** / `desktop-v0.1.26-v7`.
