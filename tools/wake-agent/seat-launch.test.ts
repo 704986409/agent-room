@@ -78,3 +78,26 @@ describe('resolveCli WindowsApps call shim', () => {
     expect(resolved.command.toLowerCase()).not.toMatch(/\.cmd$/);
   });
 });
+
+describe('resolveCli Cursor SCRIPT_DIR shim', () => {
+  it('keeps cursor-agent.ps1 after expanding %SCRIPT_DIR% (not -File --resume)', async () => {
+    const { writeFileSync } = await import('node:fs');
+    const directory = await mkdtemp(join(tmpdir(), 'seat-launch-script-dir-'));
+    const ps1 = join(directory, 'cursor-agent.ps1');
+    const cmd = join(directory, 'cursor-agent.cmd');
+    writeFileSync(ps1, '# stub\r\n');
+    writeFileSync(cmd, [
+      '@echo off',
+      'setlocal',
+      'set "SCRIPT_DIR=%~dp0"',
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%\\cursor-agent.ps1" %*',
+      '',
+    ].join('\r\n'));
+    const resolved = resolveCli(cmd);
+    expect(resolved.command.toLowerCase()).toContain('powershell');
+    const fileIdx = resolved.args.findIndex(a => /^-File$/i.test(a));
+    expect(fileIdx).toBeGreaterThanOrEqual(0);
+    expect(resolved.args[fileIdx + 1].toLowerCase()).toBe(ps1.toLowerCase());
+    expect(resolved.args.some(a => a === '--resume')).toBe(false);
+  });
+});

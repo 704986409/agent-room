@@ -83,7 +83,15 @@ export class WakeService {
       switch (str(record.action)) {
         case 'register': return { status: 200, body: await this.register(device.deviceId, record) };
         case 'unregister': return { status: 200, body: await this.unregister(device.deviceId, record) };
-        case 'poll': return { status: 200, body: await this.poll(device.deviceId) };
+        case 'poll': {
+          const waitRaw = record.waitMs;
+          const waitMs = typeof waitRaw === 'number' && Number.isFinite(waitRaw)
+            ? Math.max(0, Math.min(30_000, Math.floor(waitRaw)))
+            : typeof waitRaw === 'string' && /^\d+$/.test(waitRaw)
+              ? Math.max(0, Math.min(30_000, Number(waitRaw)))
+              : 0;
+          return { status: 200, body: await this.poll(device.deviceId, waitMs) };
+        }
         case 'claim': return { status: 200, body: await this.claim(device.deviceId, record) };
         case 'renew': return { status: 200, body: await this.renew(device.deviceId, record) };
         case 'progress': return { status: 200, body: await this.progress(device.deviceId, record) };
@@ -143,7 +151,45 @@ export class WakeService {
 
   /** Binding snapshot is one EVAL. Room JSON is read only when a seat actually has unscanned messages.
    *  Per-seat isolation matches patrol: one bad bind/scan/JSON must not 500 the whole device poll. */
-  async poll(deviceId: string): Promise<unknown> {
+  async poll(deviceId: string, waitMs = 0): Promise<unknown> {
+    const holdMs = Math.max(0, Math.min(30_000, Math.floor(waitMs || 0)));
+    const deadline = this.now() + holdMs;
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        const body = await this.pollOnce(deviceId) as {
+          seats: Array<{ pending?: unknown[]; inFlight?: unknown[]; failed?: unknown[]; status?: string }>;
+          nextPollMs?: number;
+        };
+        const seats = Array.isArray(body.seats) ? body.seats : [];
+        // Only pending/inFlight (or non-active) end the hold — stale failed[] must not defeat long-poll.
+        const hasWork = seats.some(seat =>
+          (Array.isArray(seat.pending) && seat.pending.length > 0)
+          || (Array.isArray(seat.inFlight) && seat.inFlight.length > 0)
+          || (seat.status && seat.status !== 'active'));
+        const remaining = deadline - this.now();
+        if (hasWork || holdMs <= 0 || remaining <= 0) {
+          if (holdMs > 0) {
+            console.info(`[wake] long-poll done deviceId=${deviceId} attempt=${attempt} hasWork=${hasWork} remainingMs=${Math.max(0, remaining)}`);
+          }
+          return {
+            ...body,
+            // Long-poll already waited; tell daemon to re-enter promptly when idle.
+            nextPollMs: holdMs > 0 ? 0 : (body.nextPollMs ?? this.options.nextPollMs ?? 5000),
+          };
+        }
+        const sleepFor = Math.min(1_000, Math.max(50, remaining));
+        await new Promise<void>(resolve => setTimeout(resolve, sleepFor));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        console.error(`[wake] long-poll error deviceId=${deviceId} attempt=${attempt} reason=${reason}`);
+        throw error;
+      }
+    }
+  }
+
+  async pollOnce(deviceId: string): Promise<unknown> {
     const now = this.now();
     const seats = [];
     for (const snap of await readPollSnapshot(this.client, deviceId)) {

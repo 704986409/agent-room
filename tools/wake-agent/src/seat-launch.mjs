@@ -24,8 +24,10 @@ export function expandEnvVars(value, env = process.env) {
 
 export function expandDp0(value, cmdPath) {
   const dir = dirname(cmdPath).replace(/[\\/]+$/g, '');
-  const slash = `${dir}/`;
+  // Trailing sep matches cmd `%~dp0` / typical `set SCRIPT_DIR=%~dp0`.
+  const slash = `${dir}${sep}`;
   return value
+    .replace(/%SCRIPT_DIR%/gi, slash)
     .replace(/%~dp0%/gi, slash)
     .replace(/%dp0%/gi, slash)
     .replace(/%~dp0/gi, slash)
@@ -100,6 +102,18 @@ export function resolveCli(command, env = process.env, seen = new Set()) {
     throw new Error(`seat-launch: ${command} is a cmd shim; refusing to pass the prompt through cmd.exe`);
   }
   const [file, ...rest] = concrete;
+  // Cursor agent.cmd: powershell … -File "%SCRIPT_DIR%\cursor-agent.ps1"
+  // After SCRIPT_DIR expansion the .ps1 must remain; otherwise -File eats --resume.
+  const fileFlag = rest.findIndex(arg => /^-File$/i.test(arg));
+  if (fileFlag >= 0) {
+    const script = rest[fileFlag + 1];
+    if (typeof script !== 'string' || !/\.ps1$/i.test(script)) {
+      throw new Error(`seat-launch: ${command} PowerShell -File is missing a .ps1 path (got ${script ?? 'nothing'})`);
+    }
+    if (!existsSync(script)) {
+      throw new Error(`seat-launch: ${command} PowerShell script missing: ${script}`);
+    }
+  }
   if (/\.(mjs|cjs|js)$/i.test(file)) return { command: nodeBin, args: [file, ...rest] };
   if (/node\.exe$/i.test(file)) {
     const script = rest.find(arg => /\.(mjs|cjs|js)$/i.test(arg));
@@ -169,6 +183,9 @@ export function main(argv = process.argv, env = process.env) {
     }
   }
 
+  try {
+    process.stderr.write(`seat-launch: spawn ${resolved.command} ${JSON.stringify([...resolved.args, ...(cliArgs.length ? ['<prompt>', ...cliArgs.slice(1)] : [])])}\n`);
+  } catch { /* ignore */ }
   const child = spawn(resolved.command, [...resolved.args, ...cliArgs], {
     cwd: launchCwd(spec.cwd),
     env: childEnv,

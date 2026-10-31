@@ -1,4 +1,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+
+/** Long-poll may hold up to 30s; leave headroom for platform limits. */
+export const config = { maxDuration: 60 };
 import { createClient } from '@agent-room/upstash-client';
 import { RedisDeviceAuthenticator } from './_wakeDevice.js';
 import { installWakeSendHook } from './_wakeSend.js';

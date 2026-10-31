@@ -41,7 +41,7 @@ export interface ClaimResult {
 /** Daemon HTTP surface. There is no action that marks an event succeeded. */
 export interface WakeApi {
   register(body: { code: string; name: string; seatKey: string; cursor: number }): Promise<{ roomInstanceId: string; seatId: string; scanFrom: number }>;
-  poll(): Promise<{ seats: WakeSeatView[]; nextPollMs?: number }>;
+  poll(input?: { waitMs?: number }): Promise<{ seats: WakeSeatView[]; nextPollMs?: number }>;
   claim(body: { eventIds: string[]; wakeRunId?: string }): Promise<ClaimResult>;
   renew(body: { claimIds: string[] }): Promise<unknown>;
   progress(body: { claims: { claimId: string; status: 'resume_started' | 'resume_failed' }[] }): Promise<unknown>;
@@ -134,6 +134,9 @@ export class WakeDaemon {
   private stopped = false;
   private authBlocked = false;
   emptyStreak = 0;
+  /** When set, force short poll until this epoch ms (after long-poll failures). */
+  longPollFallbackUntil = 0;
+  longPollHoldMs = 30_000;
   waitMs = 5_000;
   serverNextPollMs = 5_000;
   readonly polls: Promise<unknown>[] = [];
@@ -174,11 +177,21 @@ export class WakeDaemon {
     let busy = false;
     let skipped = false;
     let failure: unknown;
-    const flight = this.options.api.poll().then(result => result, error => { failure = error; throw error; });
+    const now = Date.now();
+    const useLongPoll = now >= this.longPollFallbackUntil;
+    const waitMs = useLongPoll ? this.longPollHoldMs : 0;
+    const startedAt = now;
+    this.logLine(`[wake] poll start mode=${useLongPoll ? 'long' : 'short'} waitMs=${waitMs} emptyStreak=${this.emptyStreak}`);
+    const flight = this.options.api.poll(waitMs > 0 ? { waitMs } : undefined)
+      .then(result => result, error => { failure = error; throw error; });
     this.polls.push(flight);
     try {
       const result = await flight;
-      this.serverNextPollMs = result.nextPollMs ?? 5_000;
+      const elapsed = Date.now() - startedAt;
+      const pendingCount = result.seats.reduce((n, seat) => n + (seat.pending?.length ?? 0) + (seat.inFlight?.length ?? 0), 0);
+      this.logLine(`[wake] poll ok mode=${useLongPoll ? 'long' : 'short'} elapsedMs=${elapsed} seats=${result.seats.length} work=${pendingCount} nextPollMs=${result.nextPollMs ?? 'none'}`);
+      if (useLongPoll) this.longPollFallbackUntil = 0;
+      this.serverNextPollMs = result.nextPollMs ?? (useLongPoll ? 0 : 5_000);
       for (const remote of result.seats) {
         const seat = this.options.state.seats.find(item => item.seatId === remote.seatId);
         if (!seat) continue;
@@ -230,22 +243,40 @@ export class WakeDaemon {
         networkError = true;
         const status = statusOf(failure);
         if (status === 401) this.markUnauthorized();
-        this.logLine(`[wake] poll failed status=${status ?? 0} reason=${messageOf(failure) || 'unknown'}`);
+        const reason = messageOf(failure) || 'unknown';
+        this.logLine(`[wake] poll failed mode=${useLongPoll ? 'long' : 'short'} status=${status ?? 0} reason=${reason} elapsedMs=${Date.now() - startedAt}`);
+        if (useLongPoll) {
+          // Fall back to short poll + classic backoff for a few minutes.
+          this.longPollFallbackUntil = Date.now() + 180_000;
+          this.logLine(`[wake] long-poll fallback until=${new Date(this.longPollFallbackUntil).toISOString()} reason=${reason}`);
+        }
       }
     } finally {
       this.polling = false;
       if (!skipped) {
-        const decision = nextWait({
-          emptyStreak: this.emptyStreak,
-          busy,
-          networkError,
-          serverNextPollMs: this.serverNextPollMs,
-          random: this.options.random?.() ?? 0,
-        });
-        this.emptyStreak = decision.emptyStreak;
-        this.waitMs = decision.waitMs;
+        if (!networkError && useLongPoll && !busy) {
+          // Server already held ~30s; re-enter immediately.
+          this.emptyStreak = 0;
+          this.waitMs = Math.max(0, this.serverNextPollMs || 0);
+          this.logLine(`[wake] long-poll idle reenter waitMs=${this.waitMs}`);
+        } else {
+          const decision = nextWait({
+            emptyStreak: this.emptyStreak,
+            busy,
+            networkError,
+            serverNextPollMs: this.serverNextPollMs,
+            random: this.options.random?.() ?? 0,
+          });
+          this.emptyStreak = decision.emptyStreak;
+          this.waitMs = decision.waitMs;
+          this.logLine(`[wake] next waitMs=${this.waitMs} emptyStreak=${this.emptyStreak} busy=${busy} networkError=${networkError}`);
+        }
       }
-      await this.options.persist?.(this.options.state);
+      try {
+        await this.options.persist?.(this.options.state);
+      } catch (error) {
+        this.logLine(`[wake] persist after poll failed reason=${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 

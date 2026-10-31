@@ -285,22 +285,31 @@ export function DesktopSeatTerminal({
         : new TextDecoder().decode(event.data as ArrayBuffer);
       term?.write(data);
     };
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (!current()) return;
       socketRef.current = null;
       setConnected(false);
-      setNoteErr(false);
+      const reason = typeof event.reason === 'string' ? event.reason.trim() : '';
+      const exitDetail = /^exit=/.test(reason) ? reason : '';
       if (poppedRef.current === next) {
+        setNoteErr(false);
         setNote(tRef.current('desktopTerminal.popped'));
         return;
       }
       if (closedByUserRef.current.has(next)) {
+        setNoteErr(false);
         setNote(tRef.current('desktopTerminal.disconnected'));
         return;
       }
-      setNote(tRef.current('desktopTerminal.disconnected'));
-      // Wake resume kills the old PTY (daemon closes WS with pty_exited) then
-      // spawns a new one under the same seatId — reattach so the rail refreshes.
+      if (exitDetail) {
+        setNoteErr(true);
+        setNote(tRef.current('desktopTerminal.processExited', { detail: exitDetail.slice(0, 180) }));
+      } else {
+        setNoteErr(false);
+        setNote(tRef.current('desktopTerminal.disconnected'));
+      }
+      // Wake resume kills the old PTY then spawns a new one under the same seatId —
+      // reattach so the rail refreshes. Crash exits also try once; list refresh clears.
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;

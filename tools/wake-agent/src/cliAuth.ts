@@ -32,6 +32,10 @@ export function clearAuthCache(): void {
   authInflight = null;
 }
 
+export function invalidateAuth(adapterId: string): void {
+  authCache.delete(adapterId);
+}
+
 export function authCacheSize(): number {
   return authCache.size;
 }
@@ -212,6 +216,23 @@ export function beginAuthRefresh(
     authInflight = null;
   });
   return authInflight;
+}
+
+/** Argv for interactive CLI login in an embedded PTY (no YOLO). */
+export function loginArgsFor(adapterId: string): readonly string[] {
+  switch (adapterId) {
+    case 'codex':
+      return ['login'];
+    case 'cursor-agent':
+      return ['login'];
+    case 'agy':
+      // Gemini CLI: run `agy` and follow Google sign-in prompts.
+      return [];
+    case 'claude':
+      return ['auth', 'login'];
+    default:
+      return ['login'];
+  }
 }
 
 /** Login hint shown in the HostLocal dialog / host error. */

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26-v9 (pack)
+
+Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v9** / `desktop-v0.1.26-v9`.
+
+- Cursor HostLocal: expand `%SCRIPT_DIR%` in seat-launch so PowerShell keeps `-File …\cursor-agent.ps1` (no flash-exit `-196608`).
+- Terminal rail: surface PTY exit code + short log tail on process exit.
+- HostLocal: 「请先登录」opens embedded login PTY modal; on success auto-continues host.
+- Wake: HTTP long-poll hold ~30s with detailed logs; short-poll/backoff fallback after failures.
+
 ## 0.1.26-v8 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v8** / `desktop-v0.1.26-v8`.

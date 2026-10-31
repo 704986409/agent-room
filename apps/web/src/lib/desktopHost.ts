@@ -260,3 +260,82 @@ export async function hostOnThisMachine(
   }
   return { ok: true, seat: body.seat ?? {} };
 }
+
+export interface DesktopCliLoginResult {
+  ok: true;
+  seatId: string;
+  adapterId: string;
+  hint?: string;
+}
+
+/** Spawn an embedded PTY that runs the CLI login command (agy / codex login / …). */
+export async function startDesktopCliLogin(
+  adapterId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DesktopCliLoginResult> {
+  const id = adapterId.trim();
+  if (!id) throw new Error('adapter_id');
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/cli-login`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-room-desktop': '1',
+      },
+      body: JSON.stringify({ adapterId: id }),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  }
+  const body = await response.json().catch(() => ({})) as {
+    ok?: boolean; error?: string; hint?: string; seatId?: string; adapterId?: string;
+  };
+  if (!response.ok || !body.ok || !body.seatId) {
+    throw new Error(body.hint || body.error || `无法打开登录终端（HTTP ${response.status}）`);
+  }
+  return { ok: true, seatId: body.seatId, adapterId: body.adapterId || id, hint: body.hint };
+}
+
+export interface DesktopCliLoginRefreshResult {
+  ok: true;
+  adapterId: string;
+  loggedIn: boolean | null;
+  detail?: string | null;
+}
+
+/** Force-reprobe CLI auth after the user finishes login in the embedded terminal. */
+export async function refreshDesktopCliLoginAuth(
+  adapterId: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<DesktopCliLoginRefreshResult> {
+  const id = adapterId.trim();
+  if (!id) throw new Error('adapter_id');
+  let response: Response;
+  try {
+    response = await fetchImpl(`${DESKTOP_CONTROL_ORIGIN}/api/desktop/cli-login/refresh`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agent-room-desktop': '1',
+      },
+      body: JSON.stringify({ adapterId: id }),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'network';
+    throw new Error(`本机后台没有响应（${detail}）。请确认桌面端已打开。`);
+  }
+  const body = await response.json().catch(() => ({})) as {
+    ok?: boolean; error?: string; adapterId?: string; loggedIn?: boolean | null; detail?: string | null;
+  };
+  if (!response.ok || !body.ok) {
+    throw new Error(body.error || `无法刷新登录状态（HTTP ${response.status}）`);
+  }
+  return {
+    ok: true,
+    adapterId: body.adapterId || id,
+    loggedIn: body.loggedIn === true ? true : body.loggedIn === false ? false : null,
+    detail: body.detail ?? null,
+  };
+}

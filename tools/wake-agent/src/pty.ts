@@ -50,6 +50,8 @@ type PtyModule = {
 };
 
 const registry = new Map<string, PtySession>();
+/** Recent PTY exits (seat removed from registry on exit). Cap retained for UI. */
+const lastExits = new Map<string, { code: number; at: number; tail: string }>();
 let ptyModule: PtyModule | null | undefined;
 
 /** Bytes of UTF-8 PTY output kept so a docked terminal can replay after idle. */
@@ -150,6 +152,10 @@ export function getPtySession(seatId: string): PtySession | undefined {
   return registry.get(seatId);
 }
 
+export function getLastPtyExit(seatId: string): { code: number; at: number; tail: string } | undefined {
+  return lastExits.get(seatId);
+}
+
 export function unregisterPtySession(seatId: string): void {
   registry.delete(seatId);
 }
@@ -208,8 +214,19 @@ export function spawnPtySession(input: SpawnPtyInput): PtySession {
     term.onExit(({ exitCode: code }) => {
       markDead();
       exitCode = code ?? 1;
+      const rawTail = scrollback.text();
+      const tail = rawTail.length > 2400 ? rawTail.slice(-2400) : rawTail;
+      lastExits.set(input.seatId, { code: exitCode, at: Date.now(), tail });
+      // Bound memory: keep the freshest ~40 exits.
+      if (lastExits.size > 40) {
+        const oldest = [...lastExits.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (oldest) lastExits.delete(oldest[0]);
+      }
       if (logFd !== undefined) {
-        try { closeSync(logFd); } catch { /* ignore */ }
+        try {
+          try { appendFileSync(logFd, `\n# pty_exit code=${exitCode}\n`); } catch { /* ignore */ }
+          closeSync(logFd);
+        } catch { /* ignore */ }
         logFd = undefined;
       }
       if (registry.get(input.seatId) === session) registry.delete(input.seatId);
@@ -277,4 +294,5 @@ export function clearPtyRegistryForTests(): void {
     try { session.kill(); } catch { /* ignore */ }
   }
   registry.clear();
+  lastExits.clear();
 }

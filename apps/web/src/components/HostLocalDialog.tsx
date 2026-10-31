@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useLocale } from '../i18n/LocaleProvider.js';
 import {
   INVITE_ROLE_PROFILE_MAX_CHARS,
@@ -7,25 +7,21 @@ import {
   storedRoomHostKey,
 } from '../lib/agentInvite.js';
 import {
+  clearInstalledDesktopAdaptersCache,
   hostOnThisMachine,
   listInstalledDesktopAdapters,
   peekInstalledDesktopAdapters,
+  prefetchInstalledDesktopAdapters,
   type DesktopAdapterChoice,
   type DesktopHostResult,
 } from '../lib/desktopHost.js';
+const CliLoginModal = lazy(() => import('./CliLoginModal.js').then(m => ({ default: m.CliLoginModal })));
 
 const ADAPTER_LABELS: Record<string, string> = {
   codex: 'Codex',
   'cursor-agent': 'Cursor',
   agy: 'Gemini',
   claude: 'Claude',
-};
-
-const LOGIN_HINT_KEYS: Record<string, 'desktopHost.loginHintCodex' | 'desktopHost.loginHintCursor' | 'desktopHost.loginHintAgy' | 'desktopHost.loginHintClaude'> = {
-  codex: 'desktopHost.loginHintCodex',
-  'cursor-agent': 'desktopHost.loginHintCursor',
-  agy: 'desktopHost.loginHintAgy',
-  claude: 'desktopHost.loginHintClaude',
 };
 
 function adapterLabel(id: string): string {
@@ -59,6 +55,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
   const busyRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [loginHint, setLoginHint] = useState<string | null>(null);
+  const [loginOpen, setLoginOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -102,18 +99,20 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
     setError(null);
   }
 
-  function showLoginHelp() {
-    if (!selected) return;
-    const key = LOGIN_HINT_KEYS[selected.id];
-    setLoginHint(key ? t(key) : t('desktopHost.loginHintGeneric'));
+  function openLoginModal() {
+    if (!selected || busyRef.current) return;
+    setLoginHint(null);
+    setError(null);
+    setLoginOpen(true);
   }
 
-  async function host() {
-    if (busyRef.current || !canHost) return;
+  async function host(options?: { bypassLoginGate?: boolean }) {
+    if (busyRef.current) return;
     const trimmed = role.trim();
     if (!trimmed) { setError(t('inviteAgent.roleRequired')); return; }
     if (!adapterId || !model) { setError(t('desktopHost.noAdapters')); return; }
-    if (needsLogin) { showLoginHelp(); return; }
+    if (!options?.bypassLoginGate && needsLogin) { openLoginModal(); return; }
+    if (ended || loading || loadError || adapters.length === 0 || !models.includes(model)) return;
     const hostKey = storedRoomHostKey(roomCode);
     if (!hostKey) { setError(t('inviteAgent.hostKeyMissing')); return; }
     busyRef.current = true;
@@ -139,7 +138,26 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
     }
   }
 
+  async function onLoginSuccess() {
+    setLoginOpen(false);
+    clearInstalledDesktopAdaptersCache();
+    try {
+      const rows = await prefetchInstalledDesktopAdapters();
+      setAdapters(rows);
+      const next = rows.find(item => item.id === adapterId);
+      if (next?.loggedIn === false) {
+        setError(t('desktopHost.loginStillRequired'));
+        return;
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('common.unknownError'));
+      return;
+    }
+    await host({ bypassLoginGate: true });
+  }
+
   return (
+    <>
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-3" role="presentation">
       <section
         role="dialog"
@@ -251,7 +269,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
             {needsLogin && (
               <button
                 type="button"
-                onClick={showLoginHelp}
+                onClick={openLoginModal}
                 className="min-h-9 rounded-lg border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-900 transition hover:bg-amber-100"
               >
                 {t('desktopHost.loginRequired')}
@@ -261,5 +279,16 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
         </div>
       </section>
     </div>
+    {loginOpen && selected && (
+      <Suspense fallback={null}>
+        <CliLoginModal
+          adapterId={selected.id}
+          adapterLabel={adapterLabel(selected.id)}
+          onClose={() => { setLoginOpen(false); }}
+          onLoggedIn={() => { void onLoginSuccess(); }}
+        />
+      </Suspense>
+    )}
+    </>
   );
 }

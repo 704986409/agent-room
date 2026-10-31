@@ -27,9 +27,14 @@ import {
   authCacheAgeMs,
   beginAuthRefresh,
   getCachedAuth,
+  invalidateAuth,
+  loginArgsFor,
   loginHintFor,
+  probeCliAuth,
+  setCachedAuth,
 } from './cliAuth.js';
-import { getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
+import { embeddedSeatCommand } from './adapter.js';
+import { getLastPtyExit, getPtySession, listPtySessions, ptyAvailable, spawnPtySession, unregisterPtySession } from './pty.js';
 import { shouldDropPtyStdin, stripOscColorSequences } from './oscFilter.js';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { Duplex } from 'node:stream';
@@ -68,6 +73,8 @@ const DESKTOP_PATHS = new Set([
   '/api/desktop/ping',
   '/api/desktop/rooms',
   '/api/desktop/host',
+  '/api/desktop/cli-login',
+  '/api/desktop/cli-login/refresh',
   '/api/desktop/seats/stop',
   '/api/desktop/terminals',
   '/api/desktop/clipboard',
@@ -327,10 +334,14 @@ export async function startControlServer(options: ControlServerOptions): Promise
     });
     // Wake resume replaces the PTY under the same seatId — close viewers so
     // the rail / popout reconnect to the new session instead of a dead WS.
-    void session.exited.then(() => {
+    void session.exited.then((code) => {
       try {
+        const recorded = getLastPtyExit(seatId);
+        const tail = (recorded?.tail || '').replace(/\s+/g, ' ').trim().slice(-80);
+        const reason = (`exit=${code}${tail ? ` ${tail}` : ''}`).slice(0, 120);
+        options.log.write(`[pty] exited seatId=${seatId} code=${code} tail=${tail.slice(0, 160)}`);
         if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) {
-          ws.close(1000, 'pty_exited');
+          ws.close(1000, reason || 'pty_exited');
         }
       } catch { /* ignore */ }
     });
@@ -601,6 +612,16 @@ export async function startControlServer(options: ControlServerOptions): Promise
       send(res, 200, { ok: true, seat }, undefined, cors);
       return;
     }
+    if (url.pathname === '/api/desktop/cli-login') {
+      const started = await startCliLogin(body);
+      send(res, started.status, started.body, undefined, cors);
+      return;
+    }
+    if (url.pathname === '/api/desktop/cli-login/refresh') {
+      const refreshed = await refreshCliLogin(body);
+      send(res, refreshed.status, refreshed.body, undefined, cors);
+      return;
+    }
     if (url.pathname === '/api/desktop/host') {
       const hosted = await hostFromRoom(body);
       send(res, hosted.status, hosted.body, undefined, cors);
@@ -707,6 +728,102 @@ export async function startControlServer(options: ControlServerOptions): Promise
     const hadSeat = await options.daemon.stopManagedSeat(id);
     if (!session && !hadSeat) return { status: 404, body: { error: 'terminal_not_found' } };
     return { status: 200, body: { ok: true, stopped: true, seatId: id } };
+  }
+
+  async function startCliLogin(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    if (!ptyAvailable()) return { status: 503, body: { error: 'pty_unavailable' } };
+    const adapterId = typeof body.adapterId === 'string' ? body.adapterId.trim() : '';
+    if (!adapterId) return { status: 400, body: { error: 'adapter_id' } };
+    const adapter = options.adapters.get(adapterId);
+    if (!adapter) return { status: 400, body: { error: 'unknown_adapter' } };
+    const detected = getCachedDetect(adapterId) ?? await adapter.detect();
+    if (!detected.installed) {
+      return { status: 400, body: { error: 'cli_not_installed', hint: loginHintFor(adapterId) } };
+    }
+    const command = detected.path || adapter.command;
+    const args = [...loginArgsFor(adapterId)];
+    const seatId = `login_${adapterId.replace(/[^A-Za-z0-9_-]/g, '_')}_${randomBytes(4).toString('hex')}`;
+    const cwd = options.home ?? homedir();
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (typeof value === 'string') env[key] = value;
+    }
+    const logDir = join(options.stateDir, 'logs');
+    await mkdir(logDir, { recursive: true, mode: 0o700 }).catch(() => { /* ignore */ });
+    const logFile = join(logDir, `${seatId}.log`);
+    let spawnCommand = command;
+    let spawnArgs: readonly string[] = args;
+    try {
+      const embedded = embeddedSeatCommand(command, args, { cwd, env, prompt: '' }, logFile);
+      spawnCommand = embedded.command;
+      spawnArgs = embedded.args;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'embed_failed';
+      options.log.write(`[cli-login] embed failed adapter=${adapterId} reason=${message}`);
+      return { status: 400, body: { error: message, hint: loginHintFor(adapterId) } };
+    }
+    options.log.write(`[cli-login] start adapter=${adapterId} seatId=${seatId} command=${spawnCommand} args=${JSON.stringify(spawnArgs)}`);
+    try {
+      const session = spawnPtySession({
+        seatId,
+        command: spawnCommand,
+        args: spawnArgs,
+        cwd,
+        env,
+        cols: 100,
+        rows: 28,
+        logFile,
+      });
+      void session.exited.then(code => {
+        options.log.write(`[cli-login] exited adapter=${adapterId} seatId=${seatId} code=${code}`);
+      });
+      return {
+        status: 200,
+        body: {
+          ok: true,
+          seatId: session.seatId,
+          pid: session.pid,
+          adapterId,
+          command,
+          args,
+          hint: loginHintFor(adapterId),
+        },
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'login_spawn_failed';
+      options.log.write(`[cli-login] spawn failed adapter=${adapterId} reason=${message}`);
+      return { status: 400, body: { error: message, hint: loginHintFor(adapterId) } };
+    }
+  }
+
+  async function refreshCliLogin(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
+    const adapterId = typeof body.adapterId === 'string' ? body.adapterId.trim() : '';
+    if (!adapterId) return { status: 400, body: { error: 'adapter_id' } };
+    const adapter = options.adapters.get(adapterId);
+    if (!adapter) return { status: 400, body: { error: 'unknown_adapter' } };
+    const detected = getCachedDetect(adapterId) ?? await adapter.detect();
+    const command = detected.path || adapter.command;
+    invalidateAuth(adapterId);
+    options.log.write(`[cli-login] refresh auth adapter=${adapterId}`);
+    let status;
+    try {
+      status = await probeCliAuth(adapterId, command);
+      setCachedAuth(adapterId, status);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'auth_refresh_failed';
+      options.log.write(`[cli-login] refresh failed adapter=${adapterId} reason=${message}`);
+      return { status: 400, body: { error: message } };
+    }
+    options.log.write(`[cli-login] refresh result adapter=${adapterId} loggedIn=${status.loggedIn} detail=${status.detail ?? ''}`);
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        adapterId,
+        loggedIn: status.loggedIn,
+        detail: status.detail ?? null,
+      },
+    };
   }
 
   async function hostFromRoom(body: Record<string, unknown>): Promise<{ status: number; body: unknown }> {
