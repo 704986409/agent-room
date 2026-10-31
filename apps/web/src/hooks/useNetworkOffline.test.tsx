@@ -21,7 +21,7 @@ describe('useNetworkOffline', () => {
     listeners.clear();
   });
 
-  it('shows after two failed poll cycles and hides on the next success', async () => {
+  it('shows after one failed poll cycle (~1s) and hides on the next success', async () => {
     vi.useFakeTimers();
     let online = true;
     vi.stubGlobal('navigator', {
@@ -48,9 +48,6 @@ describe('useNetworkOffline', () => {
 
     online = false;
     await act(async () => { await vi.advanceTimersByTimeAsync(REACHABILITY_POLL_MS); });
-    expect(text(renderer)).toContain('online');
-
-    await act(async () => { await vi.advanceTimersByTimeAsync(REACHABILITY_POLL_MS); });
     expect(text(renderer)).toContain('offline');
 
     online = true;
@@ -61,7 +58,7 @@ describe('useNetworkOffline', () => {
     await act(async () => renderer.unmount());
   });
 
-  it('does not show on a single offline blip that recovers before the next cycle', async () => {
+  it('shows on an offline event then hides when the next probe succeeds', async () => {
     vi.useFakeTimers();
     let online = false;
     vi.stubGlobal('navigator', {
@@ -87,11 +84,11 @@ describe('useNetworkOffline', () => {
 
     listeners.get('offline')?.forEach(handler => handler());
     await act(async () => { await Promise.resolve(); });
-    expect(text(renderer)).toContain('online');
+    expect(text(renderer)).toContain('offline');
 
     online = true;
     listeners.get('online')?.forEach(handler => handler());
-    await act(async () => { await vi.advanceTimersByTimeAsync(REACHABILITY_POLL_MS * 2); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(text(renderer)).toContain('online');
 
     await act(async () => renderer.unmount());

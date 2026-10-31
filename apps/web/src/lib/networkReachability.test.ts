@@ -85,17 +85,15 @@ describe('reachabilityFailed', () => {
 });
 
 describe('reduceOfflineGate', () => {
-  it('shows only after two consecutive failures and hides on the next success', () => {
+  it('shows after one failure and hides on the next success', () => {
     let gate = createOfflineGate();
     gate = reduceOfflineGate(gate, true);
-    expect(gate).toEqual({ visible: false, consecutiveFailures: 1 });
+    expect(gate).toEqual({ visible: true, consecutiveFailures: 1 });
     gate = reduceOfflineGate(gate, true);
     expect(gate).toEqual({ visible: true, consecutiveFailures: 2 });
-    gate = reduceOfflineGate(gate, true);
-    expect(gate.visible).toBe(true);
     gate = reduceOfflineGate(gate, false);
     expect(gate).toEqual({ visible: false, consecutiveFailures: 0 });
     gate = reduceOfflineGate(gate, true);
-    expect(gate.visible).toBe(false);
+    expect(gate).toEqual({ visible: true, consecutiveFailures: 1 });
   });
 });

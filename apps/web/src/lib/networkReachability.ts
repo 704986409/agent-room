@@ -8,13 +8,13 @@ export const DESKTOP_DAEMON_PING_URL = `${DESKTOP_CONTROL_ORIGIN}/api/desktop/pi
 
 export const DESKTOP_PROBE_HEADER = 'x-agent-room-desktop';
 
-export const PROBE_TIMEOUT_MS = 3_000;
+export const PROBE_TIMEOUT_MS = 1_000;
 
-/** Poll period. Two failed cycles land about four seconds after the outage starts. */
-export const REACHABILITY_POLL_MS = 2_000;
+/** Poll period. One failed cycle shows the mask within about one second. */
+export const REACHABILITY_POLL_MS = 1_000;
 
 /** Consecutive failed cycles required before the full-page mask appears. */
-export const OFFLINE_FAILURES_BEFORE_SHOW = 2;
+export const OFFLINE_FAILURES_BEFORE_SHOW = 1;
 
 export interface ProbeSnapshot {
   roomReachable: boolean;
@@ -37,9 +37,9 @@ export function createOfflineGate(): OfflineGateState {
 }
 
 /**
- * One poll cycle. A failure increments the streak; the mask appears only after
- * `showAfterFailures` in a row. A single success hides it and clears the streak,
- * so a short blip cannot flash the overlay.
+ * One poll cycle. A failure increments the streak; the mask appears after
+ * `showAfterFailures` in a row (default 1 → within about one poll). A single
+ * success hides it and clears the streak.
  */
 export function reduceOfflineGate(
   state: OfflineGateState,

@@ -12,10 +12,11 @@ import {
 /**
  * Full-page offline mask.
  *
- * Samples about every {@link REACHABILITY_POLL_MS}. The mask turns on after two
- * failed cycles and turns off on the next success. `online` / `offline` start a
- * sample immediately, but a recovery still has to pass the probes before the
- * mask hides — `navigator.onLine` alone is not treated as proof the network is back.
+ * Samples about every {@link REACHABILITY_POLL_MS}. The mask turns on after one
+ * failed cycle (~1s) and turns off on the next success. `online` / `offline`
+ * start a sample immediately, but a recovery still has to pass the probes
+ * before the mask hides — `navigator.onLine` alone is not treated as proof the
+ * network is back.
  */
 export function useNetworkOffline(): boolean {
   const [visible, setVisible] = useState(false);
@@ -65,8 +66,8 @@ export function useNetworkOffline(): boolean {
       }, delay);
     };
 
-    // Browser events wake a probe. Hiding still waits for that probe to succeed,
-    // and showing still waits for two failed cycles, so a short blip does not flash.
+    // Browser events wake a probe. Hiding still waits for that probe to succeed;
+    // showing needs one failed cycle so an unreachable page masks within ~1s.
     const onBrowserNet = () => requestCycle();
     window.addEventListener('online', onBrowserNet);
     window.addEventListener('offline', onBrowserNet);
