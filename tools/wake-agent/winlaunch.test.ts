@@ -156,3 +156,37 @@ describe('windows seat launcher', () => {
     expect(split).toEqual({ args: ['-i', '--model', 'gemini-3.8-flash-high'], promptIndex: 1 });
   });
 });
+
+describe('splitPromptArg empty / login', () => {
+  it('uses promptIndex -1 so seat-launch skips splicing ""', () => {
+    expect(splitPromptArg([], '')).toEqual({ args: [], promptIndex: -1 });
+    expect(splitPromptArg(['login'], '')).toEqual({ args: ['login'], promptIndex: -1 });
+  });
+
+  it('login empty prompt does not appear in argv', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'Agent Room login '));
+    const shim = join(directory, 'agy.cmd');
+    const script = join(directory, 'agy.mjs');
+    const argvOut = join(directory, 'argv.json');
+    await writeFile(shim, CURSOR_SHIM.replace('codex.mjs', 'agy.mjs').replace('codex.cmd', 'agy.cmd'));
+    await writeFile(script, RECORDER);
+    await chmod(script, 0o755);
+    const split = splitPromptArg([], '');
+    expect(split.promptIndex).toBe(-1);
+    const prepared = prepareWindowsSeatLaunch({
+      directory,
+      seatId: 'login_agy_test',
+      command: shim,
+      args: split.args,
+      promptIndex: split.promptIndex,
+      prompt: '',
+      cwd: directory,
+      env: { ARGV_OUT: argvOut, AGENT_ROOM_NAME: 'login', AGENT_ROOM_SEAT_KEY: 'k' },
+      nodePath: process.execPath,
+    });
+    const result = spawnSync(process.execPath, prepared.node.args, { encoding: 'utf8' });
+    expect(result.status, result.stderr).toBe(0);
+    const recorded = JSON.parse(await readFile(argvOut, 'utf8')) as { argv: string[] };
+    expect(recorded.argv).toEqual([]);
+  });
+});

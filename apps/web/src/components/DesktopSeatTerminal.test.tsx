@@ -1,6 +1,6 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DesktopSeatTerminal, isOscColorReport } from './DesktopSeatTerminal.js';
+import { DesktopSeatTerminal, isCsiDeviceAttributes, isOscColorReport, shouldDropPtyStdin } from './DesktopSeatTerminal.js';
 
 const state = vi.hoisted(() => ({
   desktop: true,
@@ -502,5 +502,15 @@ describe('isOscColorReport', () => {
     expect(isOscColorReport('10;rgb:aaaa/bbbb/cccc')).toBe(true);
     expect(isOscColorReport('hello')).toBe(false);
     expect(isOscColorReport('\x16')).toBe(false);
+  });
+});
+
+describe('isCsiDeviceAttributes / shouldDropPtyStdin', () => {
+  it('drops CSI DA seat-switch garbage', () => {
+    expect(isCsiDeviceAttributes('\x1b[?1;2c')).toBe(true);
+    expect(isCsiDeviceAttributes('[?1;2c')).toBe(true);
+    expect(shouldDropPtyStdin('\x1b[?1;2c')).toBe(true);
+    expect(shouldDropPtyStdin('[?1;2c')).toBe(true);
+    expect(shouldDropPtyStdin('ok')).toBe(false);
   });
 });

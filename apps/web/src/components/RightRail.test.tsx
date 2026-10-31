@@ -76,6 +76,19 @@ describe('RoomRightColumn', () => {
     expect(json).toContain('终端面板 st_9');
     expect(button(renderer, '终端')!.props['aria-selected']).toBe(true);
   });
+
+  it('does not mount terminal content until 终端 is first selected', () => {
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(<RailHarness desktop />);
+    });
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('终端面板');
+    act(() => { button(renderer, '终端')!.props.onClick(); });
+    expect(JSON.stringify(renderer.toJSON())).toContain('终端面板');
+    act(() => { button(renderer, '任务')!.props.onClick(); });
+    // stays mounted after first visit
+    expect(JSON.stringify(renderer.toJSON())).toContain('终端面板');
+  });
 });
 
 describe('shouldCollapseTerminalExpand', () => {

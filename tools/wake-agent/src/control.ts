@@ -3,11 +3,11 @@ import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { LauncherAdapter } from './adapter.js';
 import type { CredentialStore, CommandRunner } from './credstore.js';
-import type { WakeDaemon } from './daemon.js';
+import { seatLogPath, type WakeDaemon } from './daemon.js';
 import type { DaemonLog } from './log.js';
 import { adapterIdForMcp, cliRequiredHint, installAdapterCli } from './cliinstall.js';
 import { installMcp, mcpStatus, pairedServerUrl } from './mcpconfig.js';
@@ -748,9 +748,8 @@ export async function startControlServer(options: ControlServerOptions): Promise
     for (const [key, value] of Object.entries(process.env)) {
       if (typeof value === 'string') env[key] = value;
     }
-    const logDir = join(options.stateDir, 'logs');
-    await mkdir(logDir, { recursive: true, mode: 0o700 }).catch(() => { /* ignore */ });
-    const logFile = join(logDir, `${seatId}.log`);
+    const logFile = seatLogPath(options.stateDir, seatId);
+    await mkdir(dirname(logFile), { recursive: true, mode: 0o700 }).catch(() => { /* ignore */ });
     let spawnCommand = command;
     let spawnArgs: readonly string[] = args;
     try {

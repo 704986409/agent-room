@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isOscColorReport, shouldDropPtyStdin, stripOscColorSequences } from './src/oscFilter.js';
+import { isCsiDeviceAttributes, isOscColorReport, shouldDropPtyStdin, stripOscColorSequences } from './src/oscFilter.js';
 
 describe('isOscColorReport', () => {
   it('detects ESC-prefixed OSC 10/11/12 reports', () => {
@@ -22,10 +22,26 @@ describe('isOscColorReport', () => {
   });
 });
 
+describe('isCsiDeviceAttributes', () => {
+  it('matches full CSI DA and seat-switch fragments', () => {
+    expect(isCsiDeviceAttributes('\x1b[?1;2c')).toBe(true);
+    expect(isCsiDeviceAttributes('[?1;2c')).toBe(true);
+    expect(isCsiDeviceAttributes('-> [?1;2c')).toBe(true);
+    expect(isCsiDeviceAttributes('\x1b[?6c')).toBe(true);
+  });
+
+  it('leaves normal prompt text alone', () => {
+    expect(isCsiDeviceAttributes('hello')).toBe(false);
+    expect(isCsiDeviceAttributes('c')).toBe(false);
+  });
+});
+
 describe('shouldDropPtyStdin', () => {
-  it('drops OSC reports and Ctrl+V image-paste byte', () => {
+  it('drops Ctrl+V, OSC reports, CSI DA, and empty', () => {
     expect(shouldDropPtyStdin('\x16')).toBe(true);
     expect(shouldDropPtyStdin(']10;rgb:ffff/ffff/ffff')).toBe(true);
+    expect(shouldDropPtyStdin('\x1b[?1;2c')).toBe(true);
+    expect(shouldDropPtyStdin('[?1;2c')).toBe(true);
     expect(shouldDropPtyStdin('')).toBe(true);
     expect(shouldDropPtyStdin('x')).toBe(false);
   });

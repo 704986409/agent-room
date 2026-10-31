@@ -164,7 +164,10 @@ export function main(argv = process.argv, env = process.env) {
 
   const cliArgs = Array.isArray(spec.args) ? spec.args.slice() : [];
   const index = Number.isInteger(spec.promptIndex) ? spec.promptIndex : cliArgs.length;
-  cliArgs.splice(Math.max(0, index), 0, prompt);
+  // Login / empty prompt: never splice "" into argv (agy: unexpected argument "").
+  if (index >= 0 && prompt !== '') {
+    cliArgs.splice(Math.max(0, index), 0, prompt);
+  }
   let resolved;
   try {
     resolved = resolveCli(String(spec.command ?? ''), env);

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.27-v1 (pack)
+
+App semver **0.1.27**; pack/tag label **Agent-Room-0.1.27-v1** / `desktop-v0.1.27-v1`.
+
+- Rules: shared `rooms/rules.md` + per-seat `state.md`; wake inject with action cursor.
+- Terminal: drop CSI DA (`[?1;2c`) so seat switch no longer garbles Cursor/Codex input.
+- CLI login (Windows): empty prompt not spliced into argv (fixes agy `unexpected argument ""`); login logs via `seatLogPath`.
+- UI: right-rail terminal lazy-mounts on first 终端 visit to avoid startup page flash.
+
+
 ## 0.1.26-v9 (pack)
 
 Same app semver **0.1.26**; pack/tag label **Agent-Room-0.1.26-v9** / `desktop-v0.1.26-v9`.

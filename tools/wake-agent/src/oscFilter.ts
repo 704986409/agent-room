@@ -1,8 +1,9 @@
 /**
- * xterm.js answers OSC 10/11/12 (fg/bg/cursor color) queries by emitting the
- * report through onData. Forwarding that to PTY stdin lands as garbage in the
- * Codex/Cursor prompt (e.g. `]10;rgb:ffff/ffff/ffff`) and can interrupt an
- * in-flight room_listen turn when a popout attaches and replays scrollback.
+ * xterm.js answers OSC 10/11/12 (fg/bg/cursor color) queries and Primary
+ * Device Attributes (DA) by emitting the report through onData. Forwarding
+ * those to PTY stdin lands as garbage in the Codex/Cursor prompt
+ * (e.g. `]10;rgb:ffff/ffff/ffff`, `[?1;2c`) and can interrupt an in-flight
+ * room_listen turn when a popout attaches / seat switch resets the terminal.
  */
 
 /** True when `data` is (or is dominated by) an OSC 10/11/12 color report. */
@@ -20,13 +21,29 @@ export function isOscColorReport(data: string): boolean {
 }
 
 /**
- * Drop stdin that must never reach the CLI: OSC color reports and the raw
- * Ctrl+V byte (0x16) Codex treats as image-paste.
+ * True when `data` is a CSI Primary Device Attributes reply (DA).
+ * Full: ESC [ ? 1 ; 2 c   Fragments after ESC is stripped: [?1;2c / -> [?1;2c
+ * Seat switch / resize makes xterm re-answer; without this filter it piles up
+ * in the Cursor/Codex input line.
+ */
+export function isCsiDeviceAttributes(data: string): boolean {
+  if (!data) return false;
+  if (/\x1b\[\?\d*(?:;\d*)*c/i.test(data)) return true;
+  // ESC eaten / partial chunk seen in seat logs: "[?1;2c" or "-> [?1;2c"
+  if (/(?:^|[\x00-\x1f]|->\s*)\[\?\d*(?:;\d*)*c\s*$/i.test(data.trim())) return true;
+  if (/^\[\?\d*(?:;\d*)*c$/i.test(data.trim())) return true;
+  return false;
+}
+
+/**
+ * Drop stdin that must never reach the CLI: OSC color reports, CSI DA replies,
+ * and the raw Ctrl+V byte (0x16) Codex treats as image-paste.
  */
 export function shouldDropPtyStdin(data: string): boolean {
   if (!data) return true;
   if (data === '\x16') return true;
-  return isOscColorReport(data);
+  if (isOscColorReport(data)) return true;
+  return isCsiDeviceAttributes(data);
 }
 
 /**

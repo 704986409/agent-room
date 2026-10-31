@@ -38,9 +38,14 @@ export function windowsConsoleSpawn(launcherPath: string, comspec = 'cmd.exe'): 
   };
 }
 
-/** Drop the prompt out of argv. It is spliced back from the prompt file at launch. */
+/**
+ * Drop the prompt out of argv. It is spliced back from the prompt file at launch.
+ * Empty prompt (CLI login) → promptIndex -1 so seat-launch skips the splice
+ * (otherwise agy/codex get a stray "" argv and refuse to start).
+ */
 export function splitPromptArg(args: readonly string[], prompt: string): { args: string[]; promptIndex: number } {
-  const index = prompt ? args.lastIndexOf(prompt) : -1;
+  if (!prompt) return { args: [...args], promptIndex: -1 };
+  const index = args.lastIndexOf(prompt);
   if (index < 0) return { args: [...args], promptIndex: args.length };
   return {
     args: [...args.slice(0, index), ...args.slice(index + 1)],

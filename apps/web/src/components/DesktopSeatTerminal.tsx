@@ -38,6 +38,26 @@ export function isOscColorReport(data: string): boolean {
   return false;
 }
 
+/**
+ * CSI Primary Device Attributes reply — seat switch / resize makes xterm answer
+ * with ESC[?1;2c; without filtering it piles up in the Cursor/Codex input line.
+ */
+export function isCsiDeviceAttributes(data: string): boolean {
+  if (!data) return false;
+  if (/\x1b\[\?\d*(?:;\d*)*c/i.test(data)) return true;
+  if (/(?:^|[\x00-\x1f]|->\s*)\[\?\d*(?:;\d*)*c\s*$/i.test(data.trim())) return true;
+  if (/^\[\?\d*(?:;\d*)*c$/i.test(data.trim())) return true;
+  return false;
+}
+
+/** Drop stdin that must never reach the CLI (shared with daemon oscFilter). */
+export function shouldDropPtyStdin(data: string): boolean {
+  if (!data) return true;
+  if (data === '\x16') return true;
+  if (isOscColorReport(data)) return true;
+  return isCsiDeviceAttributes(data);
+}
+
 function resetTerm(term: Terminal | null | undefined) {
   term?.reset();
 }
@@ -221,10 +241,8 @@ export function DesktopSeatTerminal({
       }, true);
     }
     term.onData(data => {
-      // Ctrl+V is 0x16. Codex treats that byte as image paste.
-      if (data === '\x16') return;
-      // Do not echo xterm OSC color replies into the CLI prompt.
-      if (isOscColorReport(data)) return;
+      // OSC color / CSI DA / raw Ctrl+V must not reach PTY stdin.
+      if (shouldDropPtyStdin(data)) return;
       const ws = socketRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'stdin', data }));

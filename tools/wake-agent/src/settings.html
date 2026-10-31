@@ -628,6 +628,18 @@
       if (/(^|[^0-9])(10|11|12);rgb:[0-9a-f]+\/[0-9a-f]+\/[0-9a-f]+/i.test(data)) return true;
       return false;
     }
+    function isCsiDeviceAttributes(data) {
+      if (!data) return false;
+      if (/\x1b\[\?\d*(?:;\d*)*c/i.test(data)) return true;
+      if (/^\[\?\d*(?:;\d*)*c$/i.test(data.trim())) return true;
+      return false;
+    }
+    function shouldDropPtyStdin(data) {
+      if (!data) return true;
+      if (data === '\x16') return true;
+      if (isOscColorReport(data)) return true;
+      return isCsiDeviceAttributes(data);
+    }
 
     function ensureTerm() {
 
@@ -655,10 +667,7 @@
       term.open(wrap);
       fitAddon.fit();
       term.onData(function (data) {
-        // Ctrl+V is 0x16 — Codex treats it as image paste.
-        if (data === '\x16') return;
-        // Do not echo xterm OSC color replies into the CLI prompt (popout path).
-        if (isOscColorReport(data)) return;
+        if (shouldDropPtyStdin(data)) return;
         if (termSocket && termSocket.readyState === WebSocket.OPEN) {
           termSocket.send(JSON.stringify({ type: 'stdin', data: data }));
         }

@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useLocale } from '../i18n/LocaleProvider.js';
 
 export type RightRailTab = 'tasks' | 'terminal';
@@ -15,8 +15,9 @@ export function showRoomTerminalRail(desktop: boolean): boolean {
 
 /**
  * Right column of the room page.
- * Desktop: 任务 | 终端. The terminal panel stays mounted while 任务 is selected
- * so its PTY socket and seat list survive the tab switch.
+ * Desktop: 任务 | 终端. Terminal content mounts on first visit to 终端 (avoids a
+ * black xterm flash while 任务 is the default tab at room/daemon startup), then
+ * stays mounted so the PTY socket and seat list survive later tab switches.
  * Elsewhere: the task board, with no terminal tab.
  */
 export function RoomRightColumn({
@@ -33,6 +34,10 @@ export function RoomRightColumn({
   terminal: ReactNode;
 }) {
   const { t } = useLocale();
+  const [terminalMounted, setTerminalMounted] = useState(tab === 'terminal');
+  useEffect(() => {
+    if (tab === 'terminal') setTerminalMounted(true);
+  }, [tab]);
   if (!showRoomTerminalRail(desktop)) {
     return <div className="flex min-h-0 min-w-0 flex-1 flex-col">{tasks}</div>;
   }
@@ -58,7 +63,9 @@ export function RoomRightColumn({
         })}
       </div>
       <div data-rail-panel="tasks" className={tab === 'tasks' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>{tasks}</div>
-      <div data-rail-panel="terminal" className={tab === 'terminal' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>{terminal}</div>
+      <div data-rail-panel="terminal" className={tab === 'terminal' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
+        {terminalMounted ? terminal : null}
+      </div>
     </div>
   );
 }

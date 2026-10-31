@@ -9,7 +9,7 @@ import {
   startDesktopCliLogin,
 } from '../lib/desktopHost.js';
 import { desktopTerminalWsUrl, stopDesktopTerminal } from '../lib/desktopTerminal.js';
-import { isOscColorReport } from './DesktopSeatTerminal.js';
+import { shouldDropPtyStdin } from './DesktopSeatTerminal.js';
 
 /**
  * MCP-approval-style modal: embedded virtual terminal for CLI login.
@@ -99,7 +99,7 @@ export function CliLoginModal({
           }
         };
         term.onData(data => {
-          if (isOscColorReport(data)) return;
+          if (shouldDropPtyStdin(data)) return;
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'stdin', data }));
           }

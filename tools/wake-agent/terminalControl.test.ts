@@ -462,6 +462,8 @@ describe('pop-out assets and stop', () => {
       expect(html).toContain("get('popout')");
       expect(html).toContain('id="term-stop"');
       expect(html).toContain('isOscColorReport');
+      expect(html).toContain('shouldDropPtyStdin');
+      expect(html).toContain('isCsiDeviceAttributes');
       expect(html).toContain('rgb:');
 
       const vendor = await fetch(`http://127.0.0.1:${control.port}/vendor/xterm.js`);
