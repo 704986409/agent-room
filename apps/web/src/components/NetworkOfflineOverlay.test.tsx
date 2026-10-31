@@ -55,12 +55,14 @@ describe('NetworkOfflineOverlay', () => {
       'aria-modal': boolean | string;
       onClickCapture: (event: Event) => void;
       onPointerDownCapture: (event: Event) => void;
+      style: Record<string, unknown>;
     };
     expect(props.role).toBe('alertdialog');
     expect(props['aria-modal']).toBe('true');
     expect(props.className).toContain('fixed');
     expect(props.className).toContain('inset-0');
-    expect(props.className).toContain('z-[9999]');
+    expect(props.style.zIndex).toBe(2147483647);
+    expect(props.style.backdropFilter).toContain('blur');
     expect(props.className).toContain('pointer-events-auto');
 
     const rendered = JSON.stringify(renderer.toJSON());
