@@ -94,3 +94,17 @@ describe('useNetworkOffline', () => {
     await act(async () => renderer.unmount());
   });
 });
+
+describe('instant offline triggers', () => {
+  it('reportNetworkFailure / isNetworkError basics', async () => {
+    const m = await import('../lib/networkReachability.js');
+    let hit = 0;
+    const off = m.onNetworkFailure(() => { hit += 1; });
+    m.reportNetworkFailure();
+    off();
+    m.reportNetworkFailure();
+    expect(hit).toBe(1);
+    expect(m.isNetworkError(new TypeError('Failed to fetch'))).toBe(true);
+    expect(m.isNetworkError(new DOMException('x', 'AbortError'))).toBe(false);
+  });
+});

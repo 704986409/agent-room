@@ -107,3 +107,55 @@ export async function probeRoomAndDaemon(
   ]);
   return { roomReachable, daemonReachable };
 }
+
+type FailureListener = () => void;
+const failureListeners = new Set<FailureListener>();
+
+/** Subscribe to instant network-failure signals (failed app fetch, abnormal WS close). */
+export function onNetworkFailure(listener: FailureListener): () => void {
+  failureListeners.add(listener);
+  return () => { failureListeners.delete(listener); };
+}
+
+/** Report a network-level failure; listeners show the mask immediately. */
+export function reportNetworkFailure(): void {
+  for (const l of [...failureListeners]) {
+    try { l(); } catch { /* ignore */ }
+  }
+}
+
+let originalFetch: typeof fetch | null = null;
+
+/** Unwrapped fetch for probes, so probe failures do not loop through the hook. */
+export function rawFetch(): typeof fetch {
+  return originalFetch ?? globalThis.fetch.bind(globalThis);
+}
+
+/** True for a thrown network error (not an abort / timeout we started). */
+export function isNetworkError(err: unknown): boolean {
+  if (err && typeof err === 'object' && (err as { name?: string }).name === 'AbortError') return false;
+  return err instanceof TypeError;
+}
+
+/**
+ * Wrap window.fetch: any network-level failure of the app's own requests
+ * reports immediately. Returns a restore function.
+ */
+export function installFetchFailureHook(): () => void {
+  if (typeof window === 'undefined' || typeof window.fetch !== 'function' || originalFetch) return () => {};
+  const orig = window.fetch.bind(window);
+  originalFetch = orig;
+  const wrapped: typeof fetch = async (...args) => {
+    try {
+      return await orig(...args);
+    } catch (err) {
+      if (isNetworkError(err)) reportNetworkFailure();
+      throw err;
+    }
+  };
+  window.fetch = wrapped;
+  return () => {
+    if (window.fetch === wrapped) window.fetch = orig;
+    originalFetch = null;
+  };
+}

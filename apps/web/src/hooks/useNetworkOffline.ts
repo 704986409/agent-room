@@ -3,6 +3,9 @@ import { isDesktopShell } from '../lib/desktopHost.js';
 import {
   REACHABILITY_POLL_MS,
   createOfflineGate,
+  installFetchFailureHook,
+  onNetworkFailure,
+  rawFetch,
   probeRoomAndDaemon,
   reachabilityFailed,
   reduceOfflineGate,
@@ -40,7 +43,7 @@ export function useNetworkOffline(): boolean {
         return;
       }
       active = (async () => {
-        const snapshot = await probeRoomAndDaemon(fetch, isDesktopShell());
+        const snapshot = await probeRoomAndDaemon(rawFetch(), isDesktopShell());
         if (cancelled || pending) return;
         const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
         publish(reachabilityFailed({ browserOffline, ...snapshot }));
@@ -68,16 +71,29 @@ export function useNetworkOffline(): boolean {
 
     // Browser events wake a probe. Hiding still waits for that probe to succeed;
     // showing needs one failed cycle so an unreachable page masks within ~1s.
-    const onBrowserNet = () => requestCycle();
-    window.addEventListener('online', onBrowserNet);
-    window.addEventListener('offline', onBrowserNet);
+    // `offline` shows the mask synchronously; `online` only re-probes.
+    const showNow = () => {
+      if (cancelled) return;
+      gate = { visible: true, consecutiveFailures: Math.max(1, gate.consecutiveFailures) };
+      setVisible(true);
+      requestCycle();
+    };
+    const onOffline = () => showNow();
+    const onOnline = () => requestCycle();
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+    const unsubscribeFailure = onNetworkFailure(showNow);
+    const restoreFetch = installFetchFailureHook();
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) showNow();
     arm(REACHABILITY_POLL_MS);
 
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
-      window.removeEventListener('online', onBrowserNet);
-      window.removeEventListener('offline', onBrowserNet);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      unsubscribeFailure();
+      restoreFetch();
     };
   }, []);
 
