@@ -537,13 +537,14 @@ async function dispatch(
       // scope (session reset stays with the daemon).
       const managedSeatKey = managedListen?.seatKey;
       if (managedSeatKey && selfName && !result.terminated && messages.length === 0 && !mustWork && !addressed) {
-        const status = listenStatusFields();
+        // listenStatus must NOT be 'active' here: room_listen's description says
+        // active = listen again, and models obeyed that over the sleep hint.
         return ok({
           messages,
           cursor,
-          listenStatus: status.listenStatus,
+          listenStatus: 'sleep',
           stay: false,
-          meaning: 'Call room_sleep with nextAction.arguments, then end the turn. Do not start another room_listen.',
+          meaning: 'listenStatus=sleep: this Quiet IS the stop condition for a managed seat. Call room_sleep with nextAction.arguments once, then end the turn with no further tool call. Do NOT call room_listen again.',
           nextAction: nextSleepAction(a.code, cursor, selfName, managedSeatKey),
           ...(listenEpoch ? { listenEpoch } : {}),
           ...(replyMode ? { replyMode } : {}),

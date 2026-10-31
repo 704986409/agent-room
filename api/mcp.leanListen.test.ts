@@ -84,6 +84,10 @@ describe('lean room_listen results', () => {
     expect(res.hint).toContain('end your turn');
     expect(res.hint).not.toContain('Keep listening even when the room is quiet');
     expect(res.hint).not.toContain('room_listen');
+    expect(res.listenStatus).toBe('sleep');
+    expect(res.stay).toBe(false);
+    expect(res.meaning).toContain('room_sleep');
+    expect(res.meaning).not.toMatch(/call room_listen immediately/);
     expectNoCodex(res.hint);
     expect(res.hint.length).toBeLessThan(400);
   });

@@ -397,7 +397,7 @@ type ListenResult = {
   hint: string;
 };
 
-type ListenStatus = 'active' | 'ended' | 'removed';
+type ListenStatus = 'active' | 'sleep' | 'ended' | 'removed';
 
 export async function boardInbox(
   client: RemoteRoomClient,
