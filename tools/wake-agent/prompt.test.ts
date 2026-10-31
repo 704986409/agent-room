@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { firstRunPrompt, launchPrompt } from './src/prompt.js';
+import { firstRunPrompt, launchPrompt, reuseWakePrompt, wakePrompt } from './src/prompt.js';
 
 describe('firstRunPrompt', () => {
   const prompt = firstRunPrompt({
@@ -27,5 +27,23 @@ describe('firstRunPrompt', () => {
     expect(prompt).toContain('AGENT_ROOM_CURSOR');
     expect(prompt).toContain('cursor 用 3');
     expect(prompt).toContain('不要用 shell/cat/printenv');
+  });
+});
+
+describe('reuseWakePrompt', () => {
+  it('is much shorter than wakePrompt and still carries since + seatKey', () => {
+    const input = {
+      code: 'HK4-TZQ-FWQ',
+      name: '开发工程师',
+      readFrom: 12,
+      seatKey: 'seat-key-secret',
+    };
+    const short = reuseWakePrompt(input);
+    const full = wakePrompt(input);
+    expect(short.length).toBeLessThan(full.length);
+    expect(short).toContain('since: 12');
+    expect(short).toContain('seatKey: "seat-key-secret"');
+    expect(short).toContain('room_listen');
+    expect(short).not.toContain('第 ');
   });
 });

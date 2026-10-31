@@ -5,7 +5,7 @@ import type { LauncherAdapter } from './adapter.js';
 import type { CredentialStore } from './credstore.js';
 import { nextWait } from './interval.js';
 import { joinRoomOverMcp, leaveRoomOverMcp, type RoomJoin, type RoomLeave } from './mcpJoin.js';
-import { firstRunPrompt, wakePrompt } from './prompt.js';
+import { firstRunPrompt, reuseWakePrompt, wakePrompt } from './prompt.js';
 import type { SecretRegistry } from './redact.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
 
@@ -127,6 +127,12 @@ export interface WakeDaemonOptions {
   resumeGraceMs?: number;
   /** Test hook. Production signals the terminal process group. */
   stopProcess?: (pid: number) => void;
+  /**
+   * Write into an existing embedded PTY for seatId.
+   * Return true when bytes were accepted; false when no live session
+   * (caller falls back to stop+codex resume).
+   */
+  writeSeatStdin?: (seatId: string, data: string) => boolean;
 }
 
 export class WakeDaemon {
@@ -234,6 +240,10 @@ export class WakeDaemon {
         }
         if (!view.pending.length) continue;
         if (this.deferForLiveListen(seat, view)) continue;
+        // Prefer injecting a short wake into the still-alive PTY so the rail
+        // does not flash "进程已退出" / blank. Only rebuild when truly dead
+        // or the PTY write hook is missing / refuses.
+        if (await this.tryInjectWake(seat, view)) continue;
         if (seat.pid && this.options.inspect(seat.pid).alive) await this.stopLiveProcess(seat);
         await this.resumeSeat(seat, view);
       }
@@ -551,6 +561,74 @@ export class WakeDaemon {
       if (now - seen >= grace) mature = true;
     }
     return !mature;
+  }
+
+  /**
+   * Alive session + writable PTY: claim the pending @, mark resume_started,
+   * and type a short follow-up into the existing terminal. Returns true when
+   * injection succeeded (caller must not kill/resume).
+   */
+  private async tryInjectWake(seat: SeatRecord, remote: WakeSeatView): Promise<boolean> {
+    const write = this.options.writeSeatStdin;
+    if (!write) return false;
+    if (seat.status !== 'running' || !seat.pid || !this.options.inspect(seat.pid).alive) {
+      this.logLine(`[wake] inject skip roomCode=${seat.code} seatId=${seat.seatId} reason=not_alive status=${seat.status} pid=${seat.pid ?? 'none'}`);
+      return false;
+    }
+    if (!remote.pending.length) return false;
+    if (!(await this.options.lock.tryAcquire(seat.seatId))) {
+      this.logLine(`[wake] inject skip roomCode=${seat.code} seatId=${seat.seatId} reason=lock_held`);
+      return false;
+    }
+    const eventIds = remote.pending.map(event => event.eventId);
+    this.logLine(`[wake] inject claim start roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} eventIds=${eventIds.join(',')}`);
+    let claimed: ClaimResult;
+    try {
+      claimed = await this.options.api.claim({ eventIds });
+    } catch (error) {
+      this.logLine(`[wake] inject claim failed roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+      await this.options.lock.release(seat.seatId);
+      throw error;
+    }
+    const ok = claimed.claims.filter(claim => claim.claimId);
+    this.logLine(`[wake] inject claim result roomCode=${seat.code} seatId=${seat.seatId} eventIds=${ok.map(c => c.eventId).join(',')} readFrom=${claimed.readFrom ?? 'missing'}`);
+    if (!ok.length || claimed.readFrom === undefined) {
+      await this.options.lock.release(seat.seatId);
+      return false;
+    }
+    const seatKey = await this.options.credentials?.get(`seat:${seat.seatId}`) ?? '';
+    if (seatKey) this.options.secrets?.add(seatKey);
+    const prompt = reuseWakePrompt({
+      code: seat.code, name: seat.name, readFrom: claimed.readFrom, seatKey,
+    });
+    // Enter as CR — matches xterm.js default for the Return key.
+    const payload = `${prompt}\r`;
+    let written = false;
+    try {
+      written = write(seat.seatId, payload);
+    } catch (error) {
+      this.logLine(`[wake] inject write threw roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+      written = false;
+    }
+    if (!written) {
+      this.logLine(`[wake] inject write refused roomCode=${seat.code} seatId=${seat.seatId} — falling back to stop+resume`);
+      await this.options.lock.release(seat.seatId);
+      return false;
+    }
+    try {
+      await this.options.api.progress({ claims: ok.map(claim => ({ claimId: claim.claimId!, status: 'resume_started' as const })) });
+    } catch (error) {
+      this.logLine(`[wake] inject progress failed roomCode=${seat.code} seatId=${seat.seatId} reason=${messageOf(error)}`);
+    }
+    seat.wakeRunId = claimed.wakeRunId;
+    this.claimsBySeat.set(seat.seatId, ok.map(claim => claim.claimId!));
+    // Release immediately: the same PTY stays up across Quiet→sleep and later
+    // @. Holding the lock (resumeSeat style) would force the next wake down the
+    // stop+resume path and blank the rail again.
+    await this.options.lock.release(seat.seatId);
+    this.logLine(`[wake] inject ok roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} wakeRunId=${claimed.wakeRunId} promptChars=${prompt.length}`);
+    this.logLine(prompt);
+    return true;
   }
 
   /** End the previous terminal so the next `codex resume` can lock the session. */

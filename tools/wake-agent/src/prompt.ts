@@ -47,6 +47,22 @@ export function wakePrompt(input: {
   return lines.join('\n');
 }
 
+
+/** Short follow-up when the existing PTY/session is still alive — no full wake blob. */
+export function reuseWakePrompt(input: {
+  code: string;
+  name: string;
+  readFrom: number;
+  seatKey: string;
+}): string {
+  const seatKey = JSON.stringify(input.seatKey);
+  return [
+    `房间 ${input.code} 有人 @ 了你（座位 ${input.name}）。`,
+    `立刻调用 room_listen({ code: "${input.code}", name: "${input.name}", since: ${input.readFrom}, timeoutMs: 0, managed: { seatKey: ${seatKey} } })，处理未读消息并回复。`,
+    '处理完后按原规则继续 listen；没有新 @ 就 room_sleep。不要改配置或权限。',
+  ].join('');
+}
+
 export function launchPrompt(code: string, name: string): string {
   return [
     `请加入 Agent Room 房间 ${code}。`,

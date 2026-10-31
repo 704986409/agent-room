@@ -7,7 +7,7 @@ import { MemoryCredentialStore } from './src/credstore.js';
 import { FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
-import { wakePrompt } from './src/prompt.js';
+import { reuseWakePrompt, wakePrompt } from './src/prompt.js';
 import { SecretRegistry } from './src/redact.js';
 import { readState, reconcileAfterRestart, setStateWriteBarrier, writeState, type DaemonState, type SeatRecord } from './src/state.js';
 
@@ -690,6 +690,155 @@ describe('state file round trip', () => {
     expect(stopped).toEqual([400]);
     expect(child.calls).toHaveLength(1);
     expect(child.calls[0]!.args[0]).toBe('resume');
+  });
+
+  it('injects a short wake into a live PTY after sleep instead of stop+resume', async () => {
+    const child = spawner([THREAD]);
+    const stopped: number[] = [];
+    const writes: { seatId: string; data: string }[] = [];
+    let alive = true;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:2', preview: '@ wake' }],
+          inFlight: [],
+          failed: [],
+        }],
+      };
+    };
+    const creds = new MemoryCredentialStore();
+    await creds.set('seat:st_a', 'seat-key-secret');
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400,
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+      credentials: creds,
+      writeSeatStdin: (seatId, data) => {
+        writes.push({ seatId, data });
+        return true;
+      },
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]!.seatId).toBe('st_a');
+    expect(writes[0]!.data.endsWith('\r') || writes[0]!.data.includes('\r') || writes[0]!.data.charCodeAt(writes[0]!.data.length - 1) === 13).toBe(true);
+    expect(writes[0]!.data).toContain('since: 183');
+    expect(writes[0]!.data).toContain('seatKey: "seat-key-secret"');
+    expect(writes[0]!.data.length).toBeLessThan(wakePrompt({
+      code: 'ABC-DEF-GHJ', name: 'cursor-a', readFrom: 183, seatKey: 'seat-key-secret',
+    }).length);
+    expect(surface.calls).toContain('resume_started');
+    expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 400, wakeRunId: 'wr_1' });
+    // Second @ while still alive must inject again, not kill.
+    surface.calls.length = 0;
+    writes.length = 0;
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:3', preview: '@ again' }],
+          inFlight: [],
+          failed: [],
+        }],
+      };
+    };
+    // Clear wakeRunId as after Quiet→sleep / managed_read completion for a fresh idle seat.
+    daemon.seats[0]!.wakeRunId = undefined;
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(writes).toHaveLength(1);
+    expect(daemon.seats[0]!.pid).toBe(400);
+  });
+
+  it('falls back to stop+resume when live PTY write is refused', async () => {
+    const child = spawner([THREAD]);
+    const stopped: number[] = [];
+    let alive = true;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:2', preview: '@ wake' }],
+          inFlight: [],
+          failed: [],
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'cursor-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400,
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+      writeSeatStdin: () => false,
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([400]);
+    expect(child.calls).toHaveLength(1);
+    expect(child.calls[0]!.args[0]).toBe('resume');
+  });
+
+  it('after grace injects into live PTY instead of killing when write succeeds', async () => {
+    const child = spawner([THREAD]);
+    let alive = true;
+    const stopped: number[] = [];
+    const writes: string[] = [];
+    let now = 1_000_000;
+    const creds = new MemoryCredentialStore();
+    await creds.set('seat:st_a', 'seat-key-secret');
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242, wakeRunId: 'wr_1',
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'xfce4-terminal --title Agent Room · codex' }),
+      now: () => now,
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+      server: 'http://127.0.0.1:9',
+      credentials: creds,
+      writeSeatStdin: (_seatId, data) => { writes.push(data); return true; },
+    });
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(writes).toHaveLength(0);
+    now += 8_000;
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toContain(reuseWakePrompt({
+      code: 'ABC-DEF-GHJ', name: 'codex-a', readFrom: 183, seatKey: 'seat-key-secret',
+    }).slice(0, 20));
+    expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, sessionId: 'thr_9' });
   });
 
   it('rolls back cloud join when launch fails so the room has no ghost seat', async () => {

@@ -16,6 +16,7 @@ import { DaemonLog } from './log.js';
 import { pairComplete, pairWithLogin, serverOrigin, unpair, deviceCredentialKey } from './pairing.js';
 import { pairedServerUrl } from './mcpconfig.js';
 import { SecretRegistry } from './redact.js';
+import { getPtySession } from './pty.js';
 import { inspectProcess, readState, writeState } from './state.js';
 
 const HELP = `agent-room-wake-agent
@@ -241,6 +242,20 @@ async function runDaemonLocked(statePath: string, mode: {
     credentials,
     stateDir,
     secrets,
+    writeSeatStdin: (seatId, data) => {
+      const session = getPtySession(seatId);
+      if (!session) {
+        log.write(`[wake] inject no pty session seatId=${seatId}`);
+        return false;
+      }
+      try {
+        session.write(data);
+        return true;
+      } catch (error) {
+        log.write(`[wake] inject pty write failed seatId=${seatId} reason=${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    },
   });
   if (mode.once) {
     const seat = await daemon.startAgent({ server, ...mode.once });
