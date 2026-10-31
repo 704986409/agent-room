@@ -7,6 +7,7 @@ import { nextWait } from './interval.js';
 import { joinRoomOverMcp, leaveRoomOverMcp, type RoomJoin, type RoomLeave } from './mcpJoin.js';
 import { firstRunPrompt, reuseWakePrompt, wakePrompt } from './prompt.js';
 import type { SecretRegistry } from './redact.js';
+import { deleteSeatStateFiles, writeSeatFiles } from './seatFiles.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
 
 /**
@@ -114,6 +115,8 @@ export interface WakeDaemonOptions {
   credentials?: CredentialStore;
   server?: string;
   stateDir?: string;
+  /** Root for rooms/<code>/<seat>/state.md. Defaults to sibling of stateDir: …/rooms. */
+  roomsDir?: string;
   joinRoom?: RoomJoin;
   /** Leave the room seat (MCP room_leave). Injected in production; tests may stub. */
   leaveRoom?: RoomLeave;
@@ -346,15 +349,40 @@ export class WakeDaemon {
       this.logLine(`[host] registered roomCode=${input.code} seatId=${registered.seatId}`);
       this.options.secrets?.add(joined.seatKey);
       await this.options.credentials?.set(`seat:${registered.seatId}`, joined.seatKey);
+      let rulesPath: string | undefined;
+      let statePath: string | undefined;
+      let seatDir: string | undefined;
+      const roomsDir = this.roomsDir();
+      if (roomsDir) {
+        try {
+          const written = await writeSeatFiles({
+            roomsDir,
+            code: input.code,
+            name: seatName,
+            seatId: registered.seatId,
+            adapterId: input.adapterId,
+            seatKey: joined.seatKey,
+          });
+          rulesPath = written.rulesPath;
+          statePath = written.statePath;
+          seatDir = written.seatDir;
+          this.logLine(`[host] seat files rules=${rulesPath} state=${statePath}`);
+        } catch (error) {
+          this.logLine(`[host] seat files failed roomCode=${input.code} seatId=${registered.seatId} reason=${messageOf(error)}`);
+        }
+      }
       const prompt = firstRunPrompt({
         code: input.code, name: seatName, readFrom: joined.cursor, seatKey: joined.seatKey,
+        rulesPath, statePath,
       });
       this.logLine(prompt);
       const launched = await adapter.launch({
         cwd: input.cwd,
         prompt,
         model: input.model,
-        env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor),
+        env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor, {
+          rulesPath, statePath, roomsDir: roomsDir ?? undefined,
+        }),
         logFile: this.logFile(registered.seatId),
       });
       this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid}`);
@@ -370,6 +398,9 @@ export class WakeDaemon {
         pid: launched.pid,
         status: 'running',
         startedAt: new Date().toISOString(),
+        seatDir,
+        rulesPath,
+        statePath,
       };
       this.options.state.seats.push(seat);
       this.stoppedByUser.delete(seat.seatId);
@@ -383,6 +414,7 @@ export class WakeDaemon {
         server: input.server,
         code: input.code,
         name: seatName,
+        adapterId: input.adapterId,
         joined,
         registered,
         leave,
@@ -396,6 +428,7 @@ export class WakeDaemon {
     server: string;
     code: string;
     name: string;
+    adapterId: string;
     joined?: { seatKey: string };
     registered?: { seatId: string };
     leave: RoomLeave;
@@ -421,6 +454,18 @@ export class WakeDaemon {
     }
     if (seatId) {
       try { await this.options.credentials?.delete(`seat:${seatId}`); } catch { /* ignore */ }
+      const roomsDir = this.roomsDir();
+      if (roomsDir && input.code && input.name) {
+        try {
+          await deleteSeatStateFiles({
+            roomsDir,
+            code: input.code,
+            name: input.name,
+            seatId,
+            adapterId: input.adapterId,
+          });
+        } catch { /* ignore */ }
+      }
       this.options.state.seats = this.options.state.seats.filter(item => item.seatId !== seatId);
     }
   }
@@ -458,6 +503,22 @@ export class WakeDaemon {
     try {
       await this.options.credentials?.delete(`seat:${seatId}`);
     } catch { /* ignore */ }
+    const roomsDir = this.roomsDir();
+    if (roomsDir) {
+      try {
+        await deleteSeatStateFiles({
+          roomsDir,
+          code: seat.code,
+          name: seat.name,
+          seatId,
+          adapterId: seat.adapterId,
+          seatDir: seat.seatDir,
+        });
+        this.logLine(`[leave] deleted seat state.md roomCode=${seat.code} seatId=${seatId}`);
+      } catch (error) {
+        this.logLine(`[leave] delete seat state.md failed seatId=${seatId} reason=${messageOf(error)}`);
+      }
+    }
     this.options.state.seats = this.options.state.seats.filter(item => item.seatId !== seatId);
     this.claimsBySeat.delete(seatId);
     await this.options.persist?.(this.options.state);
@@ -480,7 +541,22 @@ export class WakeDaemon {
     return this.options.stateDir ? seatLogPath(this.options.stateDir, seatId) : undefined;
   }
 
-  private async childEnv(seatId: string, code: string, name: string, server: string, seatKey?: string, cursor?: number): Promise<Record<string, string>> {
+  private roomsDir(): string | undefined {
+    // Only when the host sets roomsDir (index defaults to <install>/rooms).
+    // Do not infer from arbitrary stateDir — unit tests pass temp dirs that are not
+    // the install layout, and would otherwise pollute a sibling "rooms/" folder.
+    return this.options.roomsDir || undefined;
+  }
+
+  private async childEnv(
+    seatId: string,
+    code: string,
+    name: string,
+    server: string,
+    seatKey?: string,
+    cursor?: number,
+    files?: { rulesPath?: string; statePath?: string; roomsDir?: string },
+  ): Promise<Record<string, string>> {
     const stored = seatKey ?? await this.options.credentials?.get(`seat:${seatId}`) ?? '';
     if (stored) this.options.secrets?.add(stored);
     const base = server || this.options.server || '';
@@ -494,6 +570,9 @@ export class WakeDaemon {
       AGENT_ROOM_SEAT_KEY: stored,
     };
     if (typeof cursor === 'number' && Number.isFinite(cursor)) env.AGENT_ROOM_CURSOR = String(cursor);
+    if (files?.rulesPath) env.AGENT_ROOM_RULES_FILE = files.rulesPath;
+    if (files?.statePath) env.AGENT_ROOM_STATE_FILE = files.statePath;
+    if (files?.roomsDir) env.AGENT_ROOM_ROOMS_DIR = files.roomsDir;
     return env;
   }
 
@@ -604,6 +683,7 @@ export class WakeDaemon {
     }
     const seatKey = await this.options.credentials?.get(`seat:${seat.seatId}`) ?? '';
     if (seatKey) this.options.secrets?.add(seatKey);
+    // Short human wake only — seatKey lives in state.md; 动作游标 = since.
     const prompt = reuseWakePrompt({
       code: seat.code, name: seat.name, readFrom: claimed.readFrom, seatKey,
     });
@@ -729,6 +809,7 @@ export class WakeDaemon {
     if (seatKey) this.options.secrets?.add(seatKey);
     const prompt = wakePrompt({
       code: seat.code, name: seat.name, readFrom: claimed.readFrom, gap: claimed.gap, seatKey,
+      rulesPath: seat.rulesPath, statePath: seat.statePath,
     });
     this.logLine(prompt);
     try {
@@ -739,7 +820,9 @@ export class WakeDaemon {
         cwd: seat.cwd,
         prompt,
         model: seat.model,
-        env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? '', undefined, claimed.readFrom),
+        env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? '', undefined, claimed.readFrom, {
+          rulesPath: seat.rulesPath, statePath: seat.statePath, roomsDir: this.roomsDir(),
+        }),
         logFile: this.logFile(seat.seatId),
       });
       seat.pid = child.pid;

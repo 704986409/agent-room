@@ -737,8 +737,9 @@ describe('state file round trip', () => {
     expect(writes[0]!.seatId).toBe('st_a');
     expect(writes[0]!.data.startsWith('\x1b[200~')).toBe(true);
     expect(writes[0]!.data.endsWith('\x1b[201~')).toBe(true);
-    expect(writes[0]!.data).toContain('since: 183');
-    expect(writes[0]!.data).toContain('seatKey: "seat-key-secret"');
+    expect(writes[0]!.data).toContain('执行唤醒监听，动作游标=183');
+    expect(writes[0]!.data).not.toContain('seat-key-secret');
+    expect(writes[0]!.data).not.toContain('since:');
     expect(writes[0]!.data.includes('\r')).toBe(false);
     expect(writes[1]).toEqual({ seatId: 'st_a', data: '\r' });
     expect(writes[0]!.data.length).toBeLessThan(wakePrompt({
@@ -844,6 +845,7 @@ describe('state file round trip', () => {
     const expected = reuseWakePrompt({
       code: 'ABC-DEF-GHJ', name: 'codex-a', readFrom: 183, seatKey: 'seat-key-secret',
     });
+    expect(expected).toBe('执行唤醒监听，动作游标=183');
     expect(writes).toEqual([`\x1b[200~${expected}\x1b[201~`, '\r']);
     expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, sessionId: 'thr_9' });
   });
@@ -876,6 +878,57 @@ describe('state file round trip', () => {
     expect(unregistered).toEqual(['st_a']);
     expect(left).toEqual([{ code: 'ABC-DEF-GHJ', name: '测试工程师' }]);
     expect(daemon.seats).toEqual([]);
+  });
+
+  it('with roomsDir: writes shared rules + state.md, short firstRun, deletes state on close', async () => {
+    const child = spawner([THREAD]);
+    const adapter = new CodexCliAdapter(child, codexOpts);
+    const directory = await mkdtemp(join(tmpdir(), 'wake-rooms-'));
+    const roomsDir = join(directory, 'rooms');
+    const path = join(directory, 'daemon.json');
+    const creds = new MemoryCredentialStore();
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['codex', adapter]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'codex -m' }),
+      persist: state => writeState(path, state),
+      credentials: creds,
+      server: 'http://127.0.0.1:9',
+      roomsDir,
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 3, name: '开发工程师' }),
+    });
+    const seat = await daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: '开发工程师',
+      cwd: '/work', adapterId: 'codex', model: 'gpt-6-sol',
+    });
+    expect(seat.rulesPath).toBe(join(roomsDir, 'rules.md'));
+    expect(seat.statePath).toBeTruthy();
+    expect(seat.seatDir).toBeTruthy();
+    const prompt = child.calls[0]!.args.at(-1)!;
+    expect(prompt).toContain('执行唤醒监听，动作游标=3');
+    expect(prompt).toContain(seat.rulesPath!);
+    expect(prompt).toContain(seat.statePath!);
+    expect(prompt).not.toContain('super-secret-key');
+    expect(prompt).not.toContain('since: 3');
+    expect(child.calls[0]!.env).toMatchObject({
+      AGENT_ROOM_RULES_FILE: seat.rulesPath,
+      AGENT_ROOM_STATE_FILE: seat.statePath,
+      AGENT_ROOM_ROOMS_DIR: roomsDir,
+      AGENT_ROOM_SEAT_KEY: 'super-secret-key',
+    });
+    const rules = await readFile(seat.rulesPath!, 'utf8');
+    expect(rules).toContain('动作游标');
+    const stateBody = await readFile(seat.statePath!, 'utf8');
+    expect(stateBody).toContain('seatKey: super-secret-key');
+    expect(stateBody).toContain('职位: 开发工程师');
+    expect((await stat(seat.statePath!)).mode & 0o777).toBe(0o600);
+
+    expect(await daemon.stopManagedSeat(seat.seatId)).toBe(true);
+    await expect(readFile(seat.statePath!, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    // Shared rules kept after close
+    expect(await readFile(seat.rulesPath!, 'utf8')).toContain('动作游标');
   });
 
   it('closes a seat with wake unregister and room leave', async () => {

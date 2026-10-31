@@ -18,6 +18,12 @@ export interface SeatRecord {
   status: SeatRuntime;
   wakeRunId?: string;
   startedAt?: string;
+  /** Absolute seat folder under rooms/<code>/… (rules/state.md). Not a secret. */
+  seatDir?: string;
+  /** Absolute path to shared outer rules.md. */
+  rulesPath?: string;
+  /** Absolute path to this seat's state.md (contains seatKey on disk). */
+  statePath?: string;
 }
 
 /** Paired device. The device credential lives in the credential store, not here. */

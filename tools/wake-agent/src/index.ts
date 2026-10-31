@@ -18,6 +18,7 @@ import { pairedServerUrl } from './mcpconfig.js';
 import { SecretRegistry } from './redact.js';
 import { getPtySession } from './pty.js';
 import { inspectProcess, readState, writeState } from './state.js';
+import { defaultRoomsDir } from './seatFiles.js';
 
 const HELP = `agent-room-wake-agent
 
@@ -241,6 +242,7 @@ async function runDaemonLocked(statePath: string, mode: {
     server,
     credentials,
     stateDir,
+    roomsDir: process.env.AGENT_ROOM_ROOMS_DIR?.trim() || defaultRoomsDir(stateDir),
     secrets,
     writeSeatStdin: (seatId, data) => {
       const session = getPtySession(seatId);

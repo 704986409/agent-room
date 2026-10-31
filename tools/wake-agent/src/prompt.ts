@@ -1,16 +1,37 @@
 /**
- * First launch, after the daemon has already joined the room.
- * The seatKey value is embedded in the tool calls. Name AGENT_ROOM_SEAT_KEY as the
- * same value so a model that still calls room_join can resume, but do not tell it
- * to print the environment.
+ * Hosted-seat prompts.
+ *
+ * Shared wake/sleep semantics live in the outer `rules.md`. Per-seat
+ * 职位 / seatKey / 房间码 / MCP 别名 live in that seat's `state.md`.
+ * Wake inject is a short human line with 动作游标 (= since) only —
+ * seatKey is not repeated in the inject text.
  */
+
 export function firstRunPrompt(input: {
   code: string;
   name: string;
   readFrom: number;
   seatKey: string;
   gap?: readonly [number, number];
+  /** When set with statePath, seatKey stays in state.md instead of this prompt. */
+  rulesPath?: string;
+  statePath?: string;
 }): string {
+  if (input.rulesPath && input.statePath) {
+    const lines = [
+      `你是房间 ${input.code} 的座位 ${input.name}。`,
+      '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
+      '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
+      `请阅读通用规则：${input.rulesPath}`,
+      `以及座位状态：${input.statePath}（内含 seatKey 等；不要打印或写进回复）。`,
+      `执行唤醒监听，动作游标=${input.readFrom}`,
+      'MCP 工具已预先批准，直接调用即可。不要修改任何配置文件、权限文件或 MCP 设置。',
+    ];
+    if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
+    return lines.join('\n');
+  }
+
+  // Legacy fallback when rooms/state files were not written (unit tests / old installs).
   const seatKey = JSON.stringify(input.seatKey);
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
@@ -25,14 +46,29 @@ export function firstRunPrompt(input: {
   ].join('\n');
 }
 
-/** Wake prompt. Tool calls carry the seatKey value. It does not include a message body. */
+/**
+ * Full wake text for stop+resume when rules/state paths are unknown.
+ * Prefer reuseWakePrompt + on-disk rules when the PTY is still alive.
+ */
 export function wakePrompt(input: {
   code: string;
   name: string;
   readFrom: number;
   seatKey: string;
   gap?: readonly [number, number];
+  rulesPath?: string;
+  statePath?: string;
 }): string {
+  if (input.rulesPath && input.statePath) {
+    const lines = [
+      `执行唤醒监听，动作游标=${input.readFrom}`,
+      `按通用规则（${input.rulesPath}）与座位状态（${input.statePath}）调用 room_listen / room_sleep。`,
+      '不要改配置或权限，不要把 seatKey 写进回复。',
+    ];
+    if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
+    return lines.join('\n');
+  }
+
   const seatKey = JSON.stringify(input.seatKey);
   const lines = [
     `你在房间 ${input.code} 被 @ 了。`,
@@ -47,20 +83,15 @@ export function wakePrompt(input: {
   return lines.join('\n');
 }
 
-
-/** Short follow-up when the existing PTY/session is still alive — no full wake blob. */
+/** Short follow-up when the existing PTY/session is still alive — no seatKey, no full blob. */
 export function reuseWakePrompt(input: {
-  code: string;
-  name: string;
   readFrom: number;
-  seatKey: string;
+  /** Optional; ignored for the short line but kept so call sites can pass seat fields. */
+  code?: string;
+  name?: string;
+  seatKey?: string;
 }): string {
-  const seatKey = JSON.stringify(input.seatKey);
-  return [
-    `房间 ${input.code} 有人 @ 了你（座位 ${input.name}）。`,
-    `立刻调用 room_listen({ code: "${input.code}", name: "${input.name}", since: ${input.readFrom}, timeoutMs: 0, managed: { seatKey: ${seatKey} } })，处理未读消息并回复。`,
-    '处理完后按原规则继续 listen；没有新 @ 就 room_sleep。不要改配置或权限。',
-  ].join('');
+  return `执行唤醒监听，动作游标=${input.readFrom}`;
 }
 
 export function launchPrompt(code: string, name: string): string {
