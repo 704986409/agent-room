@@ -15,6 +15,7 @@ import { TemplatesIndex } from './screens/TemplatesIndex.js';
 import { TemplateDetail } from './screens/TemplateDetail.js';
 import { TemplateInterviewLive } from './screens/TemplateInterviewLive.js';
 import { ToastHost } from './components/Toast.js';
+import { NetworkOfflineOverlay } from './components/NetworkOfflineOverlay.js';
 import { Analytics } from './components/Analytics.js';
 import { TEMPLATE_PAGES_ENABLED } from './lib/featureFlags.js';
 
@@ -46,7 +47,7 @@ class PageErrorBoundary extends Component<{ children: ReactNode }, { error: Erro
 }
 
 function Layout({ children }: { children: ReactNode }) {
-  return <><ToastHost /><Analytics /><PageErrorBoundary>{children}</PageErrorBoundary></>;
+  return <><ToastHost /><NetworkOfflineOverlay /><Analytics /><PageErrorBoundary>{children}</PageErrorBoundary></>;
 }
 
 // Wrappers force a full remount whenever :code changes. Without this
