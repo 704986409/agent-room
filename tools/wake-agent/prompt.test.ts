@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { firstRunPrompt, launchPrompt, reuseWakePrompt, wakePrompt } from './src/prompt.js';
 
 describe('firstRunPrompt', () => {
-  it('with rules/state paths: short human wake, no seatKey in text', () => {
+  it('with rules/state paths: short human wake, no seatKey, no absolute install-disk reads', () => {
     const prompt = firstRunPrompt({
       code: 'HK4-TZQ-FWQ',
       name: '开发工程师',
@@ -14,8 +14,11 @@ describe('firstRunPrompt', () => {
     expect(prompt).toContain('已经加入');
     expect(prompt).toContain('禁止调用 room_join');
     expect(prompt).toContain('执行唤醒监听，动作游标=3');
-    expect(prompt).toContain('D:/Agent Room/rooms/rules.md');
+    expect(prompt).toContain('AGENTS.md');
     expect(prompt).toContain('state.md');
+    expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).not.toContain('D:/Agent Room');
+    expect(prompt).not.toContain('请阅读通用规则');
     expect(prompt).not.toContain('seat-key-secret');
     expect(prompt).not.toContain('since: 3');
     expect(launchPrompt('HK4-TZQ-FWQ', '开发工程师')).toContain('room_join({');
@@ -59,7 +62,7 @@ describe('reuseWakePrompt', () => {
 });
 
 describe('wakePrompt with paths', () => {
-  it('points at rules/state and uses 动作游标', () => {
+  it('uses cwd-relative guidance and 动作游标 without absolute path reads', () => {
     const prompt = wakePrompt({
       code: 'ABC',
       name: 'codex-a',
@@ -70,9 +73,10 @@ describe('wakePrompt with paths', () => {
       gap: [1, 3],
     });
     expect(prompt).toContain('执行唤醒监听，动作游标=4');
-    expect(prompt).toContain('/rooms/rules.md');
-    expect(prompt).toContain('/rooms/ABC/seat/state.md');
+    expect(prompt).toContain('AGENTS.md');
+    expect(prompt).toContain('state.md');
     expect(prompt).toContain('第 1–2 条');
+    expect(prompt).not.toContain('/rooms/rules.md');
     expect(prompt).not.toContain('seat-key-secret');
   });
 });

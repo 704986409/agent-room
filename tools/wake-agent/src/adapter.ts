@@ -188,6 +188,20 @@ export function codexMcpUrlArg(server: string | undefined, name = 'agent-room'):
   return `mcp_servers.${name}.url="${base}/mcp"`;
 }
 
+/**
+ * Mark a directory trusted for this Codex process so the "trust this folder?"
+ * gate does not block managed seats whose cwd is under the install tree.
+ * Does not change MCP/YOLO policy — project trust only.
+ */
+export function codexProjectTrustArg(dir: string | undefined): string | undefined {
+  const raw = dir?.trim();
+  if (!raw) return undefined;
+  // Reject junk that would break -c parsing or look like a flag injection.
+  if (/[\r\n\0]/.test(raw) || raw.length > 512) return undefined;
+  const escaped = raw.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `projects."${escaped}".trust_level="trusted"`;
+}
+
 /** Extra argv inserted before the prompt when `AGENT_ROOM_MANAGED=1`. */
 export function managedApprovalArgs(adapterId: string, env?: Record<string, string>): readonly string[] {
   if (adapterId === 'codex') {
@@ -199,6 +213,15 @@ export function managedApprovalArgs(adapterId: string, env?: Record<string, stri
     for (const name of CODEX_MANAGED_MCP_NAMES) {
       const url = codexMcpUrlArg(server, name);
       if (url) args.push('-c', url);
+    }
+    // Pre-trust seat/rooms cwd so Windows elevated sandbox + trust prompt do not
+    // strand firstRun when the working directory is under D:\Agent Room\rooms.
+    const seen = new Set<string>();
+    for (const dir of [env?.AGENT_ROOM_SEAT_DIR, env?.AGENT_ROOM_ROOMS_DIR]) {
+      const trust = codexProjectTrustArg(dir);
+      if (!trust || seen.has(trust)) continue;
+      seen.add(trust);
+      args.push('-c', trust);
     }
     return args;
   }

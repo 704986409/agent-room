@@ -58,12 +58,13 @@ export function sharedRulesMarkdown(): string {
     '',
     '- **动作游标**：即 `room_listen` 的 `since`（处理完后也用返回的 `cursor` 作为下一轮动作游标）。唤醒短指令里的「动作游标=N」就是 N。',
     '- **座位状态文件**：本座位目录下的 `state.md`。调用房间工具时从中读取 seatKey 等字段；不要把 seatKey 写进聊天回复，也不要用 shell/cat/printenv 打印它。',
+    '- **环境变量兜底**：`AGENT_ROOM_CODE` / `AGENT_ROOM_NAME` / `AGENT_ROOM_SEAT_KEY`（以及可选的 `AGENT_ROOM_CURSOR`）与 state.md 同义。文件工具不可用时直接用这些值调用 MCP，不要 printenv 打到屏幕。',
     '',
     '## 唤醒监听',
     '',
     '当收到「执行唤醒监听，动作游标=N」（或首次启动的等价指令）时：',
     '',
-    '1. 读取本座位 `state.md`，取得房间码、职位（name）、seatKey、MCP 别名。',
+    '1. 取得房间码、职位（name）、seatKey、MCP 别名：优先读本座位 `state.md`；若不宜再用文件工具，直接使用环境变量 `AGENT_ROOM_CODE` / `AGENT_ROOM_NAME` / `AGENT_ROOM_SEAT_KEY`（MCP 别名默认 `agent-room`）。',
     '2. 调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: { seatKey } })`。',
     '3. 读取未处理消息，完成交给你的工作并在房间回复。',
     '4. 处理完后继续 `room_listen`（`since` 用上一步返回的 cursor）；有新的 @ 就继续处理。',
@@ -77,6 +78,7 @@ export function sharedRulesMarkdown(): string {
     '- 不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）。',
     '- 本座位已由本机托管进房：禁止 `room_join`，不要向用户索要邀请码。',
     '- MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。',
+    '- 不要用文件读取工具去打开安装盘上的绝对路径（例如 `D:\\Agent Room\\...`）；本工作目录的 `AGENTS.md` / `state.md` 或环境变量已足够。',
     '',
   ].join('\n');
 }
@@ -107,15 +109,22 @@ export function seatStateMarkdown(input: {
   ].join('\n');
 }
 
-/** Thin project doc so CLIs that auto-load AGENTS.md / GEMINI.md from a seat cwd pick up the rules. */
+/**
+ * Project doc for CLIs that auto-load AGENTS.md / GEMINI.md from the seat cwd.
+ * Inline the shared wake rules so Codex need not open absolute install-disk paths
+ * via the sandboxed file-read tool (which can hang under Windows elevated sandbox).
+ */
 export function seatAgentsMarkdown(input: { rulesPath: string; statePath: string }): string {
   return [
-    '# Agent Room 座位说明',
+    sharedRulesMarkdown().trimEnd(),
     '',
-    `请遵守通用规则：\`${input.rulesPath}\``,
-    `以及本目录座位状态：\`${input.statePath}\``,
+    '## 本座位文件',
     '',
-    '收到「执行唤醒监听，动作游标=N」时，按通用规则执行唤醒监听与默认休眠动作。',
+    '- 座位状态：同目录 `state.md`（职位 / 房间码 / seatKey / MCP 别名）',
+    `- 共用规则原件：\`${input.rulesPath}\`（正文已内联于上方；无需再打开该绝对路径）`,
+    `- 本文件对应座位状态路径：\`${input.statePath}\``,
+    '',
+    '收到「执行唤醒监听，动作游标=N」时，按上方规则执行唤醒监听与默认休眠动作。',
     '',
   ].join('\n');
 }
@@ -137,8 +146,13 @@ export async function ensureSharedRules(roomsDir: string): Promise<string> {
   let existing = '';
   try { existing = await readFile(path, 'utf8'); } catch { /* create */ }
   const next = sharedRulesMarkdown();
-  // Refresh when missing or clearly stale (no 动作游标 term yet).
-  if (!existing || !existing.includes('动作游标') || !existing.includes('唤醒监听')) {
+  // Refresh when missing or clearly stale (no 动作游标 / env fallback yet).
+  if (
+    !existing
+    || !existing.includes('动作游标')
+    || !existing.includes('唤醒监听')
+    || !existing.includes('AGENT_ROOM_SEAT_KEY')
+  ) {
     await writeSharedFile(path, next);
   }
   return path;

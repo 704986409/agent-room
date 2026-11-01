@@ -21,6 +21,7 @@ import {
   managedApprovalArgs,
   CODEX_MANAGED_MCP_NAMES,
   codexMcpApprovalArg,
+  codexProjectTrustArg,
   shouldDirectSpawn,
   spawnCommand,
   winCmdLine,
@@ -396,3 +397,21 @@ describe('Windows Codex resolve preference', () => {
     expect(isWindowsAppsPath(detected.path)).toBe(true);
   });
 });
+
+describe('codexProjectTrustArg / managed seat dirs', () => {
+  it('escapes Windows paths for -c projects trust and wires managedApprovalArgs', () => {
+    expect(codexProjectTrustArg(undefined)).toBeUndefined();
+    expect(codexProjectTrustArg('')).toBeUndefined();
+    expect(codexProjectTrustArg('D:\\Agent Room\\rooms\\seat')).toBe(
+      'projects."D:\\\\Agent Room\\\\rooms\\\\seat".trust_level="trusted"',
+    );
+    const args = managedApprovalArgs('codex', {
+      AGENT_ROOM_SEAT_DIR: 'D:\\Agent Room\\rooms\\seat',
+      AGENT_ROOM_ROOMS_DIR: 'D:\\Agent Room\\rooms',
+    });
+    expect(args).toContain('projects."D:\\\\Agent Room\\\\rooms\\\\seat".trust_level="trusted"');
+    expect(args).toContain('projects."D:\\\\Agent Room\\\\rooms".trust_level="trusted"');
+    expect(args.join(' ')).not.toMatch(/yolo|full-auto|--force/i);
+  });
+});
+

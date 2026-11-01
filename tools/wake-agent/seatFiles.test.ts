@@ -49,6 +49,12 @@ describe('seatFiles layout', () => {
     expect(state).toContain('MCP 别名: agent-room');
     expect((await stat(written.statePath)).mode & 0o777).toBe(0o600);
 
+    const agents = await readFile(join(written.seatDir, 'AGENTS.md'), 'utf8');
+    expect(agents).toContain('动作游标');
+    expect(agents).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(agents).toContain('state.md');
+    expect(agents).not.toContain('seat-key-secret');
+
     const again = await ensureSharedRules(roomsDir);
     expect(again).toBe(written.rulesPath);
 

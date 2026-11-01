@@ -376,16 +376,20 @@ export class WakeDaemon {
         rulesPath, statePath,
       });
       this.logLine(prompt);
+      // Prefer the seat folder as cwd so AGENTS.md / state.md load from the workspace
+      // (Codex Windows elevated sandbox often cannot read D:\Agent Room absolute paths
+      // when cwd stays at the user home).
+      const launchCwd = seatDir || input.cwd;
       const launched = await adapter.launch({
-        cwd: input.cwd,
+        cwd: launchCwd,
         prompt,
         model: input.model,
         env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor, {
-          rulesPath, statePath, roomsDir: roomsDir ?? undefined,
+          rulesPath, statePath, roomsDir: roomsDir ?? undefined, seatDir,
         }),
         logFile: this.logFile(registered.seatId),
       });
-      this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid}`);
+      this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid} cwd=${launchCwd}`);
       const seat: SeatRecord = {
         seatId: registered.seatId,
         roomInstanceId: registered.roomInstanceId,
@@ -394,7 +398,7 @@ export class WakeDaemon {
         adapterId: input.adapterId,
         model: input.model,
         sessionId: launched.sessionId,
-        cwd: input.cwd,
+        cwd: launchCwd,
         pid: launched.pid,
         status: 'running',
         startedAt: new Date().toISOString(),
@@ -555,7 +559,7 @@ export class WakeDaemon {
     server: string,
     seatKey?: string,
     cursor?: number,
-    files?: { rulesPath?: string; statePath?: string; roomsDir?: string },
+    files?: { rulesPath?: string; statePath?: string; roomsDir?: string; seatDir?: string },
   ): Promise<Record<string, string>> {
     const stored = seatKey ?? await this.options.credentials?.get(`seat:${seatId}`) ?? '';
     if (stored) this.options.secrets?.add(stored);
@@ -573,6 +577,7 @@ export class WakeDaemon {
     if (files?.rulesPath) env.AGENT_ROOM_RULES_FILE = files.rulesPath;
     if (files?.statePath) env.AGENT_ROOM_STATE_FILE = files.statePath;
     if (files?.roomsDir) env.AGENT_ROOM_ROOMS_DIR = files.roomsDir;
+    if (files?.seatDir) env.AGENT_ROOM_SEAT_DIR = files.seatDir;
     return env;
   }
 
@@ -821,7 +826,7 @@ export class WakeDaemon {
         prompt,
         model: seat.model,
         env: await this.childEnv(seat.seatId, seat.code, seat.name, this.options.server ?? '', undefined, claimed.readFrom, {
-          rulesPath: seat.rulesPath, statePath: seat.statePath, roomsDir: this.roomsDir(),
+          rulesPath: seat.rulesPath, statePath: seat.statePath, roomsDir: this.roomsDir(), seatDir: seat.seatDir,
         }),
         logFile: this.logFile(seat.seatId),
       });

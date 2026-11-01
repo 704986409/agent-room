@@ -1,10 +1,15 @@
 /**
  * Hosted-seat prompts.
  *
- * Shared wake/sleep semantics live in the outer `rules.md`. Per-seat
- * 职位 / seatKey / 房间码 / MCP 别名 live in that seat's `state.md`.
+ * Shared wake/sleep semantics live in the outer `rules.md` and are also
+ * inlined into each seat's `AGENTS.md` (for CLIs that auto-load cwd docs).
+ * Per-seat 职位 / seatKey / 房间码 / MCP 别名 live in that seat's `state.md`.
  * Wake inject is a short human line with 动作游标 (= since) only —
  * seatKey is not repeated in the inject text.
+ *
+ * Never force absolute install-disk paths (e.g. D:\\Agent Room\\...) into
+ * "请阅读" lines: Codex Windows elevated sandbox often lacks those read_roots
+ * and codex-windows-sandbox-setup.exe can spin forever on the file-read tool.
  */
 
 export function firstRunPrompt(input: {
@@ -22,8 +27,9 @@ export function firstRunPrompt(input: {
       `你是房间 ${input.code} 的座位 ${input.name}。`,
       '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
       '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
-      `请阅读通用规则：${input.rulesPath}`,
-      `以及座位状态：${input.statePath}（内含 seatKey 等；不要打印或写进回复）。`,
+      '本工作目录已有 AGENTS.md 与 state.md（规则已写进 AGENTS.md；座位字段在 state.md）。',
+      '直接按其中规则工作。不要用文件读取工具去打开安装盘上的绝对路径（Windows 沙箱可能卡住）。',
+      '座位字段也可直接使用环境变量 AGENT_ROOM_CODE / AGENT_ROOM_NAME / AGENT_ROOM_SEAT_KEY（不要 printenv，不要写进回复）。',
       `执行唤醒监听，动作游标=${input.readFrom}`,
       'MCP 工具已预先批准，直接调用即可。不要修改任何配置文件、权限文件或 MCP 设置。',
     ];
@@ -62,8 +68,8 @@ export function wakePrompt(input: {
   if (input.rulesPath && input.statePath) {
     const lines = [
       `执行唤醒监听，动作游标=${input.readFrom}`,
-      `按通用规则（${input.rulesPath}）与座位状态（${input.statePath}）调用 room_listen / room_sleep。`,
-      '不要改配置或权限，不要把 seatKey 写进回复。',
+      '按本工作目录 AGENTS.md 与 state.md（或环境变量 AGENT_ROOM_*）调用 room_listen / room_sleep。',
+      '不要用文件工具打开安装盘绝对路径。不要改配置或权限，不要把 seatKey 写进回复。',
     ];
     if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
     return lines.join('\n');
