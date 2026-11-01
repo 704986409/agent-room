@@ -65,13 +65,15 @@ export function sharedRulesMarkdown(): string {
     '当收到「执行唤醒监听，动作游标=N」（或首次启动的等价指令）时：',
     '',
     '1. 取得房间码、职位（name）、seatKey、MCP 别名：优先读本座位 `state.md`；若不宜再用文件工具，直接使用环境变量 `AGENT_ROOM_CODE` / `AGENT_ROOM_NAME` / `AGENT_ROOM_SEAT_KEY`（MCP 别名默认 `agent-room`）。',
-    '2. 调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: { seatKey } })`。',
-    '3. 读取未处理消息，完成交给你的工作并在房间回复。',
-    '4. 处理完后继续 `room_listen`（`since` 用上一步返回的 cursor）；有新的 @ 就继续处理。',
+    '2. **追历史只用一次**：调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: { seatKey } })`。这是非阻塞快读，只用于补齐未读；**禁止**反复用 `timeoutMs: 0`。',
+    '3. 若有未处理消息或交给你的工作：处理完并在房间回复（`room_send`）。',
+    '4. **随后必须用默认 hold**：再调用 `room_listen({ code, name, since: <上一步 cursor>, managed: { seatKey } })`——**不要**传 `timeoutMs: 0`（省略 timeoutMs，走默认长轮询约 30–40s）。始终带 `managed.seatKey`。',
+    '5. hold 返回后若有新的 @ / 工作：处理完再回到第 4 步（继续 hold，仍不要 `timeoutMs: 0`）。',
+    '6. 若返回 Quiet / `listenStatus=sleep` / `nextAction.tool=room_sleep`：进入下方休眠；**禁止**再以 `timeoutMs: 0` 连打 `room_listen`。',
     '',
     '## 默认动作（休眠）',
     '',
-    '一轮内没有新的 @：调用 `room_sleep({ code, name, cursor: <最新动作游标>, seatKey })` 后结束本轮，等待下次唤醒。',
+    '只有在一次真实 hold（省略 `timeoutMs` 或 `timeoutMs`>0）出现 Quiet / `listenStatus=sleep` 之后：调用 `room_sleep({ code, name, cursor: <最新动作游标>, seatKey })`，然后结束本轮，等待下次唤醒。不要在追历史（`timeoutMs: 0`）之后立刻 sleep，也不要在 Quiet 后再 listen。',
     '',
     '## 禁止',
     '',
@@ -79,6 +81,7 @@ export function sharedRulesMarkdown(): string {
     '- 本座位已由本机托管进房：禁止 `room_join`，不要向用户索要邀请码。',
     '- MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。',
     '- 不要用文件读取工具去打开安装盘上的绝对路径（例如 `D:\\Agent Room\\...`）；本工作目录的 `AGENTS.md` / `state.md` 或环境变量已足够。',
+    '- 禁止用 `timeoutMs: 0` 循环调用 `room_listen`（会一秒连跳多次）；追历史一次后必须 hold。',
     '',
   ].join('\n');
 }
@@ -146,11 +149,11 @@ export async function ensureSharedRules(roomsDir: string): Promise<string> {
   let existing = '';
   try { existing = await readFile(path, 'utf8'); } catch { /* create */ }
   const next = sharedRulesMarkdown();
-  // Refresh when missing or clearly stale (no 动作游标 / env fallback yet).
+  // Desktop-owned template: rewrite when missing, content drifted, or pre-hold-loop wording.
   if (
     !existing
-    || !existing.includes('动作游标')
-    || !existing.includes('唤醒监听')
+    || existing !== next
+    || !existing.includes('追历史只用一次')
     || !existing.includes('AGENT_ROOM_SEAT_KEY')
   ) {
     await writeSharedFile(path, next);

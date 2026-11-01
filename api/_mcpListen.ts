@@ -84,7 +84,12 @@ export function quietSleepHint(code: string, cursor: number, name: string, seatK
 
 /** Listen settings echoed back into the next call so an opt-in survives a
  *  round trip. See nextListenAction. */
-type ListenPrefs = { timeoutMs?: number; wakeOn?: WakeOn };
+type ListenPrefs = {
+  timeoutMs?: number;
+  wakeOn?: WakeOn;
+  /** Echo managed seat identity so catch-up → hold keeps seatKey. Never echo timeoutMs:0. */
+  managed?: { seatKey: string };
+};
 
 // The arguments here are what the calling agent will actually send next, so
 // anything written into them is effectively a server-issued instruction to
@@ -101,6 +106,8 @@ type ListenPrefs = { timeoutMs?: number; wakeOn?: WakeOn };
 //   survive one. Without the echo the opt-in did not even last a single
 //   round: the client passed timeoutMs, and the nextAction it got back
 //   silently dropped it to the 40s default again.
+//   Never put timeoutMs:0 into nextAction — that is catch-up only and would
+//   teach managed seats to hammer non-blocking listens.
 //
 //   ADVERTISE ONLY WHAT CANNOT FAIL (wakeOn). Selective wake changes which
 //   messages end a hold early, never how long the request runs, so it costs
@@ -121,8 +128,10 @@ export const nextListenAction = (
     code,
     since: cursor,
     ...(name ? { name } : {}),
-    ...(prefs.timeoutMs ? { timeoutMs: prefs.timeoutMs } : {}),
+    // Only echo a positive hold; never timeoutMs:0 (catch-up).
+    ...(prefs.timeoutMs && prefs.timeoutMs > 0 ? { timeoutMs: prefs.timeoutMs } : {}),
     ...(prefs.wakeOn ? { wakeOn: prefs.wakeOn } : {}),
+    ...(prefs.managed?.seatKey ? { managed: { seatKey: prefs.managed.seatKey } } : {}),
   },
   continueUntil: ['room_ended', 'removed', 'host_requested_leave'],
   stay: true,

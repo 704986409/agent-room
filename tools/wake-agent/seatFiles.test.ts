@@ -40,6 +40,9 @@ describe('seatFiles layout', () => {
     const rules = await readFile(written.rulesPath, 'utf8');
     expect(rules).toContain('动作游标');
     expect(rules).toContain('唤醒监听');
+    expect(rules).toContain('追历史只用一次');
+    expect(rules).toContain('默认 hold');
+    expect(rules).toMatch(/禁止[\s\S]*timeoutMs: 0/);
     expect(rules).not.toContain('seat-key-secret');
 
     const state = await readFile(written.statePath, 'utf8');
@@ -52,6 +55,7 @@ describe('seatFiles layout', () => {
     const agents = await readFile(join(written.seatDir, 'AGENTS.md'), 'utf8');
     expect(agents).toContain('动作游标');
     expect(agents).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(agents).toContain('追历史只用一次');
     expect(agents).toContain('state.md');
     expect(agents).not.toContain('seat-key-secret');
 

@@ -17,6 +17,8 @@ describe('firstRunPrompt', () => {
     expect(prompt).toContain('AGENTS.md');
     expect(prompt).toContain('state.md');
     expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).toContain('追历史只用一次 timeoutMs:0');
+    expect(prompt).toContain('默认 hold');
     expect(prompt).not.toContain('D:/Agent Room');
     expect(prompt).not.toContain('请阅读通用规则');
     expect(prompt).not.toContain('seat-key-secret');
@@ -75,6 +77,7 @@ describe('wakePrompt with paths', () => {
     expect(prompt).toContain('执行唤醒监听，动作游标=4');
     expect(prompt).toContain('AGENTS.md');
     expect(prompt).toContain('state.md');
+    expect(prompt).toContain('追历史只用一次 timeoutMs:0');
     expect(prompt).toContain('第 1–2 条');
     expect(prompt).not.toContain('/rooms/rules.md');
     expect(prompt).not.toContain('seat-key-secret');

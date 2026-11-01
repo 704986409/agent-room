@@ -431,17 +431,45 @@ async function dispatch(
         const readInbox = await boardInbox(client, profile, a.code, selfName ?? '', false, catchUpRoom?.replyMode);
         const readMustWork = inboxRequiresWork(readInbox);
         const readAddressed = messagesAddressCaller(listed.messages, selfName, catchUpRoom);
+        const managedSeatKey = managedRead?.seatKey;
+        // Managed catch-up: never teach timeoutMs:0 forever. Empty + no work →
+        // nudge a single default hold (omit timeoutMs); sleep only after that hold.
+        if (managedSeatKey && selfName && !readMustWork && !readAddressed && messages.length === 0) {
+          const holdNext = nextListenAction(a.code, cursor, selfName, {
+            managed: { seatKey: managedSeatKey },
+          });
+          return ok({
+            messages,
+            cursor,
+            listenStatus: 'active',
+            stay: true,
+            meaning:
+              'Catch-up (timeoutMs:0) finished with nothing to do. Call room_listen once more with managed.seatKey and OMIT timeoutMs (default hold). Do NOT call again with timeoutMs:0. Sleep only after a Quiet hold.',
+            nextAction: holdNext,
+            ...contextFields(all),
+            ...(readInbox.hint ? { yourTasks: readInbox } : {}),
+            hint:
+              `Catch-up done. NEXT: room_listen({ code: "${a.code}", name: "${selfName}", since: ${cursor}, managed: { seatKey: "${managedSeatKey}" } }) — omit timeoutMs (default hold). Forbidden: timeoutMs:0 again.`,
+          }, [], structured);
+        }
+        const managedPrefs = managedSeatKey ? { managed: { seatKey: managedSeatKey } } : {};
         const readHint = readMustWork
           ? readInbox.hint
-          : [readInbox.hint, NEXT_LISTEN(a.code, cursor)].filter(Boolean).join(' ');
+          : [
+            readInbox.hint,
+            managedSeatKey
+              ? `Catch-up read done. After any reply, call room_listen with managed.seatKey and OMIT timeoutMs (default hold). Do not pass timeoutMs:0 again.`
+              : NEXT_LISTEN(a.code, cursor),
+          ].filter(Boolean).join(' ');
         const readOverlaid = applyAddressedReply(
-          nextActionForInbox(readInbox, a.code, cursor, selfName),
+          nextActionForInbox(readInbox, a.code, cursor, selfName, managedPrefs),
           readHint,
           readAddressed,
           readMustWork,
           a.code,
           cursor,
           selfName,
+          managedPrefs,
         );
         return ok({
           messages,
