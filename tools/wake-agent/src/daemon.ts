@@ -30,6 +30,8 @@ export interface WakeSeatView {
   pending: { eventId: string; sourceMessageIndex?: number; preview?: string }[];
   inFlight: { eventId: string; claimId?: string; state?: string }[];
   failed: { eventId: string; reason?: string }[];
+  /** room_sleep handoff `at` (ms). Advances each Quiet→sleep. */
+  sleptAt?: number;
 }
 
 export interface ClaimResult {
@@ -161,8 +163,12 @@ export class WakeDaemon {
   private wakeSleep: (() => void) | undefined;
   /** When each still-pending event was first seen, so a live listen can ack it. */
   private readonly pendingSeen = new Map<string, number>();
+  /** Last room_sleep handoff `at` applied per seat — advances clear wakeRunId. */
+  private readonly lastSleptAt = new Map<string, number>();
   /** Seats the user explicitly stopped. Polling must not spawn them again. */
   private readonly stoppedByUser = new Set<string>();
+  /** While deferring for live-listen grace, poll again soon instead of busy≥5s. */
+  private static readonly GRACE_BUSY_WAIT_MS = 1_000;
 
   constructor(options: WakeDaemonOptions) {
     this.options = options;
@@ -190,13 +196,14 @@ export class WakeDaemon {
     this.polling = true;
     let networkError = false;
     let busy = false;
+    let graceDeferred = false;
     let skipped = false;
     let failure: unknown;
     const now = Date.now();
     const useLongPoll = now >= this.longPollFallbackUntil;
     const waitMs = useLongPoll ? this.longPollHoldMs : 0;
     const startedAt = now;
-    this.logLine(`[wake] poll start mode=${useLongPoll ? 'long' : 'short'} waitMs=${waitMs} emptyStreak=${this.emptyStreak}`);
+    this.logLine(`[wake] poll start at=${new Date(now).toISOString()} mode=${useLongPoll ? 'long' : 'short'} waitMs=${waitMs} emptyStreak=${this.emptyStreak}`);
     const flight = this.options.api.poll(waitMs > 0 ? { waitMs } : undefined)
       .then(result => result, error => { failure = error; throw error; });
     this.polls.push(flight);
@@ -216,6 +223,7 @@ export class WakeDaemon {
         }
         if (this.stoppedByUser.has(seat.seatId)) continue;
         if (remote.status !== 'active') continue;
+        this.noticeSleep(seat, remote);
         const claimIds = remote.inFlight.map(event => event.claimId).filter((id): id is string => !!id);
         if (claimIds.length) await this.options.api.renew({ claimIds });
         if (remote.pending.length || remote.inFlight.length) busy = true;
@@ -234,6 +242,7 @@ export class WakeDaemon {
         if (seat.status === 'running' && seat.wakeRunId && remote.inFlight.length) {
           if (!remote.pending.length) continue;
           if (this.deferForLiveListen(seat, remote)) {
+            graceDeferred = true;
             await this.merge(seat, remote);
             continue;
           }
@@ -248,7 +257,10 @@ export class WakeDaemon {
           };
         }
         if (!view.pending.length) continue;
-        if (this.deferForLiveListen(seat, view)) continue;
+        if (this.deferForLiveListen(seat, view)) {
+          graceDeferred = true;
+          continue;
+        }
         // Prefer injecting a short wake into the still-alive PTY so the rail
         // does not flash "进程已退出" / blank. Only rebuild when truly dead
         // or the PTY write hook is missing / refuses.
@@ -278,6 +290,11 @@ export class WakeDaemon {
           this.emptyStreak = 0;
           this.waitMs = Math.max(0, this.serverNextPollMs || 0);
           this.logLine(`[wake] long-poll idle reenter waitMs=${this.waitMs}`);
+        } else if (graceDeferred && !networkError) {
+          // Live-listen grace: re-check soon. busy≥5s was burning 8–12s after sleep.
+          this.emptyStreak = 0;
+          this.waitMs = WakeDaemon.GRACE_BUSY_WAIT_MS;
+          this.logLine(`[wake] next waitMs=${this.waitMs} emptyStreak=0 busy=${busy} graceDeferred=1 networkError=0`);
         } else {
           const decision = nextWait({
             emptyStreak: this.emptyStreak,
@@ -628,10 +645,31 @@ export class WakeDaemon {
   }
 
   /**
+   * room_sleep advances handoff `at` (poll `sleptAt`). Clear local wakeRunId so
+   * the next @ skips resumeGrace — idle CLI after sleep will not ack pending.
+   */
+  private noticeSleep(seat: SeatRecord, remote: WakeSeatView): void {
+    const sleptAt = remote.sleptAt;
+    if (typeof sleptAt !== 'number' || !Number.isFinite(sleptAt) || sleptAt <= 0) return;
+    const prev = this.lastSleptAt.get(seat.seatId) ?? 0;
+    if (sleptAt <= prev) return;
+    this.lastSleptAt.set(seat.seatId, sleptAt);
+    if (!seat.wakeRunId) {
+      this.logLine(`[wake] sleep noticed roomCode=${seat.code} seatId=${seat.seatId} sleptAt=${new Date(sleptAt).toISOString()} wakeRunId=none`);
+      return;
+    }
+    const cleared = seat.wakeRunId;
+    seat.wakeRunId = undefined;
+    this.claimsBySeat.delete(seat.seatId);
+    this.logLine(`[wake] sleep clear wakeRunId roomCode=${seat.code} seatId=${seat.seatId} sleptAt=${new Date(sleptAt).toISOString()} was=${cleared}`);
+  }
+
+  /**
    * A process that is still inside room_listen will ack a new @ on its own.
    * Grace is only for *pending* events (new @), never for WAITING_ACK age —
    * killing on inFlight age removed a live listen. An idle prompt after
-   * room_sleep will not ack pending, so the next poll past grace resumes.
+   * room_sleep will not ack pending, so noticeSleep clears wakeRunId and the
+   * next @ injects without burning resumeGraceMs.
    */
   private deferForLiveListen(seat: SeatRecord, remote: WakeSeatView): boolean {
     if (seat.status !== 'running' || !seat.pid || !this.options.inspect(seat.pid).alive) return false;
@@ -647,8 +685,12 @@ export class WakeDaemon {
       if (seen === undefined) {
         seen = now;
         this.pendingSeen.set(event.eventId, now);
+        this.logLine(`[wake] pending first-seen at=${new Date(now).toISOString()} roomCode=${seat.code} seatId=${seat.seatId} eventId=${event.eventId}`);
       }
       if (now - seen >= grace) mature = true;
+    }
+    if (!mature) {
+      this.logLine(`[wake] defer live-listen at=${new Date(now).toISOString()} roomCode=${seat.code} seatId=${seat.seatId} wakeRunId=${seat.wakeRunId} pending=${remote.pending.length} graceMs=${grace}`);
     }
     return !mature;
   }
@@ -671,7 +713,7 @@ export class WakeDaemon {
       return false;
     }
     const eventIds = remote.pending.map(event => event.eventId);
-    this.logLine(`[wake] inject claim start roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} eventIds=${eventIds.join(',')}`);
+    this.logLine(`[wake] inject claim start at=${new Date().toISOString()} roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} eventIds=${eventIds.join(',')}`);
     let claimed: ClaimResult;
     try {
       claimed = await this.options.api.claim({ eventIds });
@@ -762,7 +804,7 @@ export class WakeDaemon {
     // @. Holding the lock (resumeSeat style) would force the next wake down the
     // stop+resume path and blank the rail again.
     await this.options.lock.release(seat.seatId);
-    this.logLine(`[wake] inject ok roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} wakeRunId=${claimed.wakeRunId} promptChars=${prompt.length} enter=${enterOk ? '1' : '0'}`);
+    this.logLine(`[wake] inject ok at=${new Date().toISOString()} roomCode=${seat.code} seatId=${seat.seatId} pid=${seat.pid} wakeRunId=${claimed.wakeRunId} promptChars=${prompt.length} enter=${enterOk ? '1' : '0'}`);
     this.logLine(prompt);
     // Text reached the PTY; even if Enter failed we must not stop+resume (would
     // blank the rail and duplicate the prompt). Operator can press Enter once.

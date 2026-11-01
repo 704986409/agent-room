@@ -204,7 +204,11 @@ export class WakeService {
         // Idle fast path (design §3.4/P1-4): no unscanned messages and no events for this seat ->
         // the snapshot EVAL was the only Redis work. Room expiry and leases are left to patrol.
         if (snap.count !== null && snap.scan !== null && snap.count <= snap.scan && snap.events === 0) {
-          seats.push({ seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const, pending: [], inFlight: [], failed: [] });
+          seats.push({
+            seatId: binding.seatId, code: binding.code, name: binding.name, status: 'active' as const,
+            pending: [], inFlight: [], failed: [],
+            ...(snap.sleptAt ? { sleptAt: snap.sleptAt } : {}),
+          });
           continue;
         }
         if (snap.count !== null && snap.scan !== null && snap.count > snap.scan) {
@@ -230,6 +234,7 @@ export class WakeService {
           pending: events.filter(e => e.state === 'PENDING').map(summarize),
           inFlight: events.filter(e => inFlight(e) && e.deviceId === deviceId).map(summarize),
           failed: events.filter(e => e.state === 'FAILED' || e.state === 'EXPIRED').map(summarize),
+          ...(snap.sleptAt ? { sleptAt: snap.sleptAt } : {}),
         });
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);

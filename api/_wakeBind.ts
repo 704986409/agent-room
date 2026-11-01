@@ -34,15 +34,17 @@ for i, id in ipairs(ids) do
   local count = false
   local scan = false
   local events = 0
+  local handoff = false
   if meta then
     local code, roomInstance = string.match(meta, '^(%S+)\t(%S+)$')
     if code and roomInstance then
       count = redis.call('GET', 'room-msg-count:' .. code)
       scan = redis.call('GET', 'wake-scan:' .. roomInstance .. ':' .. id)
       events = redis.call('SCARD', 'wake-seat:' .. roomInstance .. ':' .. id)
+      handoff = redis.call('GET', 'seat-handoff:' .. roomInstance .. ':' .. id)
     end
   end
-  rows[i] = { id, bind or false, count or false, scan or false, events }
+  rows[i] = { id, bind or false, count or false, scan or false, events, handoff or false }
 end
 return rows`;
 
@@ -128,6 +130,8 @@ export interface PollSeatSnapshot {
   scan: number | null;
   /** Size of the seat's event index; 0 + no unscanned messages means nothing to do. */
   events: number;
+  /** Absolute ms from room_sleep handoff (`at`), when present. */
+  sleptAt: number | null;
 }
 
 function asNumber(value: unknown): number | null {
@@ -140,12 +144,22 @@ export async function readPollSnapshot(client: CommandClient, deviceId: string):
   const rows = await client.command<unknown>(['EVAL', POLL_SNAPSHOT_SCRIPT, 1, deviceKey(deviceId)]);
   const list = Array.isArray(rows) ? rows : [];
   return list.map(row => {
-    const [seatId, bindRaw, countRaw, scanRaw, eventsRaw] = row as [string, string | false | null, string | number | false | null, string | number | false | null, number | null | undefined];
+    const [seatId, bindRaw, countRaw, scanRaw, eventsRaw, handoffRaw] = row as [string, string | false | null, string | number | false | null, string | number | false | null, number | null | undefined, string | false | null | undefined];
     let binding: WakeBinding | null = null;
     if (bindRaw) {
       try { binding = JSON.parse(String(bindRaw)) as WakeBinding; }
       catch (error) {
         console.error(`[wake] poll snapshot bind JSON seatId=${String(seatId)} reason=${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    let sleptAt: number | null = null;
+    if (handoffRaw) {
+      try {
+        const parsed = JSON.parse(String(handoffRaw)) as { at?: unknown };
+        const at = Number(parsed?.at);
+        if (Number.isFinite(at) && at > 0) sleptAt = at;
+      } catch (error) {
+        console.error(`[wake] poll snapshot handoff JSON seatId=${String(seatId)} reason=${error instanceof Error ? error.message : String(error)}`);
       }
     }
     return {
@@ -154,6 +168,7 @@ export async function readPollSnapshot(client: CommandClient, deviceId: string):
       count: asNumber(countRaw),
       scan: asNumber(scanRaw),
       events: Number(eventsRaw ?? 0),
+      sleptAt,
     };
   });
 }

@@ -692,6 +692,97 @@ describe('state file round trip', () => {
     expect(child.calls[0]!.args[0]).toBe('resume');
   });
 
+  it('clears wakeRunId when poll sleptAt advances so post-sleep @ injects without grace', async () => {
+    const child = spawner([THREAD]);
+    const stopped: number[] = [];
+    const writes: { seatId: string; data: string }[] = [];
+    let alive = true;
+    let now = 1_000_000;
+    const surface = api();
+    // Idle poll carries advanced sleptAt (room_sleep handoff) while wakeRunId still set.
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', status: 'active' as const,
+          pending: [], inFlight: [], failed: [], sleptAt: 2_000_000,
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 4242, wakeRunId: 'wr_old',
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive, cmdline: 'codex' }),
+      now: () => now,
+      resumeGraceMs: 8_000,
+      stopProcess: pid => { stopped.push(pid); alive = false; },
+      injectEnterDelayMs: 0,
+      writeSeatStdin: (seatId, data) => { writes.push({ seatId, data }); return true; },
+    });
+    await daemon.tick();
+    expect(daemon.seats[0]!.wakeRunId).toBeUndefined();
+    expect(writes).toHaveLength(0);
+    expect(stopped).toEqual([]);
+
+    // New @ with wakeRunId cleared: inject immediately (no 8s grace).
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:post-sleep', preview: '@ after sleep' }],
+          inFlight: [], failed: [], sleptAt: 2_000_000,
+        }],
+      };
+    };
+    await daemon.tick();
+    expect(stopped).toEqual([]);
+    expect(child.calls).toHaveLength(0);
+    expect(writes).toHaveLength(2);
+    expect(writes[0]!.data).toContain('执行唤醒监听');
+    expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, wakeRunId: 'wr_1' });
+  });
+
+  it('uses 1s wait while deferring live-listen grace instead of busy 5s', async () => {
+    const child = spawner([THREAD]);
+    let now = 1_000;
+    const surface = api();
+    surface.poll = async () => {
+      surface.calls.push('poll');
+      return {
+        nextPollMs: 5_000,
+        seats: [{
+          seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', status: 'active' as const,
+          pending: [{ eventId: 'wk:live', preview: '@ mid listen' }],
+          inFlight: [{ eventId: 'wk:old', claimId: 'cl-old' }],
+          failed: [],
+        }],
+      };
+    };
+    const daemon = new WakeDaemon({
+      api: surface,
+      adapters: new Map([['codex', new CodexCliAdapter(child, codexOpts)]]),
+      state: { seats: [{
+        seatId: 'st_a', code: 'ABC-DEF-GHJ', name: 'codex-a', adapterId: 'codex', model: 'gpt-6-sol',
+        sessionId: 'thr_9', cwd: '/work', status: 'running', pid: 400, wakeRunId: 'wr_1',
+      }] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'codex' }),
+      now: () => now,
+      resumeGraceMs: 8_000,
+    });
+    await daemon.tick();
+    expect(surface.calls).toContain('claim:wr_1'); // merge within grace
+    expect(daemon.waitMs).toBe(1_000);
+  });
+
   it('injects a short wake into a live PTY after sleep instead of stop+resume', async () => {
     const child = spawner([THREAD]);
     const stopped: number[] = [];
