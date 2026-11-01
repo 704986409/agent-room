@@ -181,11 +181,39 @@ export function codexMcpApprovalArg(name: string): string {
 /**
  * Point this process at the paired room server.
  * `~/.codex/config.toml` often names a different host; a managed seat must not follow it.
+ * Prefer {@link codexMcpShimOverrides} when AGENT_ROOM_MCP_SHIM is set — HTTP MCP
+ * cannot read AGENT_ROOM_SEAT_KEY, so Quiet never sleeps if the model sends managed:{}.
  */
 export function codexMcpUrlArg(server: string | undefined, name = 'agent-room'): string | undefined {
   const base = server?.trim().replace(/\/+$/, '');
   if (!base || !/^https?:\/\/[^\s"'\\]+$/i.test(base)) return undefined;
   return `mcp_servers.${name}.url="${base}/mcp"`;
+}
+
+/** Escape a path/command for Codex `-c` TOML basic strings. */
+export function codexTomlBasicString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
+ * Stdio MCP seat-key shim overrides for one server name.
+ * Clears url so Codex does not keep talking HTTP MCP (which cannot inject seatKey).
+ */
+export function codexMcpShimOverrides(
+  nodePath: string,
+  shimEntry: string,
+  name = 'agent-room',
+): string[] {
+  const node = nodePath.trim();
+  const entry = shimEntry.trim();
+  if (!node || !entry) return [];
+  if (/[\r\n\0]/.test(node) || /[\r\n\0]/.test(entry)) return [];
+  if (node.length > 512 || entry.length > 512) return [];
+  const command = `mcp_servers.${name}.command=${codexTomlBasicString(node)}`;
+  const args = `mcp_servers.${name}.args=[${codexTomlBasicString(entry)}, ${codexTomlBasicString('mcp-shim')}]`;
+  // Empty url drops a stale config.toml HTTP target so command/args win.
+  const clearUrl = `mcp_servers.${name}.url=""`;
+  return [clearUrl, command, args];
 }
 
 /**
@@ -209,10 +237,20 @@ export function managedApprovalArgs(adapterId: string, env?: Record<string, stri
     for (const name of CODEX_MANAGED_MCP_NAMES) {
       args.push('-c', codexMcpApprovalArg(name));
     }
+    const node = env?.AGENT_ROOM_NODE?.trim();
+    const shim = env?.AGENT_ROOM_MCP_SHIM?.trim();
     const server = env?.AGENT_ROOM_SERVER || env?.AGENT_ROOM_BASE_URL;
-    for (const name of CODEX_MANAGED_MCP_NAMES) {
-      const url = codexMcpUrlArg(server, name);
-      if (url) args.push('-c', url);
+    if (node && shim) {
+      for (const name of CODEX_MANAGED_MCP_NAMES) {
+        for (const override of codexMcpShimOverrides(node, shim, name)) {
+          args.push('-c', override);
+        }
+      }
+    } else {
+      for (const name of CODEX_MANAGED_MCP_NAMES) {
+        const url = codexMcpUrlArg(server, name);
+        if (url) args.push('-c', url);
+      }
     }
     // Pre-trust seat/rooms cwd so Windows elevated sandbox + trust prompt do not
     // strand firstRun when the working directory is under D:\Agent Room\rooms.

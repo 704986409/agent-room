@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Message, Participant, Room } from '@agent-room/shared';
 import { callTool } from './_mcpTools.js';
 import type { RemoteRoomClient } from './_mcpRoomClient.js';
-import { settleManagedRead } from './_wakeListen.js';
+import { managedObjectMissingSeatKey, settleManagedRead } from './_wakeListen.js';
 import { RedisWakeStore } from './_wakeRedis.js';
 import { WakeTestRedis } from './_wakeTestRedis.js';
 
@@ -109,5 +109,17 @@ describe('managed room_listen and room_sleep', () => {
     expect(tools.match(/await settleManagedRead/g)).toHaveLength(2);
     expect(send).not.toContain('settleManagedRead');
     expect(room).not.toContain('confirmRead');
+  });
+});
+
+describe('managedObjectMissingSeatKey', () => {
+  it('is true only when managed object lacks a non-empty seatKey', () => {
+    expect(managedObjectMissingSeatKey(undefined)).toBe(false);
+    expect(managedObjectMissingSeatKey(null)).toBe(false);
+    expect(managedObjectMissingSeatKey('x')).toBe(false);
+    expect(managedObjectMissingSeatKey({})).toBe(true);
+    expect(managedObjectMissingSeatKey({ seatKey: '' })).toBe(true);
+    expect(managedObjectMissingSeatKey({ seatKey: '  ' })).toBe(true);
+    expect(managedObjectMissingSeatKey({ seatKey: 'sk' })).toBe(false);
   });
 });

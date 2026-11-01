@@ -11,6 +11,13 @@ export interface ManagedListenInput {
   eventIds?: string[];
 }
 
+/** True when the caller sent a managed object but left seatKey blank (incl. `{}`). */
+export function managedObjectMissingSeatKey(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const seatKey = (value as { seatKey?: unknown }).seatKey;
+  return typeof seatKey !== 'string' || !seatKey.trim();
+}
+
 /** eventIds are correlation metadata. A missing or invalid seatKey is an ordinary read. */
 export function parseManaged(value: unknown): ManagedListenInput | undefined {
   if (!value || typeof value !== 'object') return undefined;

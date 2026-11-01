@@ -41,6 +41,7 @@ describe('seatFiles layout', () => {
     expect(rules).toContain('动作游标');
     expect(rules).toContain('唤醒监听');
     expect(rules).toContain('追历史只用一次');
+    expect(rules).toContain('禁止 `managed: {}`');
     expect(rules).toContain('默认 hold');
     expect(rules).toMatch(/禁止[\s\S]*timeoutMs: 0/);
     expect(rules).not.toContain('seat-key-secret');

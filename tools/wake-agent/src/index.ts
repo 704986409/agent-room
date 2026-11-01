@@ -34,6 +34,9 @@ The control server binds 127.0.0.1 and is not reachable from other machines.
   serve [--state path] [--server URL] [--control-port N] [--no-control]
         Token: $AGENT_ROOM_DEVICE_TOKEN, otherwise the credential store.
         Prints: control: http://127.0.0.1:<port>/?t=<token>
+  mcp-shim
+        Stdio MCP proxy for managed Codex: fills AGENT_ROOM_SEAT_KEY into
+        room_listen.managed / room_sleep when the model sends managed:{}.
 
 Secrets (device token, seatKey, password) stay out of the state file and out of logs.
 `;
@@ -94,6 +97,12 @@ function requireServer(explicit: string | undefined, stateServer: string | undef
 
 async function main(): Promise<void> {
   const command = process.argv[2];
+  // Stdio MCP proxy for managed seats — must run before HELP / other commands.
+  if (command === 'mcp-shim') {
+    const { runMcpSeatShim } = await import('./mcpSeatShim.js');
+    await runMcpSeatShim(process.env);
+    return;
+  }
   if (!command || command === 'help' || command === '--help') {
     process.stdout.write(HELP);
     return;

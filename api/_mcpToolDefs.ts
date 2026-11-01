@@ -126,9 +126,10 @@ export const CORE_TOOLS: ToolDef[] = [
         },
         managed: {
           type: 'object',
-          description: 'Optional. When seatKey matches this seat, a read that delivers a wake trigger is acknowledged by the server. Wrong or missing seatKey is an ordinary read and acknowledges nothing. wakeRunId and eventIds are correlation only.',
+          description: 'Managed seats MUST pass seatKey (AGENT_ROOM_SEAT_KEY / state.md). managed:{} is illegal and prevents Quiet→room_sleep. Tool-arg seatKey is not a room secret. When seatKey matches, wake triggers are acknowledged. wakeRunId and eventIds are correlation only.',
+          required: ['seatKey'],
           properties: {
-            seatKey: { type: 'string' },
+            seatKey: { type: 'string', minLength: 1, description: 'Non-empty seat key from AGENT_ROOM_SEAT_KEY or state.md.' },
             wakeRunId: { type: 'string' },
             eventIds: { type: 'array', items: { type: 'string' } },
           },
@@ -147,7 +148,7 @@ export const CORE_TOOLS: ToolDef[] = [
         code: CODE_PROP,
         name: NAME_PROP,
         cursor: { type: 'number', description: 'Absolute count of messages already consumed' },
-        seatKey: { type: 'string', description: 'Seat key for this seat. Stored locally by the MCP client, not typed by the agent.' },
+        seatKey: { type: 'string', description: 'Required seat key for this seat (from AGENT_ROOM_SEAT_KEY / state.md / room_join). Passing it in tool arguments is not posting a secret to the room. Do not omit and do not send an empty string.' },
       },
     },
     outputSchema: OBJECT_OUTPUT,

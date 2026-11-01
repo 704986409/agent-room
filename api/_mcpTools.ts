@@ -85,7 +85,7 @@ import {
   type WakeOn,
 } from './_mcpListen.js';
 import { declaresObjectOutput, FULL_TOOLS, isRoomCreateEnabled, listTools, type McpProfile } from './_mcpToolDefs.js';
-import { parseManaged, settleManagedRead } from './_wakeListen.js';
+import { managedObjectMissingSeatKey, parseManaged, settleManagedRead } from './_wakeListen.js';
 import { RedisWakeStore } from './_wakeRedis.js';
 
 export { CORE_TOOLS, FULL_TOOLS, isRoomCreateEnabled, listTools, SERVER_INSTRUCTIONS, serverInstructions } from './_mcpToolDefs.js';
@@ -410,6 +410,18 @@ async function dispatch(
         }
         let cursor = listed.cursor;
         const managedRead = parseManaged(a.managed);
+        if (!managedRead && managedObjectMissingSeatKey(a.managed)) {
+          return ok({
+            messages: [],
+            cursor: since,
+            ...listenStatusFields(),
+            error: 'managed_seat_key_required',
+            nextAction: nextListenAction(a.code, since, selfName),
+            hint:
+              'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY / state.md). managed:{} is illegal and prevents Quiet→room_sleep. '
+              + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
+          }, [], structured);
+        }
         if (managedRead && selfName) {
           try {
             const settled = await settleManagedRead(client.store, {
@@ -532,6 +544,18 @@ async function dispatch(
       let listenEpoch: number | undefined;
       let managedCursor: number | undefined;
       const managedListen = parseManaged(a.managed);
+      if (!managedListen && managedObjectMissingSeatKey(a.managed)) {
+        return ok({
+          messages: [],
+          cursor: since,
+          ...listenStatusFields(),
+          error: 'managed_seat_key_required',
+          nextAction: nextListenAction(a.code, since, selfName),
+          hint:
+            'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY / state.md). managed:{} is illegal and prevents Quiet→room_sleep. '
+              + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
+        }, [], structured);
+      }
       if (managedListen && selfName && !result.terminated) {
         try {
           const settled = await settleManagedRead(client.store, {
