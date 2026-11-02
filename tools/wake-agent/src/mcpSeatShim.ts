@@ -116,6 +116,71 @@ function writeMessage(message: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify(message)}\n`);
 }
 
+
+/** Extract Bearer token (seatKey) from an Authorization header. */
+export function seatKeyFromAuthHeader(header: string | string[] | undefined): string {
+  const raw = Array.isArray(header) ? header[0] : header;
+  if (!raw) return '';
+  const match = /^Bearer\s+(\S+)/i.exec(raw.trim());
+  return match?.[1]?.trim() || '';
+}
+
+/**
+ * Rewrite a Streamable-HTTP / JSON-RPC MCP POST body so tools/call gets seatKey.
+ * Returns { body, timeoutMs }. Non-JSON bodies are passed through unchanged.
+ */
+export function rewriteMcpPostBodyForSeatKey(
+  rawBody: string,
+  seatKey: string,
+  envExtras: NodeJS.ProcessEnv = {},
+): { body: string; timeoutMs: number; injected: boolean } {
+  const env: NodeJS.ProcessEnv = {
+    ...envExtras,
+    AGENT_ROOM_MANAGED: '1',
+    AGENT_ROOM_SEAT_KEY: seatKey,
+  };
+  let timeoutMs = 60_000;
+  let injected = false;
+  const trimmed = rawBody.trim();
+  if (!trimmed) return { body: rawBody, timeoutMs, injected };
+
+  const rewriteOne = (msg: Record<string, unknown>): Record<string, unknown> => {
+    if (msg.method !== 'tools/call' || !msg.params || typeof msg.params !== 'object' || Array.isArray(msg.params)) {
+      return msg;
+    }
+    const call = msg.params as { name?: unknown; arguments?: unknown };
+    const toolName = typeof call.name === 'string' ? call.name : '';
+    const args = call.arguments && typeof call.arguments === 'object' && !Array.isArray(call.arguments)
+      ? call.arguments as Record<string, unknown>
+      : {};
+    const nextArgs = injectSeatKeyArgs(toolName, args, env);
+    if (toolName === 'room_listen') timeoutMs = LISTEN_TIMEOUT_MS;
+    if (nextArgs !== args) injected = true;
+    // Always mark injected when seatKey was blank — compare JSON for safety.
+    if (JSON.stringify(nextArgs) !== JSON.stringify(args)) injected = true;
+    return { ...msg, params: { ...call, arguments: nextArgs } };
+  };
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      const next = parsed.map((item) => (
+        item && typeof item === 'object' && !Array.isArray(item)
+          ? rewriteOne(item as Record<string, unknown>)
+          : item
+      ));
+      return { body: JSON.stringify(next), timeoutMs, injected };
+    }
+    if (parsed && typeof parsed === 'object') {
+      const next = rewriteOne(parsed as Record<string, unknown>);
+      return { body: JSON.stringify(next), timeoutMs, injected };
+    }
+  } catch {
+    /* non-JSON — forward unchanged */
+  }
+  return { body: rawBody, timeoutMs, injected };
+}
+
 /**
  * Stdio MCP server: newline-delimited JSON-RPC ↔ hosted `/mcp`.
  * Notifications (no id) are forwarded without waiting for a reply body shape.

@@ -3,6 +3,8 @@ import {
   injectSeatKeyArgs,
   managedMissingSeatKey,
   mcpHttpUrl,
+  seatKeyFromAuthHeader,
+  rewriteMcpPostBodyForSeatKey,
 } from './src/mcpSeatShim.ts';
 import {
   codexMcpShimOverrides,
@@ -82,34 +84,48 @@ describe('mcpSeatShim injectSeatKeyArgs', () => {
 });
 
 describe('codexMcpShimOverrides / managedApprovalArgs', () => {
-  it('emits command/args and clears url', () => {
-    const overrides = codexMcpShimOverrides(
-      'C:\\Program Files\\nodejs\\node.exe',
-      'D:\\Agent Room\\daemon\\agent-room-daemon.mjs',
-      'agent-room',
-    );
+  it('emits loopback url + bearer env (not stdio command)', () => {
+    const overrides = codexMcpShimOverrides('http://127.0.0.1:17421/mcp-shim', 'agent-room');
     expect(overrides).toEqual([
-      'mcp_servers.agent-room.url=""',
-      'mcp_servers.agent-room.command="C:\\\\Program Files\\\\nodejs\\\\node.exe"',
-      'mcp_servers.agent-room.args=["D:\\\\Agent Room\\\\daemon\\\\agent-room-daemon.mjs", "mcp-shim"]',
+      'mcp_servers.agent-room.url="http://127.0.0.1:17421/mcp-shim"',
+      'mcp_servers.agent-room.bearer_token_env_var="AGENT_ROOM_SEAT_KEY"',
     ]);
   });
 
-  it('prefers shim over HTTP url when NODE+SHIM set', () => {
+  it('rejects non-loopback shim urls', () => {
+    expect(codexMcpShimOverrides('https://ai-room.pupgo.top/mcp-shim', 'agent-room')).toEqual([]);
+  });
+
+  it('prefers local HTTP shim over remote url when SHIM_URL set', () => {
     const approvals = [
       '-c', CODEX_SUPPRESS_UNSTABLE_FEATURES_WARNING,
       ...CODEX_MANAGED_MCP_NAMES.flatMap(name => ['-c', codexMcpApprovalArg(name)]),
     ];
     const args = managedApprovalArgs('codex', {
       AGENT_ROOM_SERVER: 'https://ai-room.pupgo.top',
-      AGENT_ROOM_NODE: '/usr/bin/node',
-      AGENT_ROOM_MCP_SHIM: '/opt/agent-room-daemon.mjs',
+      AGENT_ROOM_MCP_SHIM_URL: 'http://127.0.0.1:17421/mcp-shim',
     });
     expect(args.slice(0, approvals.length)).toEqual(approvals);
-    expect(args.join('\n')).toContain('mcp_servers.agent-room.command="/usr/bin/node"');
-    expect(args.join('\n')).toContain('mcp-shim');
+    expect(args.join('\n')).toContain('mcp_servers.agent-room.url="http://127.0.0.1:17421/mcp-shim"');
+    expect(args.join('\n')).toContain('bearer_token_env_var="AGENT_ROOM_SEAT_KEY"');
     expect(args.join('\n')).not.toContain('url="https://ai-room.pupgo.top/mcp"');
-    expect(args.join('\n')).toContain('mcp_servers.agent-room.url=""');
+    expect(args.join('\n')).not.toContain('mcp_servers.agent-room.command=');
+  });
+});
+
+describe('HTTP mcp-shim body rewrite', () => {
+  it('parses bearer and injects seatKey into tools/call', () => {
+    expect(seatKeyFromAuthHeader('Bearer sk_abc')).toBe('sk_abc');
+    const raw = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name: 'room_listen', arguments: { managed: {} } },
+    });
+    const out = rewriteMcpPostBodyForSeatKey(raw, 'sk_live');
+    expect(out.injected).toBe(true);
+    expect(out.timeoutMs).toBe(300_000);
+    expect(JSON.parse(out.body).params.arguments.managed.seatKey).toBe('sk_live');
   });
 });
 

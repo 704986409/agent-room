@@ -11,6 +11,7 @@ import { seatLogPath, type WakeDaemon } from './daemon.js';
 import type { DaemonLog } from './log.js';
 import { adapterIdForMcp, cliRequiredHint, installAdapterCli } from './cliinstall.js';
 import { installMcp, mcpStatus, pairedServerUrl } from './mcpconfig.js';
+import { mcpHttpUrl, rewriteMcpPostBodyForSeatKey, seatKeyFromAuthHeader } from './mcpSeatShim.js';
 import { deviceCredentialKey, pairComplete, pairWithLogin, restoreDeviceFromCredential, serverOrigin, unpair, whoami, type PairingDeps } from './pairing.js';
 import type { SecretRegistry } from './redact.js';
 import { writeState, type DaemonState } from './state.js';
@@ -210,6 +211,82 @@ function corsHeaders(allowOrigin: string | undefined): Record<string, string> {
   };
 }
 
+
+async function proxyMcpShimRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  upstreamServer: string,
+): Promise<void> {
+  const seatKey = seatKeyFromAuthHeader(req.headers.authorization) || (url.searchParams.get('sk') || '').trim();
+  if (!seatKey) {
+    send(res, 401, { error: 'mcp_shim_unauthorized' });
+    return;
+  }
+  const upstream = mcpHttpUrl(upstreamServer);
+  const method = (req.method || 'GET').toUpperCase();
+  let bodyText = '';
+  let timeoutMs = 60_000;
+  if (method !== 'GET' && method !== 'HEAD') {
+    bodyText = await readBody(req);
+    if (bodyText) {
+      const rewritten = rewriteMcpPostBodyForSeatKey(bodyText, seatKey);
+      bodyText = rewritten.body;
+      timeoutMs = rewritten.timeoutMs;
+    }
+  }
+
+  const headers: Record<string, string> = {
+    accept: req.headers.accept || 'application/json, text/event-stream',
+  };
+  const contentType = req.headers['content-type'];
+  if (typeof contentType === 'string' && contentType) headers['content-type'] = contentType;
+  // Forward MCP session headers if present (streamable HTTP).
+  for (const name of ['mcp-session-id', 'last-event-id']) {
+    const value = req.headers[name];
+    if (typeof value === 'string' && value) headers[name] = value;
+  }
+
+  let upstreamRes: Response;
+  try {
+    upstreamRes = await fetch(upstream, {
+      method,
+      headers,
+      body: method === 'GET' || method === 'HEAD' ? undefined : bodyText,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'mcp_shim_upstream_failed';
+    send(res, 502, { error: message });
+    return;
+  }
+
+  const outHeaders: Record<string, string> = {
+    'cache-control': 'no-store',
+  };
+  const pass = ['content-type', 'mcp-session-id'];
+  for (const name of pass) {
+    const value = upstreamRes.headers.get(name);
+    if (value) outHeaders[name] = value;
+  }
+  res.writeHead(upstreamRes.status, outHeaders);
+  if (!upstreamRes.body) {
+    res.end();
+    return;
+  }
+  const reader = upstreamRes.body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) res.write(Buffer.from(value));
+    }
+    res.end();
+  } catch {
+    try { res.end(); } catch { /* ignore */ }
+  }
+}
+
 export async function startControlServer(options: ControlServerOptions): Promise<RunningControl> {
   const token = options.token ?? randomBytes(24).toString('hex');
   // Background warm so HostLocal can read cache without a blocking detect round-trip.
@@ -250,6 +327,16 @@ export async function startControlServer(options: ControlServerOptions): Promise
   const port = address.port;
   const origin = `http://127.0.0.1:${port}`;
   const notedRooms: { code: string; inviteCode: string; name: string; at: string }[] = [];
+
+  async function handleMcpShim(req: IncomingMessage, res: ServerResponse, url: URL): Promise<void> {
+    const serverUrl = configuredServer();
+    if (!serverUrl) {
+      send(res, 400, { error: 'no_server' });
+      return;
+    }
+    await proxyMcpShimRequest(req, res, url, serverUrl);
+  }
+
 
   const terminalsWss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
@@ -476,6 +563,12 @@ export async function startControlServer(options: ControlServerOptions): Promise
         return;
       }
       send(res, 200, asset.body, asset.type, cors);
+      return;
+    }
+    // Local Streamable-HTTP MCP shim for managed Codex (loopback only).
+    // Auth = Bearer AGENT_ROOM_SEAT_KEY; no control token required.
+    if (url.pathname === '/mcp-shim') {
+      await handleMcpShim(req, res, url);
       return;
     }
     if (!tokenOk && !desktopOk) {

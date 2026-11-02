@@ -601,21 +601,17 @@ export class WakeDaemon {
       AGENT_ROOM_NAME: name,
       AGENT_ROOM_SEAT_KEY: stored,
     };
-    // Point managed Codex at the local mcp-shim (this daemon) so seatKey is
-    // injected when the model sends managed:{}. Prefer explicit overrides.
-    // Only treat argv[1] as the shim entry when it looks like our daemon
-    // (vitest/tinypool workers must not become mcp-shim).
-    if (!env.AGENT_ROOM_NODE?.trim()) {
-      const node = process.env.AGENT_ROOM_NODE?.trim() || process.execPath;
-      if (node) env.AGENT_ROOM_NODE = node;
-    }
-    if (!env.AGENT_ROOM_MCP_SHIM?.trim()) {
-      const fromEnv = process.env.AGENT_ROOM_MCP_SHIM?.trim() || '';
-      const fromArgv = typeof process.argv[1] === 'string' && isDaemonShimEntry(process.argv[1])
-        ? process.argv[1]
-        : '';
-      const shim = fromEnv || fromArgv;
-      if (shim) env.AGENT_ROOM_MCP_SHIM = shim;
+    // Point managed Codex at the loopback HTTP mcp-shim so seatKey is injected
+    // when the model sends managed:{}. Must stay HTTP (not stdio): Codex rejects
+    // url+command mixes ("url is not supported for stdio").
+    if (!env.AGENT_ROOM_MCP_SHIM_URL?.trim()) {
+      const fromEnv = process.env.AGENT_ROOM_MCP_SHIM_URL?.trim() || '';
+      if (fromEnv) {
+        env.AGENT_ROOM_MCP_SHIM_URL = fromEnv;
+      } else {
+        const port = (process.env.AGENT_ROOM_CONTROL_PORT || '17421').trim() || '17421';
+        env.AGENT_ROOM_MCP_SHIM_URL = `http://127.0.0.1:${port}/mcp-shim`;
+      }
     }
     if (typeof cursor === 'number' && Number.isFinite(cursor)) env.AGENT_ROOM_CURSOR = String(cursor);
     if (files?.rulesPath) env.AGENT_ROOM_RULES_FILE = files.rulesPath;
