@@ -418,7 +418,7 @@ async function dispatch(
             error: 'managed_seat_key_required',
             nextAction: nextListenAction(a.code, since, selfName),
             hint:
-              'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY / state.md). managed:{} is illegal and prevents Quiet→room_sleep. '
+              'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY). managed:{} is illegal and prevents Quiet→room_sleep. '
               + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
           }, [], structured);
         }
@@ -552,7 +552,7 @@ async function dispatch(
           error: 'managed_seat_key_required',
           nextAction: nextListenAction(a.code, since, selfName),
           hint:
-            'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY / state.md). managed:{} is illegal and prevents Quiet→room_sleep. '
+            'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY). managed:{} is illegal and prevents Quiet→room_sleep. '
               + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
         }, [], structured);
       }

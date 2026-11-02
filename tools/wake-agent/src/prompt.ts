@@ -3,11 +3,12 @@
  *
  * Shared wake/sleep semantics live in the outer `rules.md` and are also
  * inlined into each seat's `AGENTS.md` (for CLIs that auto-load cwd docs).
- * Per-seat 职位 / seatKey / 房间码 / MCP 别名 live in that seat's `state.md`.
+ * Per-seat 职位 / seatKey / 房间码 / MCP 别名 live only in AGENT_ROOM_* env
+ * at CLI launch — not in a state.md file.
  * Wake inject is a short human line with 动作游标 (= since) only —
  * seatKey is not repeated in the inject text.
  *
- * Never force absolute install-disk paths (e.g. D:\\Agent Room\\...) into
+ * Never force absolute install-disk paths (e.g. D:\\Agent Room\...) into
  * "请阅读" lines: Codex Windows elevated sandbox often lacks those read_roots
  * and codex-windows-sandbox-setup.exe can spin forever on the file-read tool.
  */
@@ -18,18 +19,18 @@ export function firstRunPrompt(input: {
   readFrom: number;
   seatKey: string;
   gap?: readonly [number, number];
-  /** When set with statePath, seatKey stays in state.md instead of this prompt. */
+  /** When set, short prompt: rules are in AGENTS.md; seat fields in AGENT_ROOM_*. */
   rulesPath?: string;
+  /** @deprecated Ignored — seat fields are env-only; kept for call-site compat. */
   statePath?: string;
 }): string {
-  if (input.rulesPath && input.statePath) {
+  if (input.rulesPath) {
     const lines = [
       `你是房间 ${input.code} 的座位 ${input.name}。`,
       '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
       '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
-      '本工作目录已有 AGENTS.md 与 state.md（规则已写进 AGENTS.md；座位字段在 state.md）。',
-      '直接按其中规则工作。不要用文件读取工具去打开安装盘上的绝对路径（Windows 沙箱可能卡住）。',
-      '座位字段也可直接使用环境变量 AGENT_ROOM_CODE / AGENT_ROOM_NAME / AGENT_ROOM_SEAT_KEY（不要 printenv，不要写进回复）。',
+      '本工作目录已有 AGENTS.md（规则已内联）。座位字段只用环境变量 AGENT_ROOM_CODE / AGENT_ROOM_NAME / AGENT_ROOM_SEAT_KEY / AGENT_ROOM_MCP_ALIAS（不要 printenv，不要读 state.md，不要写进回复）。',
+      '直接按 AGENTS.md 规则工作。不要用文件读取工具去打开安装盘上的绝对路径（Windows 沙箱可能卡住）。',
       `执行唤醒监听，动作游标=${input.readFrom}`,
       '追历史只用一次 timeoutMs:0；随后必须用默认 hold（勿再传 timeoutMs:0）；Quiet / listenStatus=sleep 时只调 room_sleep。',
       'MCP 工具已预先批准，直接调用即可。不要修改任何配置文件、权限文件或 MCP 设置。',
@@ -38,7 +39,7 @@ export function firstRunPrompt(input: {
     return lines.join('\n');
   }
 
-  // Legacy fallback when rooms/state files were not written (unit tests / old installs).
+  // Legacy fallback when rooms/rules files were not written (unit tests / old installs).
   const seatKey = JSON.stringify(input.seatKey);
   return [
     `你是房间 ${input.code} 的座位 ${input.name}。`,
@@ -54,7 +55,7 @@ export function firstRunPrompt(input: {
 }
 
 /**
- * Full wake text for stop+resume when rules/state paths are unknown.
+ * Full wake text for stop+resume when rules paths are unknown.
  * Prefer reuseWakePrompt + on-disk rules when the PTY is still alive.
  */
 export function wakePrompt(input: {
@@ -64,12 +65,13 @@ export function wakePrompt(input: {
   seatKey: string;
   gap?: readonly [number, number];
   rulesPath?: string;
+  /** @deprecated Ignored — seat fields are env-only. */
   statePath?: string;
 }): string {
-  if (input.rulesPath && input.statePath) {
+  if (input.rulesPath) {
     const lines = [
       `执行唤醒监听，动作游标=${input.readFrom}`,
-      '按本工作目录 AGENTS.md 与 state.md（或环境变量 AGENT_ROOM_*）调用 room_listen / room_sleep。',
+      '按本工作目录 AGENTS.md 与环境变量 AGENT_ROOM_* 调用 room_listen / room_sleep；不要读 state.md。',
       '追历史只用一次 timeoutMs:0；随后默认 hold；Quiet / listenStatus=sleep 只 room_sleep，禁止 timeoutMs:0 连打。',
       '不要用文件工具打开安装盘绝对路径。不要改配置或权限，不要把 seatKey 写进回复。',
     ];

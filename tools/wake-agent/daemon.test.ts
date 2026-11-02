@@ -980,7 +980,7 @@ describe('state file round trip', () => {
     expect(daemon.seats).toEqual([]);
   });
 
-  it('with roomsDir: writes shared rules + state.md, short firstRun, deletes state on close', async () => {
+  it('with roomsDir: writes shared rules + AGENTS (no state.md), short firstRun, cleans seat on close', async () => {
     const child = spawner([THREAD]);
     const adapter = new CodexCliAdapter(child, codexOpts);
     const directory = await mkdtemp(join(tmpdir(), 'wake-rooms-'));
@@ -1004,36 +1004,38 @@ describe('state file round trip', () => {
       cwd: '/work', adapterId: 'codex', model: 'gpt-6-sol',
     });
     expect(seat.rulesPath).toBe(join(roomsDir, 'rules.md'));
-    expect(seat.statePath).toBeTruthy();
+    expect(seat.statePath).toBeUndefined();
     expect(seat.seatDir).toBeTruthy();
     expect(seat.cwd).toBe(seat.seatDir);
     const prompt = child.calls[0]!.args.at(-1)!;
     expect(prompt).toContain('执行唤醒监听，动作游标=3');
     expect(prompt).toContain('AGENTS.md');
-    expect(prompt).toContain('state.md');
+    expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).toContain('不要读 state.md');
     expect(prompt).not.toContain(seat.rulesPath!);
     expect(prompt).not.toContain('super-secret-key');
     expect(prompt).not.toContain('since: 3');
     expect(child.calls[0]!.env).toMatchObject({
       AGENT_ROOM_RULES_FILE: seat.rulesPath,
-      AGENT_ROOM_STATE_FILE: seat.statePath,
       AGENT_ROOM_ROOMS_DIR: roomsDir,
       AGENT_ROOM_SEAT_DIR: seat.seatDir,
       AGENT_ROOM_SEAT_KEY: 'super-secret-key',
+      AGENT_ROOM_MCP_ALIAS: 'agent-room',
+      AGENT_ROOM_ADAPTER: 'codex',
     });
+    expect(child.calls[0]!.env).not.toHaveProperty('AGENT_ROOM_STATE_FILE');
     // Codex managed argv should pre-trust the seat/rooms dirs (no YOLO).
     const argv = child.calls[0]!.args.join('\0');
     expect(argv).toContain(`projects."${seat.seatDir}".trust_level="trusted"`);
     expect(argv).not.toMatch(/yolo|full-auto|dangerously/i);
     const rules = await readFile(seat.rulesPath!, 'utf8');
     expect(rules).toContain('动作游标');
-    const stateBody = await readFile(seat.statePath!, 'utf8');
-    expect(stateBody).toContain('seatKey: super-secret-key');
-    expect(stateBody).toContain('职位: 开发工程师');
-    expect((await stat(seat.statePath!)).mode & 0o777).toBe(0o600);
+    expect(rules).toContain('不要读 `state.md`');
+    await expect(readFile(join(seat.seatDir!, 'state.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(join(seat.seatDir!, 'AGENTS.md'), 'utf8')).toContain('AGENT_ROOM_SEAT_KEY');
 
     expect(await daemon.stopManagedSeat(seat.seatId)).toBe(true);
-    await expect(readFile(seat.statePath!, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(seat.seatDir!, 'AGENTS.md'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
     // Shared rules kept after close
     expect(await readFile(seat.rulesPath!, 'utf8')).toContain('动作游标');
   });

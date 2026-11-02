@@ -18,11 +18,11 @@ export interface SeatRecord {
   status: SeatRuntime;
   wakeRunId?: string;
   startedAt?: string;
-  /** Absolute seat folder under rooms/<code>/… (rules/state.md). Not a secret. */
+  /** Absolute seat folder under rooms/<code>/… (AGENTS.md). Not a secret. */
   seatDir?: string;
   /** Absolute path to shared outer rules.md. */
   rulesPath?: string;
-  /** Absolute path to this seat's state.md (contains seatKey on disk). */
+  /** @deprecated Legacy; older daemon.json may still have it. Seat fields are env-only. */
   statePath?: string;
 }
 
