@@ -126,10 +126,14 @@ export const CORE_TOOLS: ToolDef[] = [
         },
         managed: {
           type: 'object',
-          description: 'Managed seats MUST pass seatKey (AGENT_ROOM_SEAT_KEY). managed:{} is illegal and prevents Quiet→room_sleep. Tool-arg seatKey is not a room secret. When seatKey matches, wake triggers are acknowledged. wakeRunId and eventIds are correlation only.',
-          required: ['seatKey'],
+          description:
+            'HostLocal/managed desktop: local mcp-shim fills seatKey from process env when blank — pass managed:{} or seatKey:"" ; do NOT invent a seatKey and do NOT shell/printenv/functions.exec to read AGENT_ROOM_*. '
+            + 'A real seatKey in context (e.g. from nextAction) may be passed through. Tool-arg seatKey is not a room secret. When seatKey matches, wake triggers are acknowledged. wakeRunId and eventIds are correlation only.',
           properties: {
-            seatKey: { type: 'string', minLength: 1, description: 'Non-empty seat key from AGENT_ROOM_SEAT_KEY.' },
+            seatKey: {
+              type: 'string',
+              description: 'Optional on HostLocal (mcp-shim fills blank/empty). Non-empty seat key when known; never invent one.',
+            },
             wakeRunId: { type: 'string' },
             eventIds: { type: 'array', items: { type: 'string' } },
           },
@@ -148,7 +152,7 @@ export const CORE_TOOLS: ToolDef[] = [
         code: CODE_PROP,
         name: NAME_PROP,
         cursor: { type: 'number', description: 'Absolute count of messages already consumed' },
-        seatKey: { type: 'string', description: 'Required seat key for this seat (from AGENT_ROOM_SEAT_KEY / room_join). Passing it in tool arguments is not posting a secret to the room. Do not omit and do not send an empty string.' },
+        seatKey: { type: 'string', description: 'Seat key for this seat. HostLocal mcp-shim fills blank/empty from process env — pass "" if unknown; never invent. Passing it in tool arguments is not posting a secret to the room.' },
       },
     },
     outputSchema: OBJECT_OUTPUT,

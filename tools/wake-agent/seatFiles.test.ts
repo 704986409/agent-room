@@ -53,10 +53,12 @@ describe('seatFiles layout', () => {
     expect(rules).toContain('动作游标');
     expect(rules).toContain('唤醒监听');
     expect(rules).toContain('追历史只用一次');
-    expect(rules).toContain('禁止 `managed: {}`');
+    expect(rules).toContain('禁止编造 seatKey');
+    expect(rules).toContain('mcp-shim');
+    expect(rules).toContain('managed: {}');
     expect(rules).toContain('默认 hold');
     expect(rules).toContain('不要读 `state.md`');
-    expect(rules).toContain('AGENT_ROOM_MCP_ALIAS');
+    expect(rules).toContain('functions.exec');
     expect(rules).toContain('禁止主动发「已上线」');
     expect(rules).toContain('启动后立刻 `room_listen`');
     expect(rules).toMatch(/禁止[\s\S]*timeoutMs: 0/);
@@ -67,7 +69,9 @@ describe('seatFiles layout', () => {
 
     const agents = await readFile(join(written.seatDir, 'AGENTS.md'), 'utf8');
     expect(agents).toContain('动作游标');
-    expect(agents).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(agents).toContain('mcp-shim');
+    expect(agents).toContain('房间码：`ABC-DEF-GHJ`');
+    expect(agents).toContain('职位：`开发工程师`');
     expect(agents).toContain('追历史只用一次');
     expect(agents).toContain('不要读 `state.md`');
     expect(agents).not.toContain('座位状态：同目录');

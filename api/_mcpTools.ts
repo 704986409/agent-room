@@ -421,8 +421,8 @@ async function dispatch(
             error: 'managed_seat_key_required',
             nextAction: nextListenAction(a.code, since, selfName),
             hint:
-              'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY). managed:{} is illegal and prevents Quiet→room_sleep. '
-              + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
+              'managed.seatKey was blank and this request did not go through HostLocal mcp-shim. On managed desktop, call via the loopback mcp-shim (it fills AGENT_ROOM_SEAT_KEY). '
+              + 'Otherwise pass a non-empty managed.seatKey — tool-arg seatKey is not posting a secret to the room.',
           }, [], structured);
         }
         if (managedRead && selfName) {
@@ -555,8 +555,8 @@ async function dispatch(
           error: 'managed_seat_key_required',
           nextAction: nextListenAction(a.code, since, selfName),
           hint:
-            'managed.seatKey is required (use AGENT_ROOM_SEAT_KEY). managed:{} is illegal and prevents Quiet→room_sleep. '
-              + 'Passing seatKey in MCP tool args is not posting a secret to the room. Call again with managed: { seatKey: "<non-empty>" }.',
+            'managed.seatKey was blank and this request did not go through HostLocal mcp-shim. On managed desktop, call via the loopback mcp-shim (it fills AGENT_ROOM_SEAT_KEY). '
+              + 'Otherwise pass a non-empty managed.seatKey — tool-arg seatKey is not posting a secret to the room.',
         }, [], structured);
       }
       if (managedListen && selfName && !result.terminated) {

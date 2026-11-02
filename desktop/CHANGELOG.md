@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.27-v3 (pack)
+
+App semver **0.1.27**; pack/tag label **Agent-Room-0.1.27-v3** / `desktop-v0.1.27-v3`.
+
+- Managed CLI: allow `managed:{}` / empty seatKey — local mcp-shim fills AGENT_ROOM_SEAT_KEY (and blank code/name); do not shell/printenv/functions.exec for env.
+- AGENTS「本座位」inlines code/role/MCP alias; first-run trimmed of redundant fluff only.
+- API: relax managed.seatKey required/minLength; update hints for HostLocal shim path.
+- Also: empty-room msg-count seed (1496f9f) + 0.1.27-v2 HostLocal hygiene.
+
 ## 0.1.27-v2 (pack)
 
 App semver **0.1.27**; pack/tag label **Agent-Room-0.1.27-v2** / `desktop-v0.1.27-v2`.

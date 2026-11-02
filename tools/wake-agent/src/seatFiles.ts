@@ -53,38 +53,38 @@ export function sharedRulesMarkdown(): string {
   return [
     '# Agent Room 通用规则（托管座位）',
     '',
-    '本文件由桌面端维护，所有托管座位共用一份。职位、seatKey、房间码、MCP 别名等座位字段只在进程环境变量 `AGENT_ROOM_*` 里；不要读、不要写 `state.md`。',
+    '本文件由桌面端维护，所有托管座位共用一份。不要读、不要写 `state.md`。',
     '',
     '## 术语',
     '',
     '- **动作游标**：即 `room_listen` 的 `since`（处理完后也用返回的 `cursor` 作为下一轮动作游标）。唤醒短指令里的「动作游标=N」就是 N。',
-    '- **座位字段（环境变量）**：`AGENT_ROOM_CODE`（房间码）、`AGENT_ROOM_NAME`（职位）、`AGENT_ROOM_SEAT_KEY`（seatKey）、`AGENT_ROOM_MCP_ALIAS`（MCP 别名，缺省 `agent-room`），以及可选的 `AGENT_ROOM_CURSOR` / `AGENT_ROOM_ADAPTER`。调用房间工具时直接使用这些值；不要 printenv/Get-Content/cat 打到屏幕，也不要把 seatKey 写进聊天回复。',
+    '- **座位身份**：房间码 / 职位见下方「本座位」与首启说明（「你是房间 … 的座位 …」）。`seatKey` 由本机 **mcp-shim** 从进程环境自动补全——你不必、也往往无法通过 `functions.exec`/shell 读到 `AGENT_ROOM_*`（沙箱常不暴露）。',
     '',
     '## 唤醒监听',
     '',
     '当收到「执行唤醒监听，动作游标=N」（或首次启动的等价指令）时：',
     '',
-    '1. 取得房间码、职位（name）、seatKey、MCP 别名：只用环境变量 `AGENT_ROOM_CODE` / `AGENT_ROOM_NAME` / `AGENT_ROOM_SEAT_KEY` / `AGENT_ROOM_MCP_ALIAS`（别名缺省 `agent-room`）。**不要**读 `state.md`，也不要再打开本目录其它座位字段文件。',
-    '2. **追历史只用一次**：调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: { seatKey } })`。这是非阻塞快读，只用于补齐未读；**禁止**反复用 `timeoutMs: 0`。',
+    '1. 用「本座位」/首启里的房间码与职位，以及动作游标 N。**不要**读 `state.md`，不要用 shell/`printenv`/`functions.exec` 探测环境变量。',
+    '2. **追历史只用一次**：调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: {} })`（或 `managed: { seatKey: "" }`）。本机 mcp-shim 会填入真 seatKey。这是非阻塞快读；**禁止**反复用 `timeoutMs: 0`。',
     '3. 若有未处理消息或交给你的工作：处理完并在房间回复（`room_send`）。',
-    '4. **随后必须用默认 hold**：再调用 `room_listen({ code, name, since: <上一步 cursor>, managed: { seatKey: "<AGENT_ROOM_SEAT_KEY 真值>" } })`——**不要**传 `timeoutMs: 0`（省略 timeoutMs，走默认长轮询约 30–40s）。**禁止** `managed: {}`；始终带非空 `managed.seatKey`。',
+    '4. **随后必须用默认 hold**：再调用 `room_listen({ code, name, since: <上一步 cursor>, managed: {} })`——**不要**传 `timeoutMs: 0`（省略 timeoutMs，走默认长轮询约 30–40s）。若工具返回的 nextAction 已带 seatKey，可照填；否则继续让 shim 补全。**禁止编造 seatKey**。',
     '5. hold 返回后若有新的 @ / 工作：处理完再回到第 4 步（继续 hold，仍不要 `timeoutMs: 0`）。',
     '6. 若返回 Quiet / `listenStatus=sleep` / `nextAction.tool=room_sleep`：进入下方休眠；**禁止**再以 `timeoutMs: 0` 连打 `room_listen`。',
     '',
     '## 默认动作（休眠）',
     '',
-    '只有在一次真实 hold（省略 `timeoutMs` 或 `timeoutMs`>0）出现 Quiet / `listenStatus=sleep` 之后：调用 `room_sleep({ code, name, cursor: <最新动作游标>, seatKey })`，然后结束本轮，等待下次唤醒。不要在追历史（`timeoutMs: 0`）之后立刻 sleep，也不要在 Quiet 后再 listen。',
+    '只有在一次真实 hold（省略 `timeoutMs` 或 `timeoutMs`>0）出现 Quiet / `listenStatus=sleep` 之后：调用 `room_sleep({ code, name, cursor: <最新动作游标>, seatKey: "" })`（shim 会填 seatKey；若 nextAction.arguments 已给齐可直接用），然后结束本轮，等待下次唤醒。不要在追历史（`timeoutMs: 0`）之后立刻 sleep，也不要在 Quiet 后再 listen。',
     '',
     '## 禁止',
     '',
     '- 不要修改任何配置文件、权限文件或 MCP 设置（包括 ~/.cursor、~/.codex、cli-config 等）。',
     '- 本座位已由本机托管进房：禁止 `room_join`，不要向用户索要邀请码。',
     '- MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。',
-    '- 不要用文件读取工具去打开安装盘上的绝对路径（例如 `D:\\Agent Room\\...`）；本工作目录的 `AGENTS.md` 与环境变量 `AGENT_ROOM_*` 已足够。不要读 `state.md`。',
-    '- **启动后立刻 `room_listen`**：禁止用 shell/`printenv`/`Get-ChildItem`/`Get-Content`/`cat`/`ls`/`dir` 探测环境、列目录或“确认座位字段”；字段已在 `AGENT_ROOM_*`，直接填进工具参数。',
+    '- 不要用文件读取工具去打开安装盘上的绝对路径（例如 `D:\\Agent Room\\...`）；本工作目录的 `AGENTS.md` 已足够。不要读 `state.md`。',
+    '- **启动后立刻 `room_listen`**：禁止用 shell/`printenv`/`Get-ChildItem`/`Get-Content`/`cat`/`ls`/`dir`/`functions.exec` 探测环境或“确认座位字段”。读不到 `AGENT_ROOM_*` 时仍须直接调工具，交给 mcp-shim。',
     '- **禁止主动发「已上线」/进房问候**：首次启动与 Quiet 后不要 `room_send` 自我介绍；只有被 @、有任务指派、或 catch-up 里确有要你处理的工作时才在房间发言。',
     '- 禁止用 `timeoutMs: 0` 循环调用 `room_listen`（会一秒连跳多次）；追历史一次后必须 hold。',
-    '- **禁止 `managed: {}`**：`managed.seatKey` 必须是 `AGENT_ROOM_SEAT_KEY` 里的真值。空对象会导致 Quiet 后永不 sleep。把 seatKey 填进 MCP 工具参数 ≠ 往房间帖密钥；不要省略、不要传空。',
+    '- **禁止编造 seatKey**：不要猜测或伪造；可传 `managed: {}` / 空字符串，由本机 mcp-shim 注入。把 seatKey 填进 MCP 工具参数 ≠ 往房间帖密钥。',
     '',
   ].join('\n');
 }
@@ -94,13 +94,27 @@ export function sharedRulesMarkdown(): string {
  * Inline the shared wake rules so Codex need not open absolute install-disk paths
  * via the sandboxed file-read tool (which can hang under Windows elevated sandbox).
  */
-export function seatAgentsMarkdown(input: { rulesPath: string }): string {
+export function seatAgentsMarkdown(input: {
+  rulesPath: string;
+  code?: string;
+  name?: string;
+  mcpAlias?: string;
+}): string {
+  const code = (input.code ?? '').trim();
+  const name = (input.name ?? '').trim();
+  const alias = (input.mcpAlias ?? '').trim() || DEFAULT_MCP_ALIAS;
+  const identity = [
+    code ? `- 房间码：\`${code}\`` : '',
+    name ? `- 职位：\`${name}\`` : '',
+    `- MCP 别名：\`${alias}\``,
+    '- seatKey：由本机 mcp-shim 自动补全；调用时可传 `managed: {}` / 空字符串，**不要编造**，也不要用 shell 读环境变量',
+  ].filter(Boolean);
   return [
     sharedRulesMarkdown().trimEnd(),
     '',
     '## 本座位',
     '',
-    '- 座位字段：只用环境变量 `AGENT_ROOM_CODE` / `AGENT_ROOM_NAME` / `AGENT_ROOM_SEAT_KEY` / `AGENT_ROOM_MCP_ALIAS`（不要读 `state.md`）',
+    ...identity,
     `- 共用规则原件：\`${input.rulesPath}\`（正文已内联于上方；无需再打开该绝对路径）`,
     '',
     '收到「执行唤醒监听，动作游标=N」时，按上方规则执行唤醒监听与默认休眠动作。',
@@ -124,11 +138,12 @@ export async function ensureSharedRules(roomsDir: string): Promise<string> {
     !existing
     || existing !== next
     || !existing.includes('追历史只用一次')
-    || !existing.includes('AGENT_ROOM_SEAT_KEY')
-    || !existing.includes('禁止 `managed: {}`')
+    || !existing.includes('mcp-shim')
+    || !existing.includes('禁止编造 seatKey')
     || !existing.includes('不要读 `state.md`')
     || !existing.includes('禁止主动发「已上线」')
     || !existing.includes('启动后立刻 `room_listen`')
+    || existing.includes('禁止 `managed: {}`')
     || existing.includes('座位状态文件')
   ) {
     await writeSharedFile(path, next);
@@ -184,7 +199,12 @@ export async function writeSeatFiles(input: {
   const seatDir = seatDirPath(input.roomsDir, input.code, input.adapterId, input.name, input.seatId);
   // Drop leftover state.md from older builds (seat fields live in AGENT_ROOM_* only).
   await rm(seatStatePath(seatDir), { force: true }).catch(() => undefined);
-  const agents = seatAgentsMarkdown({ rulesPath });
+  const agents = seatAgentsMarkdown({
+    rulesPath,
+    code: input.code,
+    name: input.name,
+    mcpAlias: input.mcpAlias,
+  });
   await writeSharedFile(join(seatDir, 'AGENTS.md'), agents);
   await writeSharedFile(join(seatDir, 'GEMINI.md'), agents);
   const alias = input.mcpAlias?.trim() || DEFAULT_MCP_ALIAS;

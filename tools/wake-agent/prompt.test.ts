@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { firstRunPrompt, launchPrompt, reuseWakePrompt, wakePrompt } from './src/prompt.js';
 
 describe('firstRunPrompt', () => {
-  it('with rules path: short human wake, env seat fields, no state.md, no absolute install-disk reads', () => {
+  it('with rules path: short human wake, shim fills seatKey, no state.md, no absolute install-disk reads', () => {
     const prompt = firstRunPrompt({
       code: 'HK4-TZQ-FWQ',
       name: '开发工程师',
@@ -10,22 +10,24 @@ describe('firstRunPrompt', () => {
       seatKey: 'seat-key-secret',
       rulesPath: 'D:/Agent Room/rooms/rules.md',
     });
-    expect(prompt).toContain('已经加入');
-    expect(prompt).toContain('禁止调用 room_join');
+    expect(prompt).toContain('本座位已由本机托管进房');
+    expect(prompt).toContain('禁止 room_join');
     expect(prompt).toContain('执行唤醒监听，动作游标=3');
     expect(prompt).toContain('AGENTS.md');
-    expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
-    expect(prompt).toContain('AGENT_ROOM_MCP_ALIAS');
+    expect(prompt).toContain('mcp-shim');
+    expect(prompt).toContain('不要编造 seatKey');
     expect(prompt).toContain('不要读 state.md');
     expect(prompt).toContain('禁止主动发「已上线」');
     expect(prompt).toContain('立刻 room_listen');
     expect(prompt).toContain('追历史只用一次 timeoutMs:0');
     expect(prompt).toContain('默认 hold');
+    expect(prompt).toContain('functions.exec');
     expect(prompt).not.toContain('D:/Agent Room');
     expect(prompt).not.toContain('请阅读通用规则');
     expect(prompt).not.toContain('seat-key-secret');
     expect(prompt).not.toContain('since: 3');
     expect(prompt).not.toContain('座位字段在 state.md');
+    expect(prompt).not.toContain('AGENT_ROOM_MCP_ALIAS');
     expect(launchPrompt('HK4-TZQ-FWQ', '开发工程师')).toContain('room_join({');
   });
 
@@ -78,7 +80,7 @@ describe('wakePrompt with paths', () => {
     });
     expect(prompt).toContain('执行唤醒监听，动作游标=4');
     expect(prompt).toContain('AGENTS.md');
-    expect(prompt).toContain('AGENT_ROOM_*');
+    expect(prompt).toContain('mcp-shim');
     expect(prompt).toContain('不要读 state.md');
     expect(prompt).toContain('追历史只用一次 timeoutMs:0');
     expect(prompt).toContain('第 1–2 条');

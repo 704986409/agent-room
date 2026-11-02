@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   injectSeatKeyArgs,
+  isPlaceholderSeatKey,
   managedMissingSeatKey,
   mcpHttpUrl,
   seatKeyFromAuthHeader,
@@ -65,6 +66,26 @@ describe('mcpSeatShim injectSeatKeyArgs', () => {
       seatKey: 'sk_live_test_abc',
     });
     expect(injectSeatKeyArgs('room_sleep', { seatKey: '' }, env).seatKey).toBe('sk_live_test_abc');
+  });
+
+
+  it('replaces placeholder seatKey and fills code/name from env', () => {
+    const rich = {
+      AGENT_ROOM_MANAGED: '1',
+      AGENT_ROOM_SEAT_KEY: 'sk_live_test_abc',
+      AGENT_ROOM_CODE: 'ABC-DEF-GHJ',
+      AGENT_ROOM_NAME: '开发工程师',
+    };
+    expect(isPlaceholderSeatKey('AGENT_ROOM_SEAT_KEY')).toBe(true);
+    expect(injectSeatKeyArgs('room_listen', {
+      since: 0,
+      managed: { seatKey: 'AGENT_ROOM_SEAT_KEY' },
+    }, rich)).toEqual({
+      since: 0,
+      code: 'ABC-DEF-GHJ',
+      name: '开发工程师',
+      managed: { seatKey: 'sk_live_test_abc' },
+    });
   });
 
   it('leaves unrelated tools alone', () => {

@@ -3,8 +3,9 @@
  *
  * Shared wake/sleep semantics live in the outer `rules.md` and are also
  * inlined into each seat's `AGENTS.md` (for CLIs that auto-load cwd docs).
- * Per-seat 职位 / seatKey / 房间码 / MCP 别名 live only in AGENT_ROOM_* env
- * at CLI launch — not in a state.md file.
+ * Per-seat 职位 / 房间码 live in the first-run line + AGENTS「本座位」;
+ * seatKey stays in AGENT_ROOM_* for the local mcp-shim (not in state.md,
+ * not forced through sandboxed functions.exec).
  * Wake inject is a short human line with 动作游标 (= since) only —
  * seatKey is not repeated in the inject text.
  *
@@ -27,14 +28,11 @@ export function firstRunPrompt(input: {
   if (input.rulesPath) {
     const lines = [
       `你是房间 ${input.code} 的座位 ${input.name}。`,
-      '本座位已经加入房间：本机托管进程已经用邀请码完成进房。你已经在这个座位上。',
-      '禁止调用 room_join。不要向用户索要邀请码，也不要再进一次房。',
-      '本工作目录已有 AGENTS.md（规则已内联）。座位字段只用环境变量 AGENT_ROOM_CODE / AGENT_ROOM_NAME / AGENT_ROOM_SEAT_KEY / AGENT_ROOM_MCP_ALIAS（不要 printenv / Get-Content / shell 探测，不要读 state.md，不要写进回复）。',
-      '直接按 AGENTS.md 规则工作：立刻 room_listen，不要先列目录或探测环境。不要用文件读取工具去打开安装盘上的绝对路径（Windows 沙箱可能卡住）。',
+      '本座位已由本机托管进房；禁止 room_join，不要索要邀请码。',
+      '按本目录 AGENTS.md 立刻 room_listen：code/name 用上面的值，since=动作游标；managed 传 {} 或 seatKey 空串即可，本机 mcp-shim 会补全 seatKey。不要用 shell/functions.exec 读环境变量，不要编造 seatKey，不要读 state.md。',
       '禁止主动发「已上线」/进房问候；只有被 @ 或有明确工作时才 room_send。',
       `执行唤醒监听，动作游标=${input.readFrom}`,
-      '追历史只用一次 timeoutMs:0；随后必须用默认 hold（勿再传 timeoutMs:0）；Quiet / listenStatus=sleep 时只调 room_sleep。',
-      'MCP 工具已预先批准，直接调用即可。不要修改任何配置文件、权限文件或 MCP 设置。',
+      '追历史只用一次 timeoutMs:0，随后默认 hold；Quiet / listenStatus=sleep 时只调 room_sleep。',
     ];
     if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
     return lines.join('\n');
@@ -72,9 +70,9 @@ export function wakePrompt(input: {
   if (input.rulesPath) {
     const lines = [
       `执行唤醒监听，动作游标=${input.readFrom}`,
-      '按本工作目录 AGENTS.md 与环境变量 AGENT_ROOM_* 调用 room_listen / room_sleep；不要读 state.md。',
+      '按本目录 AGENTS.md 调用 room_listen / room_sleep；managed/seatKey 可空，由 mcp-shim 补全；不要读 state.md，不要 shell 探环境。',
       '追历史只用一次 timeoutMs:0；随后默认 hold；Quiet / listenStatus=sleep 只 room_sleep，禁止 timeoutMs:0 连打。',
-      '不要用文件工具打开安装盘绝对路径。不要改配置或权限，不要把 seatKey 写进回复。',
+      '不要改配置或权限，不要把 seatKey 写进回复。',
     ];
     if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
     return lines.join('\n');

@@ -22,12 +22,20 @@ export function managedMissingSeatKey(managed: unknown): boolean {
   if (managed === undefined || managed === null) return true;
   if (typeof managed !== 'object' || Array.isArray(managed)) return true;
   const seatKey = (managed as { seatKey?: unknown }).seatKey;
-  return typeof seatKey !== 'string' || !seatKey.trim();
+  return typeof seatKey !== 'string' || !seatKey.trim() || isPlaceholderSeatKey(seatKey);
+}
+
+/** Model-invented / schema-forced placeholders — treat as blank so shim can fill. */
+export function isPlaceholderSeatKey(value: string): boolean {
+  const v = value.trim();
+  if (!v) return true;
+  return /^(AGENT_ROOM_SEAT_KEY|<[^>]*(seatKey|SEAT_KEY)[^>]*>|your[_-]?seat[_-]?key|xxx+|TODO|changeme|seat-key-secret)$/i.test(v);
 }
 
 /**
- * Fill seatKey from AGENT_ROOM_SEAT_KEY when managed/host seat identity is blank.
- * Only when AGENT_ROOM_MANAGED=1 (or seat key env is set for sleep).
+ * Fill seatKey (and code/name when blank) from AGENT_ROOM_* when the model
+ * cannot see those vars via sandboxed functions.exec.
+ * Only when AGENT_ROOM_MANAGED=1 for listen (or seat key env is set for sleep).
  */
 export function injectSeatKeyArgs(
   toolName: string,
@@ -38,6 +46,8 @@ export function injectSeatKeyArgs(
   const seatKey = env.AGENT_ROOM_SEAT_KEY?.trim();
   if (!seatKey) return next;
   const managed = env.AGENT_ROOM_MANAGED === '1';
+  const code = env.AGENT_ROOM_CODE?.trim();
+  const name = env.AGENT_ROOM_NAME?.trim();
 
   if (toolName === 'room_listen') {
     if (!managed) return next;
@@ -47,14 +57,18 @@ export function injectSeatKeyArgs(
         : {};
       next.managed = { ...prev, seatKey };
     }
+    if (code && (typeof next.code !== 'string' || !next.code.trim())) next.code = code;
+    if (name && (typeof next.name !== 'string' || !next.name.trim())) next.name = name;
     return next;
   }
 
   if (toolName === 'room_sleep') {
     const existing = next.seatKey;
-    if (typeof existing !== 'string' || !existing.trim()) {
+    if (typeof existing !== 'string' || !existing.trim() || isPlaceholderSeatKey(existing)) {
       next.seatKey = seatKey;
     }
+    if (code && (typeof next.code !== 'string' || !next.code.trim())) next.code = code;
+    if (name && (typeof next.name !== 'string' || !next.name.trim())) next.name = name;
     return next;
   }
 
