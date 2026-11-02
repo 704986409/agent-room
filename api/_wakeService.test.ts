@@ -95,14 +95,24 @@ describe('device credentials', () => {
 });
 
 describe('POST /api/wake', () => {
-  it('requires a cursor and an absolute count, and keeps a legacy seatId once issued', async () => {
+  it('heals a missing count on empty rooms, still rejects legacy msgs-without-count, and keeps a legacy seatId once issued', async () => {
     const redis = new WakeTestRedis();
     const api = service(redis);
     const legacy = room({}, [{ ...participant('codex-a', 'st_a', KEY), seatId: undefined }]);
     seed(redis, legacy, [], 0);
     redis.values.delete(`room-msg-count:${CODE}`);
-    expect((await api.handle('Bearer token-a', { action: 'register', code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 })).body)
+    const healed = await api.handle('Bearer token-a', { action: 'register', code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 });
+    expect(healed.body).toMatchObject({ roomInstanceId: 'ri_1', scanFrom: 0 });
+    expect(redis.values.get(`room-msg-count:${CODE}`)).toBe('0');
+
+    // Messages retained without an absolute count remain unsupported.
+    const busy = new WakeTestRedis();
+    const busyApi = service(busy);
+    seed(busy, legacy, [message('orphan', 1)], 1);
+    busy.values.delete(`room-msg-count:${CODE}`);
+    expect((await busyApi.handle('Bearer token-a', { action: 'register', code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 })).body)
       .toMatchObject({ error: 'absolute_count_required' });
+
     seed(redis, legacy, [], 4);
     expect((await api.handle('Bearer token-a', { action: 'register', code: CODE, name: 'codex-a', seatKey: KEY })).body)
       .toMatchObject({ error: 'cursor_required' });

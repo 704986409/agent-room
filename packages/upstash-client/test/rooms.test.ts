@@ -14,7 +14,10 @@ function installRoomRedis(initial: Room) {
     const command = JSON.parse(String(init?.body)) as string[];
     if (command[0] === 'GET') return mockResp({ result: raw });
     if (command[0] === 'SET') {
-      raw = command[2]!;
+      // createRoom also seeds room-msg-count; only room:<code> holds Room JSON.
+      if (String(command[1]).startsWith('room:') && !String(command[1]).startsWith('room-msg')) {
+        raw = command[2]!;
+      }
       return mockResp({ result: 'OK' });
     }
     if (command[0] === 'EVAL') {
@@ -265,6 +268,10 @@ describe('createRoom', () => {
     expect(cmd).toContain('EX');
     expect(cmd).toContain(ROOM_TTL_SECONDS);
     expect(ROOM_TTL_SECONDS).toBe(604800);
+    const [, countInit] = fetchMock.mock.calls[1]!;
+    expect(JSON.parse((countInit as any).body)).toEqual([
+      'SET', 'room-msg-count:ABC-DEF-GHJ', '0', 'EX', ROOM_TTL_SECONDS,
+    ]);
   });
 
   it('assigns a fresh Room instance UUID when a code is reused for a new lifetime', async () => {

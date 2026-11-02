@@ -210,6 +210,9 @@ describe('RedisRoomPersistence compatibility', () => {
     expect(redis.commands[0]).toEqual([
       'SET', 'room:ABC-DEF-GHJ', JSON.stringify(room()), 'EX', ROOM_TTL_SECONDS,
     ]);
+    expect(redis.commands[1]).toEqual([
+      'SET', 'room-msg-count:ABC-DEF-GHJ', '0', 'EX', ROOM_TTL_SECONDS,
+    ]);
   });
 
   it('expires a production-entry Redis room after its seven-day hard deadline', async () => {

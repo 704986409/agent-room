@@ -118,8 +118,20 @@ export class WakeService {
     const issued = await this.ensureSeatId(code, room, name, seatKey);
     const seat = { roomInstanceId: issued.roomInstanceId, seatId: issued.seatId };
     const totalRaw = await this.client.command<string | number | null>(['GET', `room-msg-count:${code}`]);
-    if (totalRaw === null || totalRaw === undefined) fail('absolute_count_required');
-    const total = Number(totalRaw);
+    let total: number;
+    if (totalRaw === null || totalRaw === undefined) {
+      // Empty rooms created before count seeding omit the key; heal to 0 when
+      // there are no retained messages. Rooms with messages but no count stay 409.
+      const length = Number(await this.client.command<number>(['LLEN', `room-msgs:${code}`]) ?? 0);
+      if (length > 0) fail('absolute_count_required');
+      await this.client.command(['SET', `room-msg-count:${code}`, '0', 'NX', 'PXAT', roomExpiresAt(room)]);
+      const healed = await this.client.command<string | number | null>(['GET', `room-msg-count:${code}`]);
+      if (healed === null || healed === undefined) fail('absolute_count_required');
+      total = Number(healed);
+    } else {
+      total = Number(totalRaw);
+    }
+    if (!Number.isFinite(total) || total < 0) fail('absolute_count_required');
     const scanFrom = await this.store.initializeScan(seat, Number.isFinite(requested) ? requested : undefined, total, roomExpiresAt(room));
     const previous = await readBinding(this.client, seat.seatId);
     if (previous && previous.deviceId !== deviceId) {

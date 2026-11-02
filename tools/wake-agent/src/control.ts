@@ -977,7 +977,9 @@ export async function startControlServer(options: ControlServerOptions): Promise
           ? '加入房间超时，请检查网络后重试。'
           : message === 'cli_not_logged_in'
             ? loginHintFor(chosen.id)
-            : message;
+            : message === 'absolute_count_required'
+              ? '房间消息计数未就绪。请先在房间发一条消息，或更新服务端后再托管。'
+              : message;
       return { status: 400, body: { error: message, hint } };
     }
   }

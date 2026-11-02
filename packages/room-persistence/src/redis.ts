@@ -115,6 +115,7 @@ export class RedisRoomPersistence implements RoomPersistence {
 
   async createRoom(room: Room): Promise<void> {
     await this.client.command(['SET', roomKey(room.code), JSON.stringify(room), 'EX', ROOM_TTL_SECONDS]);
+    await this.client.command(['SET', messageCountKey(room.code), '0', 'EX', ROOM_TTL_SECONDS]);
   }
 
   async getRoom(code: string): Promise<Room | null> {

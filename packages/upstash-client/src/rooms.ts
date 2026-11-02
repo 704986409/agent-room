@@ -99,7 +99,10 @@ export async function createRoom(client: UpstashClient, input: CreateRoomInput):
     projectPromptVersion: input.projectPromptVersion,
     projectPromptUpdatedAt: input.projectPromptUpdatedAt,
   };
+  // Absolute message count starts at 0 so wake register works on empty rooms
+  // before any appendMessage INCR (missing key used to 409 absolute_count_required).
   await client.command(['SET', roomKey(input.code), JSON.stringify(room), 'EX', ROOM_TTL_SECONDS]);
+  await client.command(['SET', `room-msg-count:${input.code}`, '0', 'EX', ROOM_TTL_SECONDS]);
   return { ...room, hostKey };
 }
 
