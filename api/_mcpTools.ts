@@ -306,7 +306,10 @@ async function dispatch(
         && before.participants.some(p => p.name === finalName && p.client === 'cc');
       const myEntry = updated.participants.find(p => p.name === finalName && p.client === 'cc');
       const muted = myEntry?.canSpeak === false;
-      if (!reconnecting && !muted) {
+      // Desktop HostLocal always passes machineId. Skip the English join greeting
+      // so the seat does not appear to "wake" / self-announce without an @.
+      const hostLocal = typeof a.machineId === 'string' && !!a.machineId.trim();
+      if (!reconnecting && !muted && !hostLocal) {
         try {
           await appendMessage(
             client,

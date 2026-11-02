@@ -168,12 +168,10 @@ describe('DesktopSeatTerminal', () => {
     expect(state.list).not.toHaveBeenCalled();
   });
 
-  it('connects the docked xterm on the desktop-auth socket without a token', async () => {
-    const renderer = await renderPanel();
+  it('auto-connects the docked xterm on the desktop-auth socket without a token or 连接 button', async () => {
+    const renderer = await renderPanel('st_1');
     expect(JSON.stringify(renderer.toJSON())).toContain('本机终端');
-    await act(async () => {
-      button(renderer, '连接')!.props.onClick();
-    });
+    expect(button(renderer, '连接')).toBeUndefined();
     expect(FakeSocket.latest?.url).toBe('ws://127.0.0.1:17421/api/desktop/terminals/st_1/ws?desktop=1');
     expect(FakeSocket.latest?.url.includes('t=')).toBe(false);
   });

@@ -107,7 +107,7 @@ export function DesktopSeatTerminal({
   const desktop = isDesktopShell();
   const [rows, setRows] = useState<DesktopTerminalRow[]>([]);
   const [seatId, setSeatId] = useState('');
-  const [connected, setConnected] = useState(false);
+  const [, setConnected] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [noteErr, setNoteErr] = useState(false);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -621,15 +621,7 @@ export function DesktopSeatTerminal({
           );
         })}
       </div>
-      <div className="mt-2 grid shrink-0 grid-cols-4 gap-1 px-3">
-        <button
-          type="button"
-          disabled={!seatId || connected || popped}
-          onClick={() => { connectRef.current(seatId); }}
-          className="min-h-8 rounded-md bg-accent px-1 text-[11px] font-semibold text-white disabled:opacity-50"
-        >
-          {t('desktopTerminal.connect')}
-        </button>
+      <div className="mt-2 grid shrink-0 grid-cols-3 gap-1 px-3">
         <button
           type="button"
           disabled={!seatId}

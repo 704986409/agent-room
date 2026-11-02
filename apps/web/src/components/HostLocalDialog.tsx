@@ -177,6 +177,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
             <span className="mb-1 block text-[11px] font-semibold text-ink-muted">{t('inviteAgent.roleLabel')}</span>
             <select
               value={customRole ? '__custom__' : role}
+              disabled={busy}
               onChange={e => {
                 if (e.target.value === '__custom__') {
                   setCustomRole(true);
@@ -186,7 +187,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
                 setCustomRole(false);
                 setRole(e.target.value);
               }}
-              className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint"
+              className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-50"
             >
               <option value="">{t('inviteAgent.rolePlaceholder')}</option>
               {SUGGESTED_INVITE_ROLES.map(item => <option key={item} value={item}>{item}</option>)}
@@ -196,9 +197,10 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
               <input
                 value={role}
                 maxLength={128}
+                disabled={busy}
                 onChange={e => setRole(e.target.value)}
                 placeholder={t('inviteAgent.rolePlaceholder')}
-                className="mt-2 w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint"
+                className="mt-2 w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-50"
               />
             )}
             <span className="mt-1 block text-[10px] text-ink-faint">{t('inviteAgent.roleHelp')}</span>
@@ -210,9 +212,10 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
               value={roleProfile}
               maxLength={INVITE_ROLE_PROFILE_MAX_CHARS}
               rows={5}
+              disabled={busy}
               onChange={e => setRoleProfile(e.target.value)}
               placeholder={t('inviteAgent.profilePlaceholder')}
-              className="w-full resize-y px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs leading-relaxed focus:border-accent focus:ring-2 focus:ring-accent-tint"
+              className="w-full resize-y px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs leading-relaxed focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-50"
             />
             <span className="mt-1 flex justify-between gap-2 text-[10px] text-ink-faint">
               <span>{t('inviteAgent.profileHelp')}</span>
@@ -224,7 +227,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
             <span className="mb-1 block text-[11px] font-semibold text-ink-muted">{t('desktopHost.cliLabel')}</span>
             <select
               value={adapterId}
-              disabled={loading || adapters.length === 0}
+              disabled={busy || loading || adapters.length === 0}
               onChange={e => { chooseAdapter(e.target.value); }}
               className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-50"
             >
@@ -237,7 +240,7 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
             <span className="mb-1 block text-[11px] font-semibold text-ink-muted">{t('desktopHost.modelLabel')}</span>
             <select
               value={models.includes(model) ? model : ''}
-              disabled={!selected}
+              disabled={busy || !selected}
               onChange={e => { setModel(e.target.value); }}
               className="w-full px-2.5 py-1.5 bg-surface border border-border rounded-lg outline-none text-xs focus:border-accent focus:ring-2 focus:ring-accent-tint disabled:opacity-50"
             >
@@ -270,7 +273,8 @@ export function HostLocalDialog({ roomCode, ended, onClose, onHosted, onBusyChan
               <button
                 type="button"
                 onClick={openLoginModal}
-                className="min-h-9 rounded-lg border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-900 transition hover:bg-amber-100"
+                disabled={busy}
+                className="min-h-9 rounded-lg border border-amber-300 bg-amber-50 px-4 text-xs font-semibold text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
               >
                 {t('desktopHost.loginRequired')}
               </button>

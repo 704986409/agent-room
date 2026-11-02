@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.27-v2 (pack)
+
+App semver **0.1.27**; pack/tag label **Agent-Room-0.1.27-v2** / `desktop-v0.1.27-v2`.
+
+- Cursor HostLocal: seatDir `.cursor/mcp.json` → loopback mcp-shim (Bearer seatKey), not `~/.cursor/mcp.json` → production.
+- Rules / first-run: go straight to `room_listen`; forbid printenv/shell/state.md probes; forbid proactive「已上线」.
+- API: skip English room_join greeting when `machineId` (HostLocal).
+- UI: remove right-rail「连接」; lock HostLocal form while「正在本机启动…」.
+
 ## 0.1.27-v1 (pack)
 
 App semver **0.1.27**; pack/tag label **Agent-Room-0.1.27-v1** / `desktop-v0.1.27-v1`.

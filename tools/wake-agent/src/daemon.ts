@@ -7,7 +7,7 @@ import { nextWait } from './interval.js';
 import { joinRoomOverMcp, leaveRoomOverMcp, type RoomJoin, type RoomLeave } from './mcpJoin.js';
 import { firstRunPrompt, reuseWakePrompt, wakePrompt } from './prompt.js';
 import type { SecretRegistry } from './redact.js';
-import { deleteSeatStateFiles, writeSeatFiles } from './seatFiles.js';
+import { deleteSeatStateFiles, resolveMcpShimUrl, writeSeatFiles } from './seatFiles.js';
 import { reconcileAfterRestart, type DaemonState, type ProcessInspection, type SeatRecord } from './state.js';
 
 /**
@@ -389,6 +389,7 @@ export class WakeDaemon {
             seatId: registered.seatId,
             adapterId: input.adapterId,
             seatKey: joined.seatKey,
+            mcpShimUrl: resolveMcpShimUrl(process.env),
           });
           rulesPath = written.rulesPath;
           seatDir = written.seatDir;
@@ -604,13 +605,7 @@ export class WakeDaemon {
     // when the model sends managed:{}. Must stay HTTP (not stdio): Codex rejects
     // url+command mixes ("url is not supported for stdio").
     if (!env.AGENT_ROOM_MCP_SHIM_URL?.trim()) {
-      const fromEnv = process.env.AGENT_ROOM_MCP_SHIM_URL?.trim() || '';
-      if (fromEnv) {
-        env.AGENT_ROOM_MCP_SHIM_URL = fromEnv;
-      } else {
-        const port = (process.env.AGENT_ROOM_CONTROL_PORT || '17421').trim() || '17421';
-        env.AGENT_ROOM_MCP_SHIM_URL = `http://127.0.0.1:${port}/mcp-shim`;
-      }
+      env.AGENT_ROOM_MCP_SHIM_URL = resolveMcpShimUrl(process.env);
     }
     if (typeof cursor === 'number' && Number.isFinite(cursor)) env.AGENT_ROOM_CURSOR = String(cursor);
     if (files?.rulesPath) env.AGENT_ROOM_RULES_FILE = files.rulesPath;

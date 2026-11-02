@@ -141,6 +141,35 @@ describe('HostLocalButton', () => {
     expect(text).not.toContain('text-red-700');
   });
 
+
+  it('locks the form while 正在本机启动 is in progress', async () => {
+    let resolveHost: (value: unknown) => void = () => {};
+    hostOnThisMachine.mockImplementation(() => new Promise(resolve => { resolveHost = resolve; }));
+    const renderer = render();
+    await openDialog(renderer);
+    const [roleSelect, cliSelect] = renderer.root.findAllByType('select');
+    await act(async () => {
+      roleSelect!.props.onChange({ target: { value: '开发工程师' } });
+      cliSelect!.props.onChange({ target: { value: 'codex' } });
+    });
+    await act(async () => {
+      buttonByText(renderer, '托管')!.props.onClick();
+      await Promise.resolve();
+    });
+    expect(JSON.stringify(renderer.toJSON())).toContain('正在本机启动');
+    for (const select of renderer.root.findAllByType('select')) {
+      expect(select.props.disabled).toBe(true);
+    }
+    expect(renderer.root.findByType('textarea').props.disabled).toBe(true);
+    const disabledButtons = renderer.root.findAllByType('button').filter((b) => b.props.disabled === true);
+    expect(disabledButtons.length).toBeGreaterThan(0);
+    await act(async () => {
+      resolveHost({ ok: true, seat: { seatId: 'st_busy', name: '开发工程师' } });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
   it('disables hosting and explains when no CLI is installed', async () => {
     listInstalledDesktopAdapters.mockResolvedValue([]);
     const renderer = render();

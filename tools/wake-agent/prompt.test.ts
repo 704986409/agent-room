@@ -17,6 +17,8 @@ describe('firstRunPrompt', () => {
     expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
     expect(prompt).toContain('AGENT_ROOM_MCP_ALIAS');
     expect(prompt).toContain('不要读 state.md');
+    expect(prompt).toContain('禁止主动发「已上线」');
+    expect(prompt).toContain('立刻 room_listen');
     expect(prompt).toContain('追历史只用一次 timeoutMs:0');
     expect(prompt).toContain('默认 hold');
     expect(prompt).not.toContain('D:/Agent Room');

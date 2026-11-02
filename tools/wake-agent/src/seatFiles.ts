@@ -81,6 +81,8 @@ export function sharedRulesMarkdown(): string {
     '- 本座位已由本机托管进房：禁止 `room_join`，不要向用户索要邀请码。',
     '- MCP 工具已预先批准，直接调用即可，不要等用户在终端里逐个点批准。',
     '- 不要用文件读取工具去打开安装盘上的绝对路径（例如 `D:\\Agent Room\\...`）；本工作目录的 `AGENTS.md` 与环境变量 `AGENT_ROOM_*` 已足够。不要读 `state.md`。',
+    '- **启动后立刻 `room_listen`**：禁止用 shell/`printenv`/`Get-ChildItem`/`Get-Content`/`cat`/`ls`/`dir` 探测环境、列目录或“确认座位字段”；字段已在 `AGENT_ROOM_*`，直接填进工具参数。',
+    '- **禁止主动发「已上线」/进房问候**：首次启动与 Quiet 后不要 `room_send` 自我介绍；只有被 @、有任务指派、或 catch-up 里确有要你处理的工作时才在房间发言。',
     '- 禁止用 `timeoutMs: 0` 循环调用 `room_listen`（会一秒连跳多次）；追历史一次后必须 hold。',
     '- **禁止 `managed: {}`**：`managed.seatKey` 必须是 `AGENT_ROOM_SEAT_KEY` 里的真值。空对象会导致 Quiet 后永不 sleep。把 seatKey 填进 MCP 工具参数 ≠ 往房间帖密钥；不要省略、不要传空。',
     '',
@@ -125,11 +127,46 @@ export async function ensureSharedRules(roomsDir: string): Promise<string> {
     || !existing.includes('AGENT_ROOM_SEAT_KEY')
     || !existing.includes('禁止 `managed: {}`')
     || !existing.includes('不要读 `state.md`')
+    || !existing.includes('禁止主动发「已上线」')
+    || !existing.includes('启动后立刻 `room_listen`')
     || existing.includes('座位状态文件')
   ) {
     await writeSharedFile(path, next);
   }
   return path;
+}
+
+/** Loopback HTTP mcp-shim URL for managed seats (Codex -c / Cursor project mcp.json). */
+export function resolveMcpShimUrl(env: NodeJS.ProcessEnv = process.env): string {
+  const fromEnv = env.AGENT_ROOM_MCP_SHIM_URL?.trim() || '';
+  if (fromEnv) return fromEnv.replace(/\/+$/, '');
+  const port = (env.AGENT_ROOM_CONTROL_PORT || '17421').trim() || '17421';
+  return `http://127.0.0.1:${port}/mcp-shim`;
+}
+
+/** True when URL is loopback only — never write a remote host into seat MCP config. */
+export function isLoopbackMcpShimUrl(url: string): boolean {
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|\?|#|$)/i.test(url.trim());
+}
+
+/**
+ * Cursor project MCP config for a managed seat cwd.
+ * Project `.cursor/mcp.json` overrides ~/.cursor/mcp.json, so HostLocal Cursor
+ * hits the daemon mcp-shim (Bearer seatKey) instead of www.agent-room.com.
+ */
+export function cursorSeatMcpConfig(shimUrl: string, alias = DEFAULT_MCP_ALIAS): string {
+  const url = shimUrl.trim().replace(/\/+$/, '');
+  return `${JSON.stringify({
+    mcpServers: {
+      [alias]: {
+        type: 'http',
+        url,
+        headers: {
+          Authorization: 'Bearer ${env:AGENT_ROOM_SEAT_KEY}',
+        },
+      },
+    },
+  }, null, 2)}\n`;
 }
 
 export async function writeSeatFiles(input: {
@@ -140,6 +177,8 @@ export async function writeSeatFiles(input: {
   adapterId: string;
   seatKey: string;
   mcpAlias?: string;
+  /** When set (Cursor HostLocal), write seatDir/.cursor/mcp.json → loopback mcp-shim. */
+  mcpShimUrl?: string;
 }): Promise<{ seatDir: string; rulesPath: string }> {
   const rulesPath = await ensureSharedRules(input.roomsDir);
   const seatDir = seatDirPath(input.roomsDir, input.code, input.adapterId, input.name, input.seatId);
@@ -148,6 +187,11 @@ export async function writeSeatFiles(input: {
   const agents = seatAgentsMarkdown({ rulesPath });
   await writeSharedFile(join(seatDir, 'AGENTS.md'), agents);
   await writeSharedFile(join(seatDir, 'GEMINI.md'), agents);
+  const alias = input.mcpAlias?.trim() || DEFAULT_MCP_ALIAS;
+  const shim = (input.mcpShimUrl ?? '').trim();
+  if (input.adapterId === 'cursor-agent' && shim && isLoopbackMcpShimUrl(shim)) {
+    await writeSharedFile(join(seatDir, '.cursor', 'mcp.json'), cursorSeatMcpConfig(shim, alias));
+  }
   return { seatDir, rulesPath };
 }
 
@@ -165,6 +209,7 @@ export async function deleteSeatStateFiles(input: {
   await rm(seatStatePath(seatDir), { force: true }).catch(() => undefined);
   await rm(join(seatDir, 'AGENTS.md'), { force: true }).catch(() => undefined);
   await rm(join(seatDir, 'GEMINI.md'), { force: true }).catch(() => undefined);
+  await rm(join(seatDir, '.cursor'), { recursive: true, force: true }).catch(() => undefined);
   // Best-effort: remove empty seat folder; keep room folder + shared rules.
   await rm(seatDir, { recursive: false, force: true }).catch(() => undefined);
 }
