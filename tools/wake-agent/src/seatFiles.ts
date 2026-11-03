@@ -184,6 +184,25 @@ export function cursorSeatMcpConfig(shimUrl: string, alias = DEFAULT_MCP_ALIAS):
   }, null, 2)}\n`;
 }
 
+/**
+ * Antigravity (`agy`) has no per-cwd mcp.json; it honours workspace plugins
+ * under `<cwd>/.agents/plugins/<name>/`. This seat-local plugin points the
+ * Gemini seat at the loopback mcp-shim with its own seatKey (env-expanded by
+ * agy), so two agy seats never share one identity.
+ */
+export const AGY_SEAT_PLUGIN = 'agent-room-seat';
+export function agySeatMcpConfig(shimUrl: string, alias = DEFAULT_MCP_ALIAS): string {
+  const url = shimUrl.trim().replace(/\/+$/, '');
+  return `${JSON.stringify({
+    mcpServers: {
+      [alias]: {
+        url,
+        headers: { Authorization: 'Bearer ${AGENT_ROOM_SEAT_KEY}' },
+      },
+    },
+  }, null, 2)}\n`;
+}
+
 export async function writeSeatFiles(input: {
   roomsDir: string;
   code: string;
@@ -212,6 +231,11 @@ export async function writeSeatFiles(input: {
   if (input.adapterId === 'cursor-agent' && shim && isLoopbackMcpShimUrl(shim)) {
     await writeSharedFile(join(seatDir, '.cursor', 'mcp.json'), cursorSeatMcpConfig(shim, alias));
   }
+  if (input.adapterId === 'agy' && shim && isLoopbackMcpShimUrl(shim)) {
+    const pluginDir = join(seatDir, '.agents', 'plugins', AGY_SEAT_PLUGIN);
+    await writeSharedFile(join(pluginDir, 'plugin.json'), `${JSON.stringify({ name: AGY_SEAT_PLUGIN, version: '0.1.27' }, null, 2)}\n`);
+    await writeSharedFile(join(pluginDir, 'mcp_config.json'), agySeatMcpConfig(shim, alias));
+  }
   return { seatDir, rulesPath };
 }
 
@@ -230,6 +254,7 @@ export async function deleteSeatStateFiles(input: {
   await rm(join(seatDir, 'AGENTS.md'), { force: true }).catch(() => undefined);
   await rm(join(seatDir, 'GEMINI.md'), { force: true }).catch(() => undefined);
   await rm(join(seatDir, '.cursor'), { recursive: true, force: true }).catch(() => undefined);
+  await rm(join(seatDir, '.agents'), { recursive: true, force: true }).catch(() => undefined);
   // Best-effort: remove empty seat folder; keep room folder + shared rules.
   await rm(seatDir, { recursive: false, force: true }).catch(() => undefined);
 }

@@ -23,6 +23,24 @@ function normalizeMentionText(text: string): string {
     .replace(/\u00A0/g, ' '); // NBSP → space
 }
 
+/**
+ * `@name` occurs in `text` as a whole token: the next char must not continue an
+ * ASCII identifier, so `@Codex` does not also match a seat named `Codex2` /
+ * `Codex-B` (CJK right after the name is still fine: `@Codex看下`).
+ */
+function mentionAt(text: string, name: string): boolean {
+  const needle = `@${name}`;
+  let i = text.indexOf(needle);
+  while (i !== -1) {
+    const next = text.charAt(i + needle.length);
+    const prev = i > 0 ? text.charAt(i - 1) : '';
+    if (prev && /[A-Za-z0-9_.\-]/.test(prev)) { i = text.indexOf(needle, i + 1); continue; }
+    if (!next || !/[A-Za-z0-9_\-]/.test(next)) return true;
+    i = text.indexOf(needle, i + 1);
+  }
+  return false;
+}
+
 export function mentionedAgents(text: string, agentNames: readonly string[]): string[] {
   if (!text) return [];
   const normalized = normalizeMentionText(text);
@@ -30,7 +48,7 @@ export function mentionedAgents(text: string, agentNames: readonly string[]): st
   return agentNames.filter(name => {
     const n = name.trim();
     if (!n) return false;
-    return normalized.includes(`@${n}`) || lowerText.includes(`@${n.toLowerCase()}`);
+    return mentionAt(normalized, n) || mentionAt(lowerText, n.toLowerCase());
   });
 }
 

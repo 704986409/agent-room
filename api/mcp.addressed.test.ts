@@ -71,12 +71,11 @@ describe('addressedYou', () => {
   // "Somebody else" has to exist for this to be the case it claims to be: with
   // one agent in the room every human message is addressed, so the roster gets
   // a second agent here rather than the assertion getting weakened.
-  it('broadcasts host speech to every agent in open mode, even when one is mentioned', async () => {
+  it('host speech that @-mentions another agent does not address this one (only the @ seat wakes)', async () => {
     room.participants.push({ name: 'Claude', role: '', color: '#003', initials: 'CL', client: 'cc', joinedAt: 3, lastSeenAt: 3, canSpeak: true });
     listMessages.mockResolvedValue([{ ...base, type: 'msg', name: 'host', text: '@Claude what do you think' }]);
     const res = await listen({ timeoutMs: 1000 }).finally(() => room.participants.pop());
-    expect(res.addressedYou).toBe(true);
-    expect(res.messages).toHaveLength(1);
+    expect(res.addressedYou).not.toBe(true);
   });
 
   it('is absent on wakeOn "any", where every message returns early anyway', async () => {

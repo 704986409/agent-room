@@ -228,6 +228,10 @@ export class WakeDaemon {
       for (const remote of result.seats) {
         const seat = this.options.state.seats.find(item => item.seatId === remote.seatId);
         if (!seat) continue;
+        // Per-seat isolation: one seat's renew/inject/resume failure must not
+        // abort the loop (that skipped every later seat's wake and mis-marked
+        // the whole poll as a network error).
+        try {
         if (remote.status === 'revoked') {
           this.markRevoked(seat, `seat ${seat.seatId} revoked`);
           continue;
@@ -278,6 +282,12 @@ export class WakeDaemon {
         if (await this.tryInjectWake(seat, view)) continue;
         if (seat.pid && this.options.inspect(seat.pid).alive) await this.stopLiveProcess(seat);
         await this.resumeSeat(seat, view);
+        } catch (error) {
+          // Auth/pairing failures are daemon-wide: let the outer handler see them.
+          if (statusOf(error) === 401 || messageOf(error) === 'unpaired') { failure = error; throw error; }
+          busy = true;
+          this.logLine(`[wake] seat error seatId=${seat.seatId} reason=${messageOf(error) || 'unknown'}`);
+        }
       }
     } catch {
       if (messageOf(failure) === 'unpaired') skipped = true;

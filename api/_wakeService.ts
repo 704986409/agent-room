@@ -9,7 +9,7 @@ import {
 } from './_wakeBind.js';
 import { active, inFlight, readStart, verifySeat, type ManagedSeat, type WakeEvent } from './_wakeCore.js';
 import { RedisWakeStore } from './_wakeRedis.js';
-import { wakeFactsForAgent } from './_agentWake.js';
+import { managedWakeFacts } from './_agentWake.js';
 
 type CommandClient = Pick<UpstashClient, 'command'>;
 
@@ -414,7 +414,7 @@ export class WakeService {
     const participant = room.participants.find(p => p.seatId === binding.seatId) as Participant | undefined;
     const name = participant?.name ?? binding.name;
     return {
-      seat: { roomInstanceId: binding.roomInstanceId, seatId: binding.seatId, name, facts: wakeFactsForAgent(room, name) },
+      seat: { roomInstanceId: binding.roomInstanceId, seatId: binding.seatId, name, facts: managedWakeFacts(room, name) },
       expiresAt: roomExpiresAt(room),
     };
   }
@@ -487,7 +487,7 @@ export async function generateForCommittedMessage(client: CommandClient, code: s
     const binding = await readBinding(client, seatId);
     if (!binding || binding.status === 'revoked' || binding.roomInstanceId !== room.roomInstanceId) continue;
     const name = room.participants.find(p => p.seatId === seatId)?.name ?? binding.name;
-    seats.push({ roomInstanceId: room.roomInstanceId, seatId, name, facts: wakeFactsForAgent(room, name) });
+    seats.push({ roomInstanceId: room.roomInstanceId, seatId, name, facts: managedWakeFacts(room, name) });
   }
   if (!seats.length) return;
   await new RedisWakeStore(client).generate(seats, index, message, now, roomExpiresAt(room));

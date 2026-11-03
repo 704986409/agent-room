@@ -1,4 +1,4 @@
-import { wakesAgent, soleAgentOf, type Message, type Participant, type Room } from '@agent-room/shared';
+import { wakesAgent, soleAgentOf, hasMentionSyntax, type Message, type Participant, type Room } from '@agent-room/shared';
 import { isConfiguredModerator, isDeliverLead } from '@agent-room/upstash-client';
 
 export type WakeFacts = {
@@ -46,9 +46,28 @@ export function messageAddressesAgent(
   selfName: string,
   facts: WakeFacts,
 ): boolean {
-  return wakesAgent(message, selfName, 'cc')
-    || (facts.humanBroadcastsToMe && message.type === 'msg' && message.client === 'web' && message.name !== selfName)
+  if (wakesAgent(message, selfName, 'cc')) return true;
+  // Hard rule: an explicit @mention is a direct address. If this message @s
+  // somebody and that somebody is not me, it must not wake me through the
+  // human-broadcast fallback (sole-agent and deliver-lead signals keep theirs —
+  // there is no other seat a sole-room line could be for).
+  const atsSomeone = message.type === 'msg' && hasMentionSyntax(message.text ?? '');
+  return (!atsSomeone && facts.humanBroadcastsToMe && message.type === 'msg' && message.client === 'web' && message.name !== selfName)
     || (facts.sole && message.type === 'msg' && message.name !== selfName)
     || (!!facts.deliverLead && message.type === 'msg' && message.client === 'cc' && message.name !== selfName
       && DELIVER_SIGNAL_RE.test(message.text ?? ''));
+}
+
+/**
+ * Facts for server-generated wakes of HostLocal managed seats (daemon PTY
+ * inject). Stricter than room_listen: with more than one agent, only an @ /
+ * explicit target wakes a seat — an un-@'d human message wakes nobody, so
+ * Codex / Cursor / Gemini never all answer the same line.
+ */
+export function managedWakeFacts(
+  room: Pick<Room, 'participants' | 'replyMode' | 'modeConfig' | 'createdBy'>,
+  selfName: string,
+): WakeFacts {
+  const facts = wakeFactsForAgent(room, selfName);
+  return facts.sole ? facts : { ...facts, humanBroadcastsToMe: false };
 }

@@ -175,14 +175,13 @@ describe('board inbox on join and listen', () => {
       code: room.code, since: 0, name: 'Codex', timeoutMs: 1000, wakeOn: 'addressed',
     }));
     expect(res.addressedYou).toBe(true);
-    expect(res.yourTasks?.hint).toContain('nothing on the board is yours');
     expect(res.yourTasks?.hint).toContain('room_task({ action: "create", title, dod })');
   });
 
   // In open mode human speech is a broadcast even in a multi-agent room. The
   // speaking policy still decides who replies; wake routing must not hide the
   // host's request from the rest of the room.
-  it('treats a host message as addressed to the whole open room', async () => {
+  it('does not treat a host @Bystander message as addressed to Codex', async () => {
     const { callTool } = await import('./_mcpTools.js');
     listMessages.mockResolvedValue([
       { id: 1, type: 'msg', name: 'host', text: '@Bystander your turn', client: 'web', time: 1 },
@@ -191,8 +190,7 @@ describe('board inbox on join and listen', () => {
     const res = body(await callTool(emptyBoard, 'full', 'room_listen', {
       code: room.code, since: 0, name: 'Codex', timeoutMs: 1000, wakeOn: 'addressed',
     }));
-    expect(res.addressedYou).toBe(true);
-    expect(res.yourTasks?.hint).toContain('nothing on the board is yours');
+    expect(res.addressedYou).not.toBe(true);
   });
 
   // A quiet hold still needs the board result: a task can be waiting even

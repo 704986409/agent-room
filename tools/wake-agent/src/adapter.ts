@@ -85,8 +85,7 @@ export function resolveCommand(command: string, pathEnv: string = process.env.PA
 export function rejectUnsafe(args: readonly string[]): void {
   args.forEach((arg, index) => {
     const isPromptArg = index === args.length - 1;
-    // Adapter may insert this before the prompt (interactive TUI + auto-approve). Never as the prompt.
-    if (arg === '--dangerously-skip-permissions' && !isPromptArg) return;
+    void isPromptArg; // no YOLO exemption: --dangerously-* is always refused.
     if (arg === '--force' || arg === '--yolo' || arg === '--full-auto') throw new Error('launcher_unavailable');
     if (arg.startsWith('--dangerously')) throw new Error('launcher_unavailable');
     if (/(?:^|\s)(--yolo|--force|--full-auto|--dangerously[\w-]*)(?:\s|$)/i.test(arg)) {
@@ -652,15 +651,13 @@ const AGY: AdapterDefinition = {
     const mode = process.env.AGENT_ROOM_AGY_MODE;
     const args = ['-i', prompt, '--model', model];
     if (mode === 'accept-edits' || mode === 'auto') args.push('--mode', mode);
-    // `auto` on Xvfb/desktop probes: keep TUI, skip permission prompts (RunCommand etc.).
-    if (mode === 'auto') args.push('--dangerously-skip-permissions');
+    // No YOLO: never --dangerously-skip-permissions; only the opted-in --mode.
     return args;
   },
   resumeArgs: (sessionId, model, prompt) => {
     const mode = process.env.AGENT_ROOM_AGY_MODE;
     const args = ['-i', prompt, '--model', model, '--conversation', sessionId];
     if (mode === 'accept-edits' || mode === 'auto') args.push('--mode', mode);
-    if (mode === 'auto') args.push('--dangerously-skip-permissions');
     return args;
   },
   pick: pickAgy,
