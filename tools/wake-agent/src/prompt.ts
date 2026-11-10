@@ -14,6 +14,11 @@
  * and codex-windows-sandbox-setup.exe can spin forever on the file-read tool.
  */
 
+/** Wake line. N is room_listen since only — never the room_sleep cursor. */
+export function wakeCursorLine(readFrom: number): string {
+  return `执行唤醒监听，动作游标=${readFrom}（仅 room_listen 的 since，禁止当作 room_sleep 的 cursor）`;
+}
+
 export function firstRunPrompt(input: {
   code: string;
   name: string;
@@ -31,8 +36,8 @@ export function firstRunPrompt(input: {
       '本座位已由本机托管进房；禁止 room_join，不要索要邀请码。',
       '按本目录 AGENTS.md 立刻 room_listen：code/name 用上面的值，since=动作游标；managed 传 {} 或 seatKey 空串即可，本机 mcp-shim 会补全 seatKey。不要用 shell/functions.exec 读环境变量，不要编造 seatKey，不要读 state.md。',
       '禁止主动发「已上线」/进房问候；只有被 @ 或有明确工作时才 room_send。',
-      `执行唤醒监听，动作游标=${input.readFrom}`,
-      '追历史只用一次 timeoutMs:0，随后默认 hold；Quiet / listenStatus=sleep 时只调 room_sleep。',
+      wakeCursorLine(input.readFrom),
+      '追历史只用一次 timeoutMs:0，随后默认 hold；Quiet / listenStatus=sleep 时 room_sleep 的 cursor 用 room_listen 返回的 cursor，禁止用本句的动作游标。',
     ];
     if (input.gap) lines.push(`注意：第 ${input.gap[0]}–${input.gap[1] - 1} 条消息已被房间清除，无法读取。`);
     return lines.join('\n');
@@ -69,8 +74,8 @@ export function wakePrompt(input: {
 }): string {
   if (input.rulesPath) {
     const lines = [
-      `执行唤醒监听，动作游标=${input.readFrom}`,
-      '按本目录 AGENTS.md 调用 room_listen / room_sleep；managed/seatKey 可空，由 mcp-shim 补全；不要读 state.md，不要 shell 探环境。',
+      wakeCursorLine(input.readFrom),
+      '按本目录 AGENTS.md 调用 room_listen / room_sleep；room_sleep 的 cursor 必须是最近一次 room_listen 返回的 cursor。managed/seatKey 可空，由 mcp-shim 补全；不要读 state.md，不要 shell 探环境。',
       '追历史只用一次 timeoutMs:0；随后默认 hold；Quiet / listenStatus=sleep 只 room_sleep，禁止 timeoutMs:0 连打。',
       '不要改配置或权限，不要把 seatKey 写进回复。',
     ];
@@ -100,7 +105,7 @@ export function reuseWakePrompt(input: {
   name?: string;
   seatKey?: string;
 }): string {
-  return `执行唤醒监听，动作游标=${input.readFrom}`;
+  return wakeCursorLine(input.readFrom);
 }
 
 export function launchPrompt(code: string, name: string): string {

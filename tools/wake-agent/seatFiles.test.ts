@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  cursorSeatCliConfig,
   cursorSeatMcpConfig,
   defaultRoomsDir,
   deleteSeatStateFiles,
@@ -60,6 +61,8 @@ describe('seatFiles layout', () => {
     expect(rules).toContain('不要读 `state.md`');
     expect(rules).toContain('functions.exec');
     expect(rules).toContain('禁止主动发「已上线」');
+    expect(rules).toContain('禁止把唤醒句里的起始动作游标当作 room_sleep 的 cursor');
+    expect(rules).toContain('more: true');
     expect(rules).toContain('启动后立刻 `room_listen`');
     expect(rules).toMatch(/禁止[\s\S]*timeoutMs: 0/);
     expect(rules).not.toContain('seat-key-secret');
@@ -117,6 +120,15 @@ describe('seatFiles layout', () => {
     expect(mcp).toContain('${env:AGENT_ROOM_SEAT_KEY}');
     expect(mcp).not.toContain('www.agent-room.com');
     expect(mcp).not.toContain('seat-key-secret');
+    const cli = JSON.parse(await readFile(join(written.seatDir, '.cursor', 'cli.json'), 'utf8')) as {
+      approvalMode?: string;
+      permissions: { allow: string[]; deny?: unknown };
+    };
+    expect(cli).toEqual(JSON.parse(cursorSeatCliConfig()));
+    expect(cli.approvalMode).toBeUndefined();
+    expect(cli.permissions.allow).toEqual(['Mcp(agent-room:*)']);
+    expect(Object.keys(cli.permissions)).not.toContain('deny');
+    expect(JSON.stringify(cli)).not.toContain('unrestricted');
 
     // Codex seats do not get a project mcp.json (they use -c overrides).
     const codex = await writeSeatFiles({

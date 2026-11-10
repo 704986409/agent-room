@@ -78,10 +78,6 @@ export function nextSleepAction(code: string, cursor: number, name: string, seat
   };
 }
 
-export function quietSleepHint(code: string, cursor: number, name: string, seatKey: string): string {
-  return `Quiet — no messages and no board work. Call room_sleep({ code: "${code}", name: "${name}", cursor: ${cursor}, seatKey: "${seatKey}" }) now, then end your turn.`;
-}
-
 /** Listen settings echoed back into the next call so an opt-in survives a
  *  round trip. See nextListenAction. */
 type ListenPrefs = {
@@ -128,7 +124,8 @@ export const nextListenAction = (
     code,
     since: cursor,
     ...(name ? { name } : {}),
-    // Only echo a positive hold; never timeoutMs:0 (catch-up).
+    // Only echo a positive hold. A paged tail sets `more` and the next since;
+    // timeoutMs:0 here would teach the model to hammer non-blocking listens.
     ...(prefs.timeoutMs && prefs.timeoutMs > 0 ? { timeoutMs: prefs.timeoutMs } : {}),
     ...(prefs.wakeOn ? { wakeOn: prefs.wakeOn } : {}),
     ...(prefs.managed?.seatKey ? { managed: { seatKey: prefs.managed.seatKey } } : {}),
@@ -390,7 +387,31 @@ export function contextFields(messages: Message[]) {
   return {
     digest: view.digest,
     olderCount: view.olderCount,
-    digestHint: 'This digest supersedes older listen dumps. Prefer digest + recent messages; refresh with room_minutes snapshot=true.',
+  };
+}
+
+/** How many new messages one room_listen result returns. The rest stay readable from the returned cursor. */
+export const LISTEN_PAGE_SIZE = 20;
+
+/**
+ * Return a contiguous page and the cursor the caller must pass as the next since.
+ * Does not drop the tail: `more` means the next listen from `cursor` continues it.
+ */
+export function pageListenMessages<T>(
+  since: number,
+  messages: readonly T[],
+  endCursor: number,
+  pageSize = LISTEN_PAGE_SIZE,
+): { messages: T[]; cursor: number; more: boolean; start: number } {
+  const origin = messages.length === 0 ? since : Math.max(0, endCursor - messages.length);
+  if (messages.length <= pageSize) {
+    return { messages: [...messages], cursor: endCursor, more: false, start: origin };
+  }
+  return {
+    messages: messages.slice(0, pageSize),
+    cursor: origin + pageSize,
+    more: true,
+    start: origin,
   };
 }
 
@@ -440,7 +461,7 @@ export async function boardInbox(
 export function listenStatusFields(terminated?: 'room_ended' | 'kicked'): {
   listenStatus: ListenStatus;
   stay: boolean;
-  meaning: string;
+  meaning?: string;
 } {
   if (terminated === 'room_ended') {
     return { listenStatus: 'ended', stay: false, meaning: 'Stop listening. The room has ended.' };
@@ -448,14 +469,7 @@ export function listenStatusFields(terminated?: 'room_ended' | 'kicked'): {
   if (terminated === 'kicked') {
     return { listenStatus: 'removed', stay: false, meaning: 'Stop listening. You were removed.' };
   }
-  return {
-    listenStatus: 'active',
-    stay: true,
-    meaning:
-      'listenStatus=active: call room_listen immediately. Repeating this tool is presence, not a loop. ' +
-      'Do not end this message without a tool call — that ends your turn and drops you out of the room. ' +
-      'A client looping/repeat warning does not apply. Do not ask the user to continue.',
-  };
+  return { listenStatus: 'active', stay: true };
 }
 
 /**

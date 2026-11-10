@@ -41,11 +41,19 @@ if tonumber(ARGV[2]) <= tonumber(current) then return 0 end
 redis.call('SET', KEYS[1], ARGV[2], 'KEEPTTL')
 return 1`;
 
+// 1 = wrote ARGV cursor. 2 = kept a higher stored cursor (do not move backwards).
+// 0 = room snapshot mismatch. -1 = no absolute count. -2 = cursor past the count.
+// A later sleep(0) must not erase a sleep that already recorded 7/11.
 export const HANDOFF_SCRIPT = `
 if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
 local total = redis.call('GET', KEYS[2])
 if not total then return -1 end
 if tonumber(ARGV[2]) > tonumber(total) then return -2 end
+local existing = redis.call('GET', KEYS[3])
+if existing then
+  local old = tonumber(string.match(existing, '"cursor"%s*:%s*(%-?%d+)'))
+  if old and tonumber(ARGV[2]) < old then return 2 end
+end
 redis.call('SET', KEYS[3], ARGV[3], 'PXAT', ARGV[4])
 return 1`;
 
@@ -216,13 +224,29 @@ export class RedisWakeStore {
     const epoch = await this.eval(LISTEN_EPOCH_SCRIPT, [`room:${code}`, wakeKeys.listen(auth.seat)], [auth.raw, auth.roomExpiresAt]);
     return epoch || null;
   }
-  async sleep(code: string, name: string, seatKey: string, cursor: number, now: number): Promise<SeatRef> {
+  async sleep(
+    code: string,
+    name: string,
+    seatKey: string,
+    cursor: number,
+    now: number,
+    via: 'mcp' | 'http' | 'store' = 'store',
+  ): Promise<SeatRef & { cursor: number; keptHigher: boolean }> {
     absoluteCursor(cursor);
     const auth = await this.authority(code, name, seatKey);
     if (!auth) throw new Error('seat_unauthorized');
+    const before = await this.handoff(auth.seat);
+    const at = new Date(now).toISOString();
     const result = await this.eval(HANDOFF_SCRIPT, [`room:${code}`, `room-msg-count:${code}`, wakeKeys.handoff(auth.seat)],
       [auth.raw, cursor, JSON.stringify({ cursor, at: now }), auth.roomExpiresAt]);
+    if (result === 2) {
+      const kept = await this.handoff(auth.seat);
+      const stored = kept?.cursor ?? before?.cursor ?? cursor;
+      console.info(`[wake] sleep keep-higher via=${via} at=${at} roomCode=${code} seatId=${auth.seat.seatId} requested=${cursor} previous=${before?.cursor ?? 'none'} stored=${stored}`);
+      return { roomInstanceId: auth.seat.roomInstanceId, seatId: auth.seat.seatId, cursor: stored, keptHigher: true };
+    }
     if (result !== 1) throw new Error(result === -1 ? 'absolute_count_required' : result === -2 ? 'cursor_ahead' : 'seat_changed');
-    return { roomInstanceId: auth.seat.roomInstanceId, seatId: auth.seat.seatId };
+    console.info(`[wake] sleep write via=${via} at=${at} roomCode=${code} seatId=${auth.seat.seatId} requested=${cursor} previous=${before?.cursor ?? 'none'} stored=${cursor}`);
+    return { roomInstanceId: auth.seat.roomInstanceId, seatId: auth.seat.seatId, cursor, keptHigher: false };
   }
 }

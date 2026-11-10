@@ -138,6 +138,24 @@ describe('interactive launcher adapters', () => {
     await cursor.launch({ ...opts, env: {}, model: 'grok-4.7-high' });
     expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', 'hello room']);
     expect(cursorSpawn.calls[0]!.args).not.toContain('--approve-mcps');
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--yolo');
+  });
+
+  it('creates the Cursor chat in the seat cwd and can omit the argv prompt for a PTY submit', async () => {
+    const cursorSpawn = fake();
+    let seen: string | undefined;
+    const cursor = createCursorAdapter(cursorSpawn, {
+      directSpawn: true,
+      createChat: async cwd => { seen = cwd; return '22222222-2222-4222-8222-222222222222'; },
+    });
+    await cursor.launch({ ...opts, cwd: '/seat', model: 'grok-4.7-high' });
+    expect(seen).toBe('/seat');
+    expect(cursorSpawn.calls[0]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', '--approve-mcps', 'hello room']);
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--yolo');
+    expect(cursorSpawn.calls[0]!.args).not.toContain('--force');
+    await cursor.launch({ ...opts, cwd: '/seat', model: 'grok-4.7-high', promptDelivery: 'pty' });
+    expect(cursorSpawn.calls[1]!.args).toEqual(['--resume', '22222222-2222-4222-8222-222222222222', '--model', 'grok-4.7-high', '--trust', '--approve-mcps']);
+    expect(cursorSpawn.calls[1]!.args.join(' ')).not.toContain('hello room');
   });
 
   it('does not direct-spawn on win32 unless AGENT_ROOM_DIRECT_SPAWN=1', () => {

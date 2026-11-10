@@ -300,8 +300,11 @@ export class WakeService {
     const snapshot = await this.store.loadMessages(binding.code, 0);
     if (!snapshot) fail('seat_unauthorized');
     const handoff = await this.store.handoff(seat);
+    const sources = runEvents
+      .map(event => event.sourceCursorBefore)
+      .filter((cursor): cursor is number => cursor !== undefined);
     const start = readStart(runEvents, seat, snapshot.oldestRetained, handoff?.cursor);
-    console.info(`[wake] claim delivered roomCode=${binding.code} seatId=${seat.seatId} eventIds=${claims.filter(c => c.claimId).map(c => c.eventId).join(',')} readFrom=${start.readFrom}`);
+    console.info(`[wake] claim delivered roomCode=${binding.code} seatId=${seat.seatId} eventIds=${claims.filter(c => c.claimId).map(c => c.eventId).join(',')} handoffCursor=${handoff?.cursor ?? 'none'} sourceCursorBefore=${sources.join(',') || 'none'} readFrom=${start.readFrom}`);
     return { wakeRunId, readFrom: start.readFrom, ...(start.gap ? { gap: start.gap } : {}), claims };
   }
 

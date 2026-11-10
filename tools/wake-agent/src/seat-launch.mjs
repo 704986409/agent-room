@@ -34,6 +34,25 @@ export function expandDp0(value, cmdPath) {
     .replace(/[\\/]+/g, sep);
 }
 
+/**
+ * Argv vs stdin for one launch spec.
+ * stdinSubmit types the prompt and a CR; the prompt is not an argv draft.
+ */
+export function cliLaunchPlan(spec, prompt) {
+  const cliArgs = Array.isArray(spec.args) ? spec.args.slice() : [];
+  const text = typeof prompt === 'string' ? prompt : '';
+  if (spec.stdinSubmit === true) {
+    return {
+      args: cliArgs,
+      stdinSubmit: true,
+      stdinChunk: text === '' || text.endsWith('\r') ? text : `${text}\r`,
+    };
+  }
+  const index = Number.isInteger(spec.promptIndex) ? spec.promptIndex : cliArgs.length;
+  if (index >= 0 && text !== '') cliArgs.splice(Math.max(0, index), 0, text);
+  return { args: cliArgs, stdinSubmit: false, stdinChunk: '' };
+}
+
 export function tokensOf(text) {
   const out = [];
   const re = /"([^"]*)"|(\S+)/g;
@@ -162,12 +181,8 @@ export function main(argv = process.argv, env = process.env) {
     process.exit(1);
   }
 
-  const cliArgs = Array.isArray(spec.args) ? spec.args.slice() : [];
-  const index = Number.isInteger(spec.promptIndex) ? spec.promptIndex : cliArgs.length;
-  // Login / empty prompt: never splice "" into argv (agy: unexpected argument "").
-  if (index >= 0 && prompt !== '') {
-    cliArgs.splice(Math.max(0, index), 0, prompt);
-  }
+  const plan = cliLaunchPlan(spec, prompt);
+  const cliArgs = plan.args;
   let resolved;
   try {
     resolved = resolveCli(String(spec.command ?? ''), env);
@@ -187,15 +202,27 @@ export function main(argv = process.argv, env = process.env) {
   }
 
   try {
-    process.stderr.write(`seat-launch: spawn ${resolved.command} ${JSON.stringify([...resolved.args, ...(cliArgs.length ? ['<prompt>', ...cliArgs.slice(1)] : [])])}\n`);
+    const shown = plan.stdinSubmit
+      ? [...resolved.args, ...cliArgs, '<stdin-submit>']
+      : [...resolved.args, ...(cliArgs.length ? ['<prompt>', ...cliArgs.slice(1)] : [])];
+    process.stderr.write(`seat-launch: spawn ${resolved.command} ${JSON.stringify(shown)}\n`);
   } catch { /* ignore */ }
   const child = spawn(resolved.command, [...resolved.args, ...cliArgs], {
     cwd: launchCwd(spec.cwd),
     env: childEnv,
-    stdio: 'inherit',
+    stdio: plan.stdinSubmit ? ['pipe', 'inherit', 'inherit'] : 'inherit',
     shell: false,
     windowsHide: false,
   });
+  if (plan.stdinSubmit && child.stdin) {
+    if (plan.stdinChunk) child.stdin.write(plan.stdinChunk);
+    if (process.stdin.isTTY) {
+      process.stdin.setRawMode(true);
+      const restore = () => { try { process.stdin.setRawMode(false); } catch { /* already restored */ } };
+      child.on('exit', restore);
+      process.stdin.pipe(child.stdin);
+    }
+  }
   child.on('error', error => {
     process.stderr.write(`seat-launch: ${error.message}\n`);
     process.exit(1);

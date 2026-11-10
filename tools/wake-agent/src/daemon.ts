@@ -150,11 +150,42 @@ export interface WakeDaemonOptions {
    */
   writeSeatStdin?: (seatId: string, data: string) => boolean;
   /**
+   * HostLocal terminal. embedded = in-app PTY on Linux and Windows.
+   * system = visible console. Both submit the first Cursor prompt; only the
+   * mechanism differs (PTY type+CR vs launcher stdin+CR).
+   */
+  terminalMode?: 'embedded' | 'system';
+  /** Scrollback for the embedded PTY. Used to wait until the Cursor composer is up. */
+  readSeatOutput?: (seatId: string) => string;
+  /** How long to wait for the Cursor banner before typing the first prompt. Tests use 0. */
+  firstSubmitWaitMs?: number;
+  /**
    * Delay between typing the inject prompt and sending Enter (CR).
    * Default 250ms — must exceed Codex paste-burst Enter suppress (120ms) plus
    * Windows idle flush (60ms). Tests set 0.
    */
   injectEnterDelayMs?: number;
+}
+
+/** Banner means the composer can take the first prompt. Empty output is still starting. */
+export function decideCursorFirstEnter(output: string): 'submit' | 'wait' {
+  if (/Cursor Agent/i.test(output) || /Add a follow-up/i.test(output)) return 'submit';
+  return 'wait';
+}
+
+/**
+ * How the first Cursor prompt is submitted. Not limited to one OS.
+ * embedded + a PTY writer: type the prompt and CR (same as the second wake).
+ * system console: the launcher types the prompt and CR; it is not an argv draft.
+ * no writer and not a system console: leave the prompt on argv.
+ */
+export function cursorFirstSubmit(input: {
+  terminalMode: 'embedded' | 'system';
+  hasWriter: boolean;
+}): 'pty' | 'stdin' | 'argv' {
+  if (input.terminalMode === 'system') return 'stdin';
+  if (input.hasWriter) return 'pty';
+  return 'argv';
 }
 
 export class WakeDaemon {
@@ -417,9 +448,19 @@ export class WakeDaemon {
       // (Codex Windows elevated sandbox often cannot read D:\Agent Room absolute paths
       // when cwd stays at the user home).
       const launchCwd = seatDir || input.cwd;
+      const delivery = input.adapterId === 'cursor-agent'
+        ? cursorFirstSubmit({
+          terminalMode: this.options.terminalMode ?? 'embedded',
+          hasWriter: Boolean(this.options.writeSeatStdin),
+        })
+        : 'argv';
+      if (input.adapterId === 'cursor-agent') {
+        this.logLine(`[host] cursor preauth seatId=${registered.seatId} approveMcps=1 cwd=${launchCwd} promptDelivery=${delivery} cli=${seatDir ? `${seatDir}/.cursor/cli.json` : 'none'} allow=Mcp(agent-room:*)`);
+      }
       const launched = await adapter.launch({
         cwd: launchCwd,
         prompt,
+        promptDelivery: input.adapterId === 'cursor-agent' ? delivery : 'argv',
         model: input.model,
         env: await this.childEnv(registered.seatId, input.code, seatName, input.server, joined.seatKey, joined.cursor, {
           rulesPath, roomsDir: roomsDir ?? undefined, seatDir, adapterId: input.adapterId,
@@ -427,6 +468,7 @@ export class WakeDaemon {
         logFile: this.logFile(registered.seatId),
       });
       this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid} cwd=${launchCwd}`);
+      if (delivery === 'pty') await this.submitCursorFirstPrompt(registered.seatId, prompt);
       const seat: SeatRecord = {
         seatId: registered.seatId,
         roomInstanceId: registered.roomInstanceId,
@@ -719,6 +761,42 @@ export class WakeDaemon {
       this.logLine(`[wake] defer live-listen at=${new Date(now).toISOString()} roomCode=${seat.code} seatId=${seat.seatId} wakeRunId=${seat.wakeRunId} pending=${remote.pending.length} graceMs=${grace}`);
     }
     return !mature;
+  }
+
+  /**
+   * First Cursor launch on an embedded PTY. The prompt is not on argv, so this
+   * types it and sends CR — the same submit the second wake already uses.
+   */
+  private async submitCursorFirstPrompt(seatId: string, prompt: string): Promise<void> {
+    const write = this.options.writeSeatStdin;
+    if (!write || !prompt) {
+      this.logLine(`[host] cursor first-submit seatId=${seatId} enter=0 reason=no_writer`);
+      return;
+    }
+    const ready = await this.waitForCursorBanner(seatId);
+    let written = false;
+    try { written = write(seatId, prompt); } catch { written = false; }
+    if (!written) {
+      this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} enter=0 reason=write_refused`);
+      return;
+    }
+    const enterDelayMs = this.options.injectEnterDelayMs ?? 250;
+    if (enterDelayMs > 0) await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
+    let enterOk = false;
+    try { enterOk = write(seatId, '\r'); } catch { enterOk = false; }
+    this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} mode=inject promptChars=${prompt.length} enter=${enterOk ? 1 : 0}`);
+  }
+
+  private async waitForCursorBanner(seatId: string): Promise<'banner' | 'timeout' | 'immediate'> {
+    const waitMs = this.options.firstSubmitWaitMs ?? 8_000;
+    if (waitMs <= 0) return 'immediate';
+    const read = this.options.readSeatOutput;
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      if (decideCursorFirstEnter(read?.(seatId) ?? '') === 'submit') return 'banner';
+      await new Promise<void>(resolve => setTimeout(resolve, 50));
+    }
+    return 'timeout';
   }
 
   /**

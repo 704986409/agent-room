@@ -177,7 +177,7 @@ describe('seatKey verified receipts', () => {
 describe('room_sleep handoff', () => {
   it('stores an authenticated absolute cursor used by registration, with room lifetime TTL', async () => {
     const { redis, store } = fixture();
-    expect(await store.sleep('ABC', 'bot', 'key', 183, 2_000)).toEqual({ roomInstanceId: 'ri', seatId: 'st' });
+    expect(await store.sleep('ABC', 'bot', 'key', 183, 2_000)).toMatchObject({ roomInstanceId: 'ri', seatId: 'st', cursor: 183, keptHigher: false });
     expect(await store.handoff(seat)).toEqual({ cursor: 183, at: 2_000 });
     expect(await store.initializeScan(seat, 190, 200, expires)).toBe(183);
     expect(redis.expires.get(wakeKeys.handoff(seat))).toBe(7 * 86_400_000);
@@ -198,6 +198,30 @@ describe('room_sleep handoff', () => {
     redis.beforeEval = script => { if (script === HANDOFF_SCRIPT) redis.values.set('room:ABC', '{}'); };
     await expect(store.sleep('ABC', 'bot', 'key', 100, 2_000)).rejects.toThrow('seat_changed');
     expect(await store.handoff(seat)).toBeNull();
+  });
+  it('refuses to move a stored handoff cursor backwards and still advances', async () => {
+    const { store } = fixture();
+    const lines: string[] = [];
+    const orig = console.info;
+    console.info = (msg?: unknown, ...rest: unknown[]) => {
+      lines.push([msg, ...rest].map(String).join(' '));
+    };
+    try {
+      expect(await store.sleep('ABC', 'bot', 'key', 7, 2_000, 'mcp')).toMatchObject({ cursor: 7, keptHigher: false });
+      expect(await store.sleep('ABC', 'bot', 'key', 0, 3_000, 'http')).toMatchObject({ cursor: 7, keptHigher: true });
+      expect(await store.handoff(seat)).toEqual({ cursor: 7, at: 2_000 });
+      expect(await store.sleep('ABC', 'bot', 'key', 11, 4_000, 'mcp')).toMatchObject({ cursor: 11, keptHigher: false });
+      expect(await store.handoff(seat)).toEqual({ cursor: 11, at: 4_000 });
+    } finally {
+      console.info = orig;
+    }
+    const log = lines.join('\n');
+    expect(log).toContain('via=mcp');
+    expect(log).toContain('stored=7');
+    expect(log).toContain('via=http');
+    expect(log).toContain('keep-higher');
+    expect(log).toContain('requested=0');
+    expect(log).toContain('stored=11');
   });
 });
 

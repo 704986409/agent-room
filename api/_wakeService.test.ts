@@ -160,9 +160,21 @@ describe('POST /api/wake', () => {
     seed(redis, room(), [msg], 1);
     await api.handle('Bearer token-a', { action: 'register', code: CODE, name: 'codex-a', seatKey: KEY, cursor: 0 });
     await api.handle('Bearer token-a', { action: 'poll' });
-    const claimed = await api.handle('Bearer token-a', { action: 'claim', eventIds: ['wk:ri_1:0:st_a'] });
+    const lines: string[] = [];
+    const orig = console.info;
+    console.info = (msg?: unknown, ...rest: unknown[]) => {
+      lines.push([msg, ...rest].map(String).join(' '));
+      orig(msg, ...rest);
+    };
+    let claimed: Awaited<ReturnType<typeof api.handle>>;
+    try {
+      claimed = await api.handle('Bearer token-a', { action: 'claim', eventIds: ['wk:ri_1:0:st_a'] });
+    } finally {
+      console.info = orig;
+    }
     const claimBody = claimed.body as { wakeRunId: string; readFrom: number; claims: { claimId: string }[] };
     expect(claimBody.readFrom).toBe(0);
+    expect(lines.join('\n')).toMatch(/handoffCursor=none sourceCursorBefore=0 readFrom=0/);
     expect(claimBody.wakeRunId).toMatch(/^id/);
     const claimId = claimBody.claims[0]!.claimId;
     const progress = await api.handle('Bearer token-a', {

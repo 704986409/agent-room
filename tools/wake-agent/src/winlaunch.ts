@@ -80,6 +80,8 @@ export interface WindowsSeatLaunchInput {
   args: readonly string[];
   promptIndex: number;
   prompt: string;
+  /** Type the prompt and a CR on the CLI stdin. Do not splice it into argv. */
+  stdinSubmit?: boolean;
   cwd: string;
   env: Record<string, string>;
   nodePath: string;
@@ -117,7 +119,8 @@ export function prepareWindowsSeatLaunch(input: WindowsSeatLaunchInput): Windows
   const spec = {
     command: input.command,
     args: [...input.args],
-    promptIndex: input.promptIndex,
+    promptIndex: input.stdinSubmit ? -1 : input.promptIndex,
+    ...(input.stdinSubmit ? { stdinSubmit: true } : {}),
     promptFile: promptPath,
     cwd: existingDirectory(input.cwd),
     env: input.env,
@@ -139,6 +142,37 @@ export function prepareWindowsSeatLaunch(input: WindowsSeatLaunchInput): Windows
     node: { command: input.nodePath, args: [scriptPath, specPath] },
     spawn: windowsConsoleSpawn(launcherPath, input.comspec || 'cmd.exe'),
   };
+}
+
+/**
+ * Visible system console on Linux (and any non-ConPTY host): node runs
+ * seat-launch, which types the prompt and a CR into the CLI stdin.
+ * The prompt is not an argv draft.
+ */
+export function stdinSubmitCommand(input: {
+  directory: string;
+  command: string;
+  args: readonly string[];
+  prompt: string;
+  cwd: string;
+  env: Record<string, string>;
+  nodePath?: string;
+}): { command: string; args: string[] } {
+  mkdirSync(input.directory, { recursive: true });
+  const promptPath = join(input.directory, 'stdin-submit.prompt.txt');
+  const specPath = join(input.directory, 'stdin-submit.launch.json');
+  writeText(promptPath, input.prompt, 0o600);
+  writeText(specPath, JSON.stringify({
+    command: input.command,
+    args: [...input.args],
+    promptIndex: -1,
+    stdinSubmit: true,
+    promptFile: promptPath,
+    cwd: existingDirectory(input.cwd),
+    env: input.env,
+  }), 0o600);
+  const script = fileURLToPath(new URL('./seat-launch.mjs', import.meta.url));
+  return { command: input.nodePath ?? process.execPath, args: [script, specPath] };
 }
 
 function writeText(path: string, text: string, mode: number): void {

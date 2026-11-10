@@ -57,7 +57,9 @@ export function sharedRulesMarkdown(): string {
     '',
     '## 术语',
     '',
-    '- **动作游标**：即 `room_listen` 的 `since`（处理完后也用返回的 `cursor` 作为下一轮动作游标）。唤醒短指令里的「动作游标=N」就是 N。',
+    '- **动作游标**：唤醒短指令里的「动作游标=N」只是这一次 `room_listen` 的 `since`。它不是 `room_sleep` 的 cursor。',
+    '- **room_sleep 的 cursor**：必须等于最近一次 `room_listen` 返回的 `cursor`（或 `nextAction.arguments.cursor`）。禁止把唤醒句里的起始动作游标当作 sleep cursor。',
+    '- **回复模式**：以 `room_listen` 返回的 `replyMode` 为准。长篇 roomPolicy 只在进房时给一次，不要等每次 listen 再贴。',
     '- **座位身份**：房间码 / 职位见下方「本座位」与首启说明（「你是房间 … 的座位 …」）。`seatKey` 由本机 **mcp-shim** 从进程环境自动补全——你不必、也往往无法通过 `functions.exec`/shell 读到 `AGENT_ROOM_*`（沙箱常不暴露）。',
     '',
     '## 唤醒监听',
@@ -65,7 +67,7 @@ export function sharedRulesMarkdown(): string {
     '当收到「执行唤醒监听，动作游标=N」（或首次启动的等价指令）时：',
     '',
     '1. 用「本座位」/首启里的房间码与职位，以及动作游标 N。**不要**读 `state.md`，不要用 shell/`printenv`/`functions.exec` 探测环境变量。',
-    '2. **追历史只用一次**：调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: {} })`（或 `managed: { seatKey: "" }`）。本机 mcp-shim 会填入真 seatKey。这是非阻塞快读；**禁止**反复用 `timeoutMs: 0`。',
+    '2. **追历史只用一次**：调用 `room_listen({ code, name, since: N, timeoutMs: 0, managed: {} })`（或 `managed: { seatKey: "" }`）。本机 mcp-shim 会填入真 seatKey。这是非阻塞快读；**禁止**反复用 `timeoutMs: 0`。若返回 `more: true`，用返回的 `cursor` 再调 `room_listen`（不要带 `timeoutMs: 0`；已经在房间里的消息会马上返回）直到 `more` 消失。不要丢掉还没返回的后半段，也不要连跳。',
     '3. 若有未处理消息或交给你的工作：处理完并在房间回复（`room_send`）。',
     '4. **随后必须用默认 hold**：再调用 `room_listen({ code, name, since: <上一步 cursor>, managed: {} })`——**不要**传 `timeoutMs: 0`（省略 timeoutMs，走默认长轮询约 30–40s）。若工具返回的 nextAction 已带 seatKey，可照填；否则继续让 shim 补全。**禁止编造 seatKey**。',
     '5. hold 返回后若有新的 @ / 工作：处理完再回到第 4 步（继续 hold，仍不要 `timeoutMs: 0`）。',
@@ -73,7 +75,7 @@ export function sharedRulesMarkdown(): string {
     '',
     '## 默认动作（休眠）',
     '',
-    '只有在一次真实 hold（省略 `timeoutMs` 或 `timeoutMs`>0）出现 Quiet / `listenStatus=sleep` 之后：调用 `room_sleep({ code, name, cursor: <最新动作游标>, seatKey: "" })`（shim 会填 seatKey；若 nextAction.arguments 已给齐可直接用），然后结束本轮，等待下次唤醒。不要在追历史（`timeoutMs: 0`）之后立刻 sleep，也不要在 Quiet 后再 listen。',
+    '只有在一次真实 hold（省略 `timeoutMs` 或 `timeoutMs`>0）出现 Quiet / `listenStatus=sleep` 之后：调用 `room_sleep({ code, name, cursor: <最近一次 room_listen 返回的 cursor>, seatKey: "" })`（shim 会填 seatKey；若 nextAction.arguments 已给齐可直接用）。禁止把唤醒句里的起始动作游标当作 room_sleep 的 cursor。然后结束本轮，等待下次唤醒。不要在追历史（`timeoutMs: 0`）之后立刻 sleep，也不要在 Quiet 后再 listen。',
     '',
     '## 禁止',
     '',
@@ -107,7 +109,7 @@ export function seatAgentsMarkdown(input: {
     code ? `- 房间码：\`${code}\`` : '',
     name ? `- 职位：\`${name}\`` : '',
     `- MCP 别名：\`${alias}\``,
-    '- seatKey：由本机 mcp-shim 自动补全；调用时可传 `managed: {}` / 空字符串，**不要编造**，也不要用 shell 读环境变量',
+    '- seatKey：由本机 mcp-shim 从环境变量 `AGENT_ROOM_SEAT_KEY` 自动补全；调用时可传 `managed: {}` / 空字符串，**不要编造**，也不要用 shell 读环境变量',
   ].filter(Boolean);
   return [
     sharedRulesMarkdown().trimEnd(),
@@ -143,6 +145,7 @@ export async function ensureSharedRules(roomsDir: string): Promise<string> {
     || !existing.includes('不要读 `state.md`')
     || !existing.includes('禁止主动发「已上线」')
     || !existing.includes('启动后立刻 `room_listen`')
+    || !existing.includes('禁止把唤醒句里的起始动作游标当作 room_sleep 的 cursor')
     || existing.includes('禁止 `managed: {}`')
     || existing.includes('座位状态文件')
   ) {
@@ -162,6 +165,20 @@ export function resolveMcpShimUrl(env: NodeJS.ProcessEnv = process.env): string 
 /** True when URL is loopback only — never write a remote host into seat MCP config. */
 export function isLoopbackMcpShimUrl(url: string): boolean {
   return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?(\/|\?|#|$)/i.test(url.trim());
+}
+
+/**
+ * Seat-cwd Cursor CLI permissions. Tool allowlist only — not approvalMode
+ * unrestricted / --yolo (those would allow shell commands too).
+ * `deny` is omitted: a project cli.json replaces arrays it sets, and omitting
+ * `deny` keeps the user's deny list. This file never deletes or clears a deny.
+ */
+export function cursorSeatCliConfig(alias = DEFAULT_MCP_ALIAS): string {
+  return `${JSON.stringify({
+    permissions: {
+      allow: [`Mcp(${alias}:*)`],
+    },
+  }, null, 2)}\n`;
 }
 
 /**
@@ -228,8 +245,11 @@ export async function writeSeatFiles(input: {
   await writeSharedFile(join(seatDir, 'GEMINI.md'), agents);
   const alias = input.mcpAlias?.trim() || DEFAULT_MCP_ALIAS;
   const shim = (input.mcpShimUrl ?? '').trim();
-  if (input.adapterId === 'cursor-agent' && shim && isLoopbackMcpShimUrl(shim)) {
-    await writeSharedFile(join(seatDir, '.cursor', 'mcp.json'), cursorSeatMcpConfig(shim, alias));
+  if (input.adapterId === 'cursor-agent') {
+    await writeSharedFile(join(seatDir, '.cursor', 'cli.json'), cursorSeatCliConfig(alias));
+    if (shim && isLoopbackMcpShimUrl(shim)) {
+      await writeSharedFile(join(seatDir, '.cursor', 'mcp.json'), cursorSeatMcpConfig(shim, alias));
+    }
   }
   if (input.adapterId === 'agy' && shim && isLoopbackMcpShimUrl(shim)) {
     const pluginDir = join(seatDir, '.agents', 'plugins', AGY_SEAT_PLUGIN);

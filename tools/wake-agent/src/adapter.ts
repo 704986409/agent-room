@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { accessSync, chmodSync, closeSync, constants, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { basename, delimiter, dirname, join } from 'node:path';
-import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleSpawn } from './winlaunch.js';
+import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, stdinSubmitCommand, windowsConsoleSpawn } from './winlaunch.js';
 import { shouldEmbedTerminal } from './terminalMode.js';
 import { seatIdFromLogFile, spawnPtySession } from './pty.js';
 import { homedir, tmpdir } from 'node:os';
@@ -16,6 +16,14 @@ export interface LaunchOptions {
   logFile?: string;
   /** Window title for the terminal emulator (interactive spawn). */
   title?: string;
+  /**
+   * argv: prompt is a CLI argument (direct / no terminal).
+   * pty: daemon types the prompt and CR into the in-app PTY.
+   * stdin: the visible system console launcher types the prompt and CR.
+   */
+  promptDelivery?: 'argv' | 'pty' | 'stdin';
+  /** Set by launch() when promptDelivery is stdin. Spawners read this. */
+  stdinSubmit?: boolean;
 }
 
 export interface DetectResult {
@@ -54,6 +62,8 @@ export interface ProcessSpawner {
     logFile?: string;
     /** Full prompt. On Windows it is written to a file and is not placed on the cmd line. */
     prompt?: string;
+    /** System console: launcher writes the prompt and a CR to the CLI stdin. */
+    stdinSubmit?: boolean;
     /**
      * When set, managed seats embed in the in-app PTY (any adapter id).
      * AGENT_ROOM_TERMINAL=system keeps the system console / wrapInTerminal path.
@@ -263,6 +273,10 @@ export function managedApprovalArgs(adapterId: string, env?: Record<string, stri
     }
     return args;
   }
+  // --approve-mcps skips the MCP server connect prompt only.
+  // Tool calls are pre-authorized by the seat `.cursor/cli.json` allow entry
+  // `Mcp(<alias>:*)`. Do not pass --yolo/--force; those allow commands unless
+  // denied and are not how MCP tools are allowlisted.
   if (adapterId === 'cursor-agent') return ['--approve-mcps'];
   return [];
 }
@@ -442,14 +456,15 @@ function safeList(dir: string): string[] {
   try { return readdirSync(dir); } catch { return []; }
 }
 
-export type CreateChat = () => Promise<string>;
+export type CreateChat = (cwd?: string) => Promise<string>;
 
 /** `cursor-agent create-chat` prints a UUID and exits. Used so interactive launch already has a session id. */
-export function cursorCreateChat(command = 'cursor-agent', timeoutMs = 15_000): Promise<string> {
+export function cursorCreateChat(command = 'cursor-agent', timeoutMs = 15_000, cwd?: string): Promise<string> {
   const resolved = resolveCommand(command) ?? command;
   return new Promise((resolve, reject) => {
     const spec = spawnCommand(resolved, ['create-chat']);
     const child = spawn(spec.command, spec.args, {
+      cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: spec.windowsHide,
       ...(spec.windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
@@ -557,12 +572,19 @@ export class CliAdapter implements LauncherAdapter {
     this.assertModel(opts.model);
     let sessionId: string | undefined;
     if (this.id === 'cursor-agent') {
-      sessionId = await (this.createChat ?? (() => cursorCreateChat(this.executable())))();
+      const create = this.createChat ?? ((dir?: string) => cursorCreateChat(this.executable(), 15_000, dir));
+      sessionId = await create(opts.cwd);
     }
-    const args = this.withManaged(this.launchArgv(opts.model, opts.prompt, sessionId), opts.env);
+    const delivery = opts.promptDelivery ?? 'argv';
+    const argvPrompt = delivery === 'argv' ? opts.prompt : '';
+    const args = this.withManaged(this.launchArgv(opts.model, argvPrompt, sessionId), opts.env);
     rejectUnsafe(args);
     const sinceMs = Date.now();
-    const child = this.spawnInteractive(args, opts);
+    const child = this.spawnInteractive(args, {
+      ...opts,
+      prompt: delivery === 'stdin' ? opts.prompt : argvPrompt,
+      stdinSubmit: delivery === 'stdin',
+    });
     if (!sessionId) {
       if (this.id === 'codex') sessionId = await this.waitCodexSession({ cwd: opts.cwd, sinceMs });
       else if (this.id === 'agy') sessionId = await this.waitAgyConversation({ cwd: opts.cwd, sinceMs });
@@ -583,10 +605,12 @@ export class CliAdapter implements LauncherAdapter {
   }
 
   private withManaged(args: readonly string[], env: Record<string, string>): string[] {
-    const extra = env.AGENT_ROOM_MANAGED === '1' ? managedApprovalArgs(this.id, env) : [];
+    const extra = env.AGENT_ROOM_MANAGED === '1' ? [...managedApprovalArgs(this.id, env)] : [];
     if (extra.length === 0) return [...args];
-    const prompt = args[args.length - 1] ?? '';
-    return [...args.slice(0, -1), ...extra, prompt];
+    const last = args[args.length - 1] ?? '';
+    const lastIsPrompt = last !== '' && !last.startsWith('-');
+    if (!lastIsPrompt) return [...args, ...extra];
+    return [...args.slice(0, -1), ...extra, last];
   }
 
   private spawnInteractive(args: readonly string[], opts: LaunchOptions): SpawnedProcess {
@@ -634,9 +658,15 @@ const CURSOR: AdapterDefinition = {
   models: ['grok-4.7-high', 'grok-4.7'],
   launchArgs: (model, prompt, sessionId) => {
     if (!sessionId) throw new Error('launcher_unavailable');
-    return ['--resume', sessionId, '--model', model, '--trust', prompt];
+    const args = ['--resume', sessionId, '--model', model, '--trust'];
+    if (prompt) args.push(prompt);
+    return args;
   },
-  resumeArgs: (sessionId, model, prompt) => ['--resume', sessionId, '--model', model, '--trust', prompt],
+  resumeArgs: (sessionId, model, prompt) => {
+    const args = ['--resume', sessionId, '--model', model, '--trust'];
+    if (prompt) args.push(prompt);
+    return args;
+  },
   pick: pickInitSession,
 };
 
@@ -910,10 +940,12 @@ function tailLog(path: string, stopped: () => boolean): AsyncIterable<string> {
 function windowsSeatConsole(
   command: string,
   args: readonly string[],
-  opts: { cwd: string; env: Record<string, string>; prompt?: string; terminalTitle?: string },
+  opts: { cwd: string; env: Record<string, string>; prompt?: string; terminalTitle?: string; stdinSubmit?: boolean },
   logFile: string,
 ): CommandSpawn {
-  const split = splitPromptArg(args, opts.prompt ?? '');
+  const split = opts.stdinSubmit
+    ? { args: [...args], promptIndex: -1 }
+    : splitPromptArg(args, opts.prompt ?? '');
   const seatId = basename(logFile).replace(/\.log$/i, '') || 'seat';
   return prepareWindowsSeatLaunch({
     directory: dirname(logFile),
@@ -922,6 +954,7 @@ function windowsSeatConsole(
     args: split.args,
     promptIndex: split.promptIndex,
     prompt: opts.prompt ?? '',
+    stdinSubmit: opts.stdinSubmit,
     cwd: opts.cwd,
     env: opts.env,
     nodePath: process.execPath,
@@ -1048,11 +1081,27 @@ export function nodeSpawner(): ProcessSpawner {
       // The prompt is a file. cmd.exe only runs the launcher, so newlines in the
       // prompt cannot split the command.
       const interactiveWin = process.platform === 'win32' && Boolean(opts.terminalTitle);
-      const wrapped: CommandSpawn = interactiveWin
-        ? windowsSeatConsole(command, args, opts, logFile)
-        : opts.terminalTitle
-          ? wrapInTerminal(command, args, opts.terminalTitle)
-          : spawnCommand(command, args);
+      const consoleSubmit = opts.stdinSubmit === true && Boolean(opts.prompt) && !shouldEmbedTerminal(opts);
+      let wrapped: CommandSpawn;
+      if (consoleSubmit && !interactiveWin) {
+        const launch = stdinSubmitCommand({
+          directory: logDir,
+          command,
+          args,
+          prompt: opts.prompt ?? '',
+          cwd: existingDirectory(opts.cwd),
+          env: opts.env,
+        });
+        wrapped = opts.terminalTitle
+          ? wrapInTerminal(launch.command, launch.args, opts.terminalTitle)
+          : { command: launch.command, args: launch.args, windowsHide: false };
+      } else if (interactiveWin) {
+        wrapped = windowsSeatConsole(command, args, opts, logFile);
+      } else if (opts.terminalTitle) {
+        wrapped = wrapInTerminal(command, args, opts.terminalTitle);
+      } else {
+        wrapped = spawnCommand(command, args);
+      }
       // Record the intended agent argv for diagnostics (never secrets).
       try {
         writeFileSync(logFile, `# spawn ${wrapped.command} ${JSON.stringify(wrapped.args)}\n`, { flag: 'a', mode: 0o600 });

@@ -136,6 +136,11 @@ export class WakeTestRedis {
       const total = this.get(second);
       if (total === null) return -1;
       if (Number(b) > Number(total)) return -2;
+      const existing = this.get(third);
+      if (existing) {
+        const old = Number(JSON.parse(existing).cursor);
+        if (Number.isFinite(old) && Number(b) < old) return 2;
+      }
       this.put(third, c!, Number(d)); return 1;
     }
     if (script === LISTEN_EPOCH_SCRIPT) {

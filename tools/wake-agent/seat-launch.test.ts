@@ -2,7 +2,26 @@ import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { expandEnvVars, resolveCli } from './src/seat-launch.mjs';
+import { cliLaunchPlan, expandEnvVars, resolveCli } from './src/seat-launch.mjs';
+
+describe('cliLaunchPlan', () => {
+  it('types a system-console prompt and CR without putting it on argv', () => {
+    const plan = cliLaunchPlan({
+      args: ['--resume', 'id', '--trust', '--approve-mcps'],
+      promptIndex: -1,
+      stdinSubmit: true,
+    }, '执行唤醒监听，动作游标=0\n下一行');
+    expect(plan.stdinSubmit).toBe(true);
+    expect(plan.stdinChunk).toBe('执行唤醒监听，动作游标=0\n下一行\r');
+    expect(plan.args).toEqual(['--resume', 'id', '--trust', '--approve-mcps']);
+    expect(plan.args.join('\n')).not.toContain('动作游标');
+  });
+
+  it('still splices an argv prompt when stdin submit is off', () => {
+    const plan = cliLaunchPlan({ args: ['--trust'], promptIndex: 1 }, 'hello');
+    expect(plan).toEqual({ args: ['--trust', 'hello'], stdinSubmit: false, stdinChunk: '' });
+  });
+});
 
 describe('expandEnvVars', () => {
   it('expands %SystemRoot% case-insensitively', () => {

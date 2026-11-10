@@ -138,8 +138,8 @@ describe('board inbox on join and listen', () => {
       required: true, kind: 'task_work', action: 'execute_task', taskId: 'T-12B',
     });
     expect(res.nextAction.instruction).toContain('do not call room_listen first');
-    expect(res.hint).toContain('BOARD WORK OVERRIDES PRESENCE');
-    expect(res.hint).not.toContain('NEXT (required): room_listen');
+    expect(res.hint ?? '').not.toContain('BOARD WORK OVERRIDES PRESENCE');
+    expect(res.hint ?? '').not.toContain('NEXT (required): room_listen');
   });
 
   it('keeps active task execution ahead of listening after a status send', async () => {

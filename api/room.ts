@@ -116,8 +116,8 @@ async function dispatchRoomHttpAction(
         throw new RemoteRoomApiError('name, seatKey, and cursor are required', 400, 'bad_request');
       }
       try {
-        const seat = await new RedisWakeStore(client.store).sleep(str(p.code), name, seatKey, cursor, Date.now());
-        return { ok: true, cursor, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId };
+        const seat = await new RedisWakeStore(client.store).sleep(str(p.code), name, seatKey, cursor, Date.now(), 'http');
+        return { ok: true, cursor: seat.cursor, keptHigher: seat.keptHigher, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId };
       } catch (error) {
         const message = error instanceof Error ? error.message : 'seat_unauthorized';
         throw new RemoteRoomApiError(message, message === 'seat_unauthorized' ? 403 : 400, message);

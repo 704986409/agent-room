@@ -253,6 +253,8 @@ async function runDaemonLocked(statePath: string, mode: {
     stateDir,
     roomsDir: process.env.AGENT_ROOM_ROOMS_DIR?.trim() || defaultRoomsDir(stateDir),
     secrets,
+    terminalMode,
+    readSeatOutput: seatId => getPtySession(seatId)?.scrollback() ?? '',
     writeSeatStdin: (seatId, data) => {
       const session = getPtySession(seatId);
       if (!session) {

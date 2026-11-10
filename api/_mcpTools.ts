@@ -80,7 +80,7 @@ import {
   nextListenAction,
   nextSleepAction,
   NEXT_LISTEN,
-  quietSleepHint,
+  pageListenMessages,
   runListen,
   type WakeOn,
 } from './_mcpListen.js';
@@ -509,7 +509,6 @@ async function dispatch(
       const wakeOn: WakeOn = a.wakeOn === 'addressed' ? 'addressed' : 'any';
       const result = await runListen(client, a.code, since, timeoutMs, selfName, wakeOn);
       let replyMode: string | undefined;
-      let roomPolicy: string | undefined;
       let isModerator = false;
       // Kept outside the try so a quiet timeout can still shape the next
       // call's arguments — a quiet hold is exactly the round trip where
@@ -520,27 +519,22 @@ async function dispatch(
           room = await getRoom(client, a.code);
           replyMode = room.replyMode ?? 'open';
           if (selfName) isModerator = isConfiguredModerator(room, selfName, 'cc');
-          // Re-brief on every listen that actually returns messages — i.e.
-          // right before the agent decides what to do. A one-shot line at join
-          // is invisible 170 messages later, and the host can switch the room's
-          // mode at any time (setReplyMode), so the contract the agent joined
-          // under may no longer be the one it is acting under. Quiet timeouts
-          // return nothing to act on and stay lean.
-          if (selfName && result.messages.length > 0) {
-            roomPolicy = policyFor(room, selfName);
-          }
+          // replyMode on the result is the live mode. The long roomPolicy text
+          // is returned once at join, not on every listen.
         } catch { /* best effort */ }
       }
+      const paged = pageListenMessages(since, result.messages, result.cursor);
+      const visible = paged.messages;
       const nextPrefs = listenPrefsFor({ timeoutMs, wakeOn }, room, isModerator, harness, selfName);
       let digestFields = {};
-      if (!result.terminated && result.messages.length > 0) {
+      if (!result.terminated && !paged.more && visible.length > 0) {
         // since=0 already returned the full list; don't issue a second read
         // (and don't assume the client always returns a thenable).
         const all = since === 0
-          ? result.messages
+          ? visible
           : await Promise.resolve(listMessages(client, a.code, 0)).then(
-            listed => (Array.isArray(listed) ? listed : listed?.messages) ?? result.messages,
-            () => result.messages,
+            listed => (Array.isArray(listed) ? listed : listed?.messages) ?? visible,
+            () => visible,
           );
         digestFields = contextFields(all);
       }
@@ -563,7 +557,7 @@ async function dispatch(
         try {
           const settled = await settleManagedRead(client.store, {
             code: a.code, name: selfName, managed: managedListen, since,
-            messages: result.messages, timeoutMs,
+            messages: visible, timeoutMs,
           });
           if (settled) {
             managedCursor = settled.cursor;
@@ -571,7 +565,7 @@ async function dispatch(
           }
         } catch { /* ordinary listen result; receipt can be retried */ }
       }
-      const messages = result.messages.map(slimMessage);
+      const messages = visible.map((message, index) => ({ ...slimMessage(message), cursor: paged.start + index }));
       // Read the board on EVERY hold that returns, not only the ones that
       // returned messages. A quiet hold used to skip it to stay lean, which
       // meant an agent holding 40s–240s with an open task of its own got
@@ -582,9 +576,9 @@ async function dispatch(
         ? { toVerify: [], toDo: [], current: [], queued: [], hint: '' }
         : await boardInbox(client, profile, a.code, selfName ?? '', result.addressedYou === true, room?.replyMode);
       const mustWork = inboxRequiresWork(inbox);
-      const cursor = managedCursor ?? result.cursor;
+      const cursor = paged.more ? paged.cursor : (managedCursor ?? result.cursor);
       const addressed = !result.terminated && (
-        result.addressedYou === true || messagesAddressCaller(result.messages, selfName, room)
+        result.addressedYou === true || messagesAddressCaller(visible, selfName, room)
       );
       // Managed seats: one quiet round with nothing to do is room_sleep, then
       // end the turn. The wake prompt already says this; a presence nextAction
@@ -599,24 +593,15 @@ async function dispatch(
           cursor,
           listenStatus: 'sleep',
           stay: false,
-          meaning: 'listenStatus=sleep: this Quiet IS the stop condition for a managed seat. Call room_sleep with nextAction.arguments once, then end the turn with no further tool call. Do NOT call room_listen again.',
           nextAction: nextSleepAction(a.code, cursor, selfName, managedSeatKey),
           ...(listenEpoch ? { listenEpoch } : {}),
-          ...(replyMode ? { replyMode } : {}),
-          hint: quietSleepHint(a.code, cursor, selfName, managedSeatKey),
+          ...(replyMode ? { replyMode, policyVersion: ROOM_POLICY_VERSION } : {}),
         }, [], structured);
       }
       const showBoard = mustWork || messages.length > 0;
-      const hint = [
-        isModerator && result.messages.length > 0
-          ? "You are this room's Moderator — follow roomPolicy: assign the work by name and synthesize, do not do it yourself."
-          : '',
-        showBoard ? inbox.hint : '',
-        mustWork
-          ? `${messages.length > 0 ? `${messages.length} new message(s). ` : ''}`
-            + 'BOARD WORK OVERRIDES PRESENCE; do not call room_listen before the required board transition.'
-          : result.hint,
-      ].filter(Boolean).join(' ');
+      const hint = result.terminated
+        ? result.hint
+        : (showBoard && inbox.hint ? inbox.hint : '');
       const overlaid = applyAddressedReply(
         result.terminated ? undefined : nextActionForInbox(inbox, a.code, cursor, selfName, nextPrefs),
         hint,
@@ -635,15 +620,12 @@ async function dispatch(
         ...(result.addressedYou ? { addressedYou: true } : {}),
         ...(result.terminated ? { terminated: result.terminated } : {}),
         ...(overlaid.nextAction ? { nextAction: overlaid.nextAction } : {}),
+        ...(paged.more ? { more: true } : {}),
         ...(listenEpoch ? { listenEpoch } : {}),
         ...(showBoard && inbox.hint ? { yourTasks: inbox } : {}),
-        ...(replyMode ? { replyMode } : {}),
-        ...(roomPolicy ? { roomPolicy, policyVersion: ROOM_POLICY_VERSION } : {}),
-        // The Moderator reminder rides along with the brief, on listens that
-        // actually returned something to act on. Knowing the seat is a
-        // Moderator is now also needed for wakeOn, which is why the flag is
-        // computed on quiet holds too — but a quiet hold stays lean.
-        hint: overlaid.hint,
+        ...(replyMode ? { replyMode, policyVersion: ROOM_POLICY_VERSION } : {}),
+        ...(isModerator ? { moderator: true } : {}),
+        ...(overlaid.hint ? { hint: overlaid.hint } : {}),
       }, await hydrateListenImages(messages), structured);
     }
 
@@ -708,9 +690,9 @@ async function dispatch(
         return ok({ slept: false, error: 'bad_request' }, [], structured);
       }
       try {
-        const seat = await new RedisWakeStore(client.store).sleep(a.code, name, seatKey, cursor, Date.now());
-        console.info(`[listen] room_sleep roomCode=${a.code} seatId=${seat.seatId} cursor=${cursor}`);
-        return ok({ slept: true, cursor, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId }, [], structured);
+        const seat = await new RedisWakeStore(client.store).sleep(a.code, name, seatKey, cursor, Date.now(), 'mcp');
+        console.info(`[listen] room_sleep roomCode=${a.code} seatId=${seat.seatId} requested=${cursor} stored=${seat.cursor} keptHigher=${seat.keptHigher ? 1 : 0}`);
+        return ok({ slept: true, cursor: seat.cursor, keptHigher: seat.keptHigher, roomInstanceId: seat.roomInstanceId, seatId: seat.seatId }, [], structured);
       } catch (error) {
         const code = error instanceof Error ? error.message : 'seat_unauthorized';
         console.info(`[listen] room_sleep failed roomCode=${a.code} reason=${code}`);

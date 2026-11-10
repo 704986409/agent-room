@@ -60,7 +60,7 @@ describe('reuseWakePrompt', () => {
       readFrom: 12,
       seatKey: 'seat-key-secret',
     });
-    expect(short).toBe('执行唤醒监听，动作游标=12');
+    expect(short).toBe('执行唤醒监听，动作游标=12（仅 room_listen 的 since，禁止当作 room_sleep 的 cursor）');
     expect(short.length).toBeLessThan(full.length);
     expect(short).not.toContain('seatKey');
     expect(short).not.toContain('since:');

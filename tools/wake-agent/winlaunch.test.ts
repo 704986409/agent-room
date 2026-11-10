@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { CODEX_MANAGED_MCP_APPROVAL, embeddedSeatCommand } from './src/adapter.js';
-import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, windowsConsoleArg } from './src/winlaunch.js';
+import { existingDirectory, prepareWindowsSeatLaunch, splitPromptArg, stdinSubmitCommand, windowsConsoleArg } from './src/winlaunch.js';
 
 const PROMPT = '你是房间 "甲"\n1) room_listen({ code: "ABC", name: "席" })\n说 ""你好""\n第二行';
 
@@ -91,6 +91,8 @@ describe('windows seat launcher', () => {
       expect(spec.args.join(' ')).not.toContain('.cmd');
       const launch = JSON.parse(await readFile(join(directory, `${adapter}.launch.json`), 'utf8')) as { args: string[]; env: typeof env };
       expect(launch.args).toContain(adapter === 'codex' ? CODEX_MANAGED_MCP_APPROVAL : '--approve-mcps');
+      expect(launch.args).not.toContain('--yolo');
+      expect(launch.args).not.toContain('--force');
       expect(launch.env).toMatchObject(env);
       expect(await readFile(join(directory, `${adapter}.prompt.txt`), 'utf8')).toBe(prompt);
     }
@@ -154,6 +156,46 @@ describe('windows seat launcher', () => {
     const prompt = '你好\n"next"';
     const split = splitPromptArg(['-i', prompt, '--model', 'gemini-3.8-flash-high'], prompt);
     expect(split).toEqual({ args: ['-i', '--model', 'gemini-3.8-flash-high'], promptIndex: 1 });
+  });
+});
+
+describe('stdin submit launch spec', () => {
+  it('keeps the prompt out of argv and marks stdinSubmit for the system console', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'Agent Room stdin '));
+    const prepared = prepareWindowsSeatLaunch({
+      directory,
+      seatId: 'st_stdin',
+      command: 'cursor-agent.cmd',
+      args: ['--resume', 'id', '--model', 'grok-4.7-high', '--trust', '--approve-mcps'],
+      promptIndex: 99,
+      prompt: '执行唤醒监听，动作游标=0',
+      stdinSubmit: true,
+      cwd: directory,
+      env: { AGENT_ROOM_MANAGED: '1' },
+      nodePath: process.execPath,
+    });
+    const spec = JSON.parse(await readFile(prepared.specPath, 'utf8')) as {
+      args: string[];
+      promptIndex: number;
+      stdinSubmit?: boolean;
+    };
+    expect(spec.stdinSubmit).toBe(true);
+    expect(spec.promptIndex).toBe(-1);
+    expect(spec.args).not.toContain('执行唤醒监听，动作游标=0');
+    expect(await readFile(prepared.promptPath, 'utf8')).toBe('执行唤醒监听，动作游标=0');
+    const linux = stdinSubmitCommand({
+      directory,
+      command: 'cursor-agent',
+      args: spec.args,
+      prompt: '执行唤醒监听，动作游标=0',
+      cwd: directory,
+      env: { AGENT_ROOM_MANAGED: '1' },
+    });
+    expect(linux.args[0]).toMatch(/seat-launch\.mjs$/);
+    const linuxSpec = JSON.parse(await readFile(linux.args[1]!, 'utf8')) as { stdinSubmit?: boolean; promptIndex: number; args: string[] };
+    expect(linuxSpec.stdinSubmit).toBe(true);
+    expect(linuxSpec.promptIndex).toBe(-1);
+    expect(linuxSpec.args.join(' ')).not.toContain('动作游标');
   });
 });
 

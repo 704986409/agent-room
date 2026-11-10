@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CodexCliAdapter, createCursorAdapter, type ProcessSpawner, type SpawnedProcess } from './src/adapter.js';
 import { MemoryCredentialStore } from './src/credstore.js';
-import { FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
+import { cursorFirstSubmit, decideCursorFirstEnter, FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { reuseWakePrompt, wakePrompt } from './src/prompt.js';
@@ -945,7 +945,7 @@ describe('state file round trip', () => {
     const expected = reuseWakePrompt({
       code: 'ABC-DEF-GHJ', name: 'codex-a', readFrom: 183, seatKey: 'seat-key-secret',
     });
-    expect(expected).toBe('执行唤醒监听，动作游标=183');
+    expect(expected).toBe('执行唤醒监听，动作游标=183（仅 room_listen 的 since，禁止当作 room_sleep 的 cursor）');
     expect(writes).toEqual([`\x1b[200~${expected}\x1b[201~`, '\r']);
     expect(daemon.seats[0]).toMatchObject({ status: 'running', pid: 4242, sessionId: 'thr_9' });
   });
@@ -1010,7 +1010,8 @@ describe('state file round trip', () => {
     const prompt = child.calls[0]!.args.at(-1)!;
     expect(prompt).toContain('执行唤醒监听，动作游标=3');
     expect(prompt).toContain('AGENTS.md');
-    expect(prompt).toContain('AGENT_ROOM_SEAT_KEY');
+    expect(prompt).toContain('mcp-shim');
+    expect(prompt).not.toContain('AGENT_ROOM_SEAT_KEY');
     expect(prompt).toContain('不要读 state.md');
     expect(prompt).not.toContain(seat.rulesPath!);
     expect(prompt).not.toContain('super-secret-key');
@@ -1071,5 +1072,100 @@ describe('state file round trip', () => {
     expect(left).toEqual([{ code: 'ABC-DEF-GHJ', name: 'codex-a' }]);
     expect(daemon.seats).toEqual([]);
     expect(await creds.get('seat:st_a')).toBeUndefined();
+  });
+
+  it('submits the first Cursor prompt with Enter when a PTY writer exists', async () => {
+    expect(decideCursorFirstEnter('')).toBe('wait');
+    expect(decideCursorFirstEnter('Cursor Agent\n')).toBe('submit');
+    expect(decideCursorFirstEnter('Add a follow-up')).toBe('submit');
+    expect(cursorFirstSubmit({ terminalMode: 'embedded', hasWriter: true })).toBe('pty');
+    expect(cursorFirstSubmit({ terminalMode: 'system', hasWriter: true })).toBe('stdin');
+    expect(cursorFirstSubmit({ terminalMode: 'system', hasWriter: false })).toBe('stdin');
+    expect(cursorFirstSubmit({ terminalMode: 'embedded', hasWriter: false })).toBe('argv');
+    const child = spawner([]);
+    const writes: { seatId: string; data: string }[] = [];
+    const logs: string[] = [];
+    let seenCwd: string | undefined;
+    const directory = await mkdtemp(join(tmpdir(), 'wake-cursor-first-'));
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['cursor-agent', createCursorAdapter(child, {
+        directSpawn: true,
+        createChat: async cwd => { seenCwd = cwd; return '22222222-2222-4222-8222-222222222222'; },
+      })]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'cursor-agent' }),
+      log: line => logs.push(line),
+      server: 'http://127.0.0.1:9',
+      roomsDir: join(directory, 'rooms'),
+      terminalMode: 'embedded',
+      injectEnterDelayMs: 0,
+      firstSubmitWaitMs: 0,
+      writeSeatStdin: (seatId, data) => { writes.push({ seatId, data }); return true; },
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 0, name: 'cursor-a' }),
+    });
+    const seat = await daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'cursor-a',
+      cwd: '/work', adapterId: 'cursor-agent', model: 'grok-4.7-high',
+    });
+    expect(seenCwd).toBe(seat.cwd);
+    expect(child.calls[0]!.args).toContain('--approve-mcps');
+    expect(child.calls[0]!.args).not.toContain('--yolo');
+    expect(child.calls[0]!.args).not.toContain('--force');
+    expect(child.calls[0]!.args.join('\n')).not.toContain('执行唤醒监听');
+    expect(writes.map(write => write.data)[0]).toContain('执行唤醒监听，动作游标=0');
+    expect(writes.map(write => write.data)[1]).toBe('\r');
+    expect(logs.join('\n')).toContain('cursor first-submit');
+    expect(logs.join('\n')).toContain('enter=1');
+    expect(logs.join('\n')).toContain('promptDelivery=pty');
+    const cli = JSON.parse(await readFile(join(seat.seatDir!, '.cursor', 'cli.json'), 'utf8')) as {
+      approvalMode?: string;
+      permissions: { allow: string[]; deny?: string[] };
+    };
+    expect(cli.approvalMode).toBeUndefined();
+    expect(cli.permissions.allow).toContain('Mcp(agent-room:*)');
+    expect(cli.permissions.deny).toBeUndefined();
+    expect(Object.keys(cli.permissions)).not.toContain('deny');
+    expect(JSON.stringify(cli)).not.toContain('unrestricted');
+  });
+
+  it('system console first Cursor launch types via stdin instead of an argv draft', async () => {
+    const seen: { args: string[]; prompt?: string; stdinSubmit?: boolean; cwd?: string }[] = [];
+    const writes: string[] = [];
+    let chatCwd: string | undefined;
+    const directory = await mkdtemp(join(tmpdir(), 'wake-cursor-system-'));
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['cursor-agent', createCursorAdapter({
+        spawn(command, args, opts) {
+          seen.push({ args: [...args], prompt: opts.prompt, stdinSubmit: opts.stdinSubmit, cwd: opts.cwd });
+          return { pid: 401, stdout: (async function* () { /* empty */ })(), exited: new Promise(() => {}) };
+          void command;
+        },
+      }, {
+        directSpawn: true,
+        createChat: async cwd => { chatCwd = cwd; return '22222222-2222-4222-8222-222222222222'; },
+      })]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'cursor-agent' }),
+      server: 'http://127.0.0.1:9',
+      roomsDir: join(directory, 'rooms'),
+      terminalMode: 'system',
+      writeSeatStdin: (_seatId, data) => { writes.push(data); return true; },
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 0, name: 'cursor-a' }),
+    });
+    const seat = await daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'cursor-a',
+      cwd: '/work', adapterId: 'cursor-agent', model: 'grok-4.7-high',
+    });
+    expect(chatCwd).toBe(seat.cwd);
+    expect(seen[0]!.stdinSubmit).toBe(true);
+    expect(seen[0]!.prompt).toContain('执行唤醒监听，动作游标=0');
+    expect(seen[0]!.args.join('\n')).not.toContain('执行唤醒监听');
+    expect(seen[0]!.args).toContain('--approve-mcps');
+    expect(seen[0]!.args).not.toContain('--yolo');
+    expect(writes).toEqual([]);
   });
 });

@@ -104,6 +104,11 @@ describe('absolute cursors and generation', () => {
     expect(readStart([pending()], seat, 0)).toEqual({ readFrom: 184 });
     expect(readStart([pending()], seat, 185, 120)).toEqual({ readFrom: 185, gap: [120, 185] });
     expect(readStart([messageEvent(seat, 100, msg(), 1_000, 700_000_000)], seat, 0, 100)).toEqual({ readFrom: 100 });
+    expect(readStart([messageEvent(seat, 8, msg(), 1_000, 700_000_000)], seat, 0, 7)).toEqual({ readFrom: 7 });
+    expect(readStart([
+      messageEvent(seat, 0, msg(), 1_000, 700_000_000),
+      messageEvent(seat, 8, msg(), 1_000, 700_000_000),
+    ], seat, 0, 7)).toEqual({ readFrom: 0 });
     expect(() => readStart([], seat, 0)).toThrow('cursor_required');
   });
   it('requires registration history and rejects unreliable, negative, fractional and future cursors', () => {
