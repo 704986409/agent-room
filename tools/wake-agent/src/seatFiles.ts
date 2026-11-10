@@ -170,13 +170,17 @@ export function isLoopbackMcpShimUrl(url: string): boolean {
 /**
  * Seat-cwd Cursor CLI permissions. Tool allowlist only — not approvalMode
  * unrestricted / --yolo (those would allow shell commands too).
- * `deny` is omitted: a project cli.json replaces arrays it sets, and omitting
- * `deny` keeps the user's deny list. This file never deletes or clears a deny.
+ * Current CLI schema requires permissions.deny to be a string array; omitting
+ * it fails validation of the seat project file (`create-chat` exits 1).
+ * The seat `.cursor/cli.json` lives in the managed temp seat directory and
+ * uses `deny: []` so the schema check passes. This does not edit the user's
+ * ~/.cursor/cli-config.json.
  */
 export function cursorSeatCliConfig(alias = DEFAULT_MCP_ALIAS): string {
   return `${JSON.stringify({
     permissions: {
       allow: [`Mcp(${alias}:*)`],
+      deny: [],
     },
   }, null, 2)}\n`;
 }

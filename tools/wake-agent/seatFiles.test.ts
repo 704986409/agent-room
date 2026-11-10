@@ -122,12 +122,12 @@ describe('seatFiles layout', () => {
     expect(mcp).not.toContain('seat-key-secret');
     const cli = JSON.parse(await readFile(join(written.seatDir, '.cursor', 'cli.json'), 'utf8')) as {
       approvalMode?: string;
-      permissions: { allow: string[]; deny?: unknown };
+      permissions: { allow: string[]; deny: unknown };
     };
     expect(cli).toEqual(JSON.parse(cursorSeatCliConfig()));
     expect(cli.approvalMode).toBeUndefined();
     expect(cli.permissions.allow).toEqual(['Mcp(agent-room:*)']);
-    expect(Object.keys(cli.permissions)).not.toContain('deny');
+    expect(cli.permissions.deny).toEqual([]);
     expect(JSON.stringify(cli)).not.toContain('unrestricted');
 
     // Codex seats do not get a project mcp.json (they use -c overrides).

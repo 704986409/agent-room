@@ -1121,12 +1121,11 @@ describe('state file round trip', () => {
     expect(logs.join('\n')).toContain('promptDelivery=pty');
     const cli = JSON.parse(await readFile(join(seat.seatDir!, '.cursor', 'cli.json'), 'utf8')) as {
       approvalMode?: string;
-      permissions: { allow: string[]; deny?: string[] };
+      permissions: { allow: string[]; deny: string[] };
     };
     expect(cli.approvalMode).toBeUndefined();
     expect(cli.permissions.allow).toContain('Mcp(agent-room:*)');
-    expect(cli.permissions.deny).toBeUndefined();
-    expect(Object.keys(cli.permissions)).not.toContain('deny');
+    expect(cli.permissions.deny).toEqual([]);
     expect(JSON.stringify(cli)).not.toContain('unrestricted');
   });
 
