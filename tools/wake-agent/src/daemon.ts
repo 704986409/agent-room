@@ -155,10 +155,22 @@ export interface WakeDaemonOptions {
    * mechanism differs (PTY type+CR vs launcher stdin+CR).
    */
   terminalMode?: 'embedded' | 'system';
-  /** Scrollback for the embedded PTY. Used to wait until the Cursor composer is up. */
+  /** Scrollback for the embedded PTY. Cumulative raw bytes, not the visible screen. */
   readSeatOutput?: (seatId: string) => string;
-  /** How long to wait for the Cursor banner before typing the first prompt. Tests use 0. */
+  /**
+   * Live PTY size. Production embedded sessions start at 80×24 and can be resized.
+   * The visible-screen reducer uses this so cursor motion matches the real grid.
+   */
+  readSeatTermSize?: (seatId: string) => { cols: number; rows: number } | undefined;
+  /**
+   * `<= 0` types the first prompt immediately (unit-test fixture; no screen wait).
+   * Omitted or `> 0` does not block `startAgent`: a background watch renders the
+   * cumulative scrollback and types that same prompt once when the visible
+   * screen is an idle composer. A slow splash is not an abandon timeout.
+   */
   firstSubmitWaitMs?: number;
+  /** Delay between visible-screen polls while the first prompt is still waiting. */
+  firstSubmitPollMs?: number;
   /**
    * Delay between typing the inject prompt and sending Enter (CR).
    * Default 250ms — must exceed Codex paste-burst Enter suppress (120ms) plus
@@ -167,10 +179,229 @@ export interface WakeDaemonOptions {
   injectEnterDelayMs?: number;
 }
 
-/** Banner means the composer can take the first prompt. Empty output is still starting. */
-export function decideCursorFirstEnter(output: string): 'submit' | 'wait' {
-  if (/Cursor Agent/i.test(output) || /Add a follow-up/i.test(output)) return 'submit';
+/**
+ * Embedded PTY default from `pty.ts` (`cols ?? 80`, `rows ?? 24`). Desktop
+ * resize is read from the live session when `readSeatTermSize` is set.
+ */
+const CURSOR_SCREEN_COLS = 80;
+const CURSOR_SCREEN_ROWS = 24;
+
+/**
+ * Idle composer placeholders in Cursor CLI 2026.11.10-731fb78, the ternary
+ * `Oe ? "Plan, search, build anything" : "Add a follow-up"`. The first painted
+ * TUI already shows the true-branch string on the same screen as `Tip:`.
+ * `Tip:` is also painted after submit, so it is not a ready/busy switch.
+ * "ctrl+c to stop" beside "Add a follow-up", or a visible Working status, means
+ * a turn is already in progress.
+ */
+export const CURSOR_COMPOSER_PLACEHOLDER = 'Plan, search, build anything';
+const CURSOR_FOLLOW_UP_PLACEHOLDER = 'Add a follow-up';
+
+/**
+ * Reduce cumulative PTY bytes to the current visible grid.
+ * Handles the sequences the Cursor TUI actually emits: CSI cursor motion,
+ * EL/ED (`ESC[2K`, `ESC[2J`, `ESC[3J`), CR/LF, and OSC/private modes that
+ * must not be treated as text. `ESC[3J` clears scrollback only; the visible
+ * cells change when `ESC[2J` or `ESC[1A`+`ESC[2K` rewrites them.
+ * Truncating the raw string does not do this — erased cells are gone here
+ * even when the old letters are still in the byte buffer.
+ */
+export function renderVisibleScreen(input: string, cols = CURSOR_SCREEN_COLS, rows = CURSOR_SCREEN_ROWS): string {
+  const width = Math.max(2, Math.floor(cols) || CURSOR_SCREEN_COLS);
+  const height = Math.max(1, Math.floor(rows) || CURSOR_SCREEN_ROWS);
+  const blank = () => Array.from({ length: width }, () => ' ');
+  const grid: string[][] = Array.from({ length: height }, () => blank());
+  let row = 0;
+  let col = 0;
+  let mode: 'ground' | 'esc' | 'csi' | 'osc' | 'osc-esc' = 'ground';
+  let csi = '';
+
+  const clampCol = (value: number) => Math.max(0, Math.min(width - 1, value));
+  const clampRow = (value: number) => Math.max(0, Math.min(height - 1, value));
+  const lineFeed = () => {
+    if (row >= height - 1) {
+      grid.shift();
+      grid.push(blank());
+      row = height - 1;
+      return;
+    }
+    row += 1;
+  };
+  const eraseLine = (arg: number) => {
+    const line = grid[row];
+    if (!line) return;
+    if (arg === 2) {
+      for (let i = 0; i < width; i++) line[i] = ' ';
+      return;
+    }
+    if (arg === 1) {
+      for (let i = 0; i <= col && i < width; i++) line[i] = ' ';
+      return;
+    }
+    for (let i = col; i < width; i++) line[i] = ' ';
+  };
+  const eraseScreen = (arg: number) => {
+    // ED 2 clears the visible screen. ED 3 clears saved scrollback only;
+    // those bytes are already outside this grid.
+    if (arg === 2) {
+      for (let r = 0; r < height; r++) grid[r] = blank();
+      return;
+    }
+    if (arg === 3) return;
+    if (arg === 1) {
+      for (let r = 0; r < row; r++) grid[r] = blank();
+      eraseLine(1);
+      return;
+    }
+    eraseLine(0);
+    for (let r = row + 1; r < height; r++) grid[r] = blank();
+  };
+  const applyCsi = (body: string) => {
+    if (!body) return;
+    const final = body.slice(-1);
+    const numeric = body.slice(0, -1).replace(/[?>]/g, '');
+    const parts = numeric.length ? numeric.split(';') : [];
+    const n = (index: number, fallback: number) => {
+      const raw = parts[index] ?? '';
+      if (!raw) return fallback;
+      const value = Number(raw);
+      return Number.isFinite(value) ? value : fallback;
+    };
+    if (final === 'A') row = clampRow(row - Math.max(1, n(0, 1)));
+    else if (final === 'B') row = clampRow(row + Math.max(1, n(0, 1)));
+    else if (final === 'C') col = clampCol(col + Math.max(1, n(0, 1)));
+    else if (final === 'D') col = clampCol(col - Math.max(1, n(0, 1)));
+    else if (final === 'G') col = clampCol(n(0, 1) - 1);
+    else if (final === 'H' || final === 'f') {
+      row = clampRow(n(0, 1) - 1);
+      col = clampCol(n(1, 1) - 1);
+    } else if (final === 'J') eraseScreen(n(0, 0));
+    else if (final === 'K') eraseLine(n(0, 0));
+  };
+
+  for (const ch of input) {
+    if (mode === 'osc') {
+      if (ch === '\x07') mode = 'ground';
+      else if (ch === '\x1b') mode = 'osc-esc';
+      continue;
+    }
+    if (mode === 'osc-esc') {
+      mode = ch === '\\' ? 'ground' : 'osc';
+      continue;
+    }
+    if (mode === 'esc') {
+      if (ch === '[') { mode = 'csi'; csi = ''; continue; }
+      if (ch === ']') { mode = 'osc'; continue; }
+      mode = 'ground';
+      continue;
+    }
+    if (mode === 'csi') {
+      csi += ch;
+      const code = ch.codePointAt(0) ?? 0;
+      if (code >= 0x40 && code <= 0x7e) {
+        applyCsi(csi);
+        mode = 'ground';
+      } else if (csi.length > 64) mode = 'ground';
+      continue;
+    }
+    if (ch === '\x1b') { mode = 'esc'; continue; }
+    if (ch === '\r') { col = 0; continue; }
+    if (ch === '\n') { lineFeed(); continue; }
+    if (ch === '\b') { col = clampCol(col - 1); continue; }
+    if (ch === '\t') {
+      col = clampCol(col + (8 - (col % 8)));
+      continue;
+    }
+    if (ch < ' ' || ch === '\x7f') continue;
+    if (col >= width) {
+      lineFeed();
+      col = 0;
+    }
+    const line = grid[row];
+    if (line) line[col] = ch;
+    col += 1;
+  }
+
+  const lines = grid.map(cells => cells.join('').replace(/[ \t]+$/g, ''));
+  let end = lines.length;
+  while (end > 0 && lines[end - 1] === '') end -= 1;
+  return lines.slice(0, end).join('\n');
+}
+
+function visibleLines(screen: string): string[] {
+  return screen.length ? screen.split('\n') : [];
+}
+
+/** Join wrapped rows so a placeholder split at the terminal width still matches. */
+function joinedVisible(lines: string[]): string {
+  return lines.map(line => line.replace(/[ \t]+$/g, '')).join('');
+}
+
+function cursorVisibleBusy(lines: string[]): boolean {
+  const nonTip = lines.filter(line => !line.includes('Tip:'));
+  if (nonTip.some(line => /(?:^|\s)Working\b/.test(line))) return true;
+  if (joinedVisible(nonTip).includes('Working')) return true;
+  const joined = joinedVisible(lines);
+  return joined.includes(CURSOR_FOLLOW_UP_PLACEHOLDER) && joined.includes('ctrl+c to stop');
+}
+
+function cursorVisibleIdle(lines: string[]): boolean {
+  const joined = joinedVisible(lines);
+  return joined.includes(CURSOR_COMPOSER_PLACEHOLDER) || joined.includes(CURSOR_FOLLOW_UP_PLACEHOLDER);
+}
+
+/**
+ * Decide from the current visible screen, not the raw scrollback.
+ * Empty, or no official idle placeholder yet → wait (do not type).
+ * Placeholder visible and the screen is not in progress → submit once.
+ * `Tip:` on that same screen is allowed. Visible Working, or
+ * "Add a follow-up" together with "ctrl+c to stop", stays wait.
+ */
+export function decideCursorFirstEnter(
+  output: string,
+  size?: { cols?: number; rows?: number },
+): 'submit' | 'wait' {
+  const screen = renderVisibleScreen(output, size?.cols ?? CURSOR_SCREEN_COLS, size?.rows ?? CURSOR_SCREEN_ROWS);
+  const lines = visibleLines(screen);
+  if (cursorVisibleBusy(lines)) return 'wait';
+  if (cursorVisibleIdle(lines)) return 'submit';
   return 'wait';
+}
+
+/** Status line the CLI paints immediately after a submit. Not a "Tip:" sentence that mentions the word. */
+export function cursorShowsWorking(output: string): boolean {
+  return /(?:^|[\r\n])\s*Working\b/.test(output);
+}
+
+/**
+ * The composer arrow still holds the unsent draft. Transcript text elsewhere
+ * does not count — after a real submit the same words move into the thread
+ * and the arrow line is the follow-up placeholder.
+ */
+export function cursorComposerHoldsDraft(output: string, prompt: string): boolean {
+  const probe = prompt.slice(0, 16);
+  if (!probe) return false;
+  const lines = output.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i] ?? '';
+    const arrow = line.lastIndexOf('→');
+    if (arrow === -1) continue;
+    return line.slice(arrow + 1).includes(probe);
+  }
+  return false;
+}
+
+/**
+ * Observable submit: Working (changelog) or the post-submit composer
+ * ("Add a follow-up" / "ctrl+c to stop") newly appeared, and the draft is
+ * no longer sitting on the arrow. write('\\r') alone is not a submit.
+ */
+export function cursorFirstSubmitLanded(before: string, after: string, prompt: string): boolean {
+  if (cursorComposerHoldsDraft(after, prompt)) return false;
+  const working = cursorShowsWorking(after) && !cursorShowsWorking(before);
+  const followUp = after.includes('Add a follow-up') && !before.includes('Add a follow-up');
+  const stopHint = after.includes('ctrl+c to stop') && !before.includes('ctrl+c to stop');
+  return working || followUp || stopHint;
 }
 
 /**
@@ -209,6 +440,10 @@ export class WakeDaemon {
   private readonly lastSleptAt = new Map<string, number>();
   /** Seats the user explicitly stopped. Polling must not spawn them again. */
   private readonly stoppedByUser = new Set<string>();
+  /** First Cursor prompt already written into this seat's composer. */
+  private readonly cursorFirstPromptSent = new Set<string>();
+  private readonly cursorFirstSubmitJobs = new Map<string, Promise<void>>();
+  private readonly cursorFirstSubmitNoted = new Set<string>();
   /** While deferring for live-listen grace, poll again soon instead of busy≥5s. */
   private static readonly GRACE_BUSY_WAIT_MS = 1_000;
 
@@ -468,7 +703,7 @@ export class WakeDaemon {
         logFile: this.logFile(registered.seatId),
       });
       this.logLine(`[host] launched roomCode=${input.code} seatId=${registered.seatId} adapter=${input.adapterId} pid=${launched.pid} cwd=${launchCwd}`);
-      if (delivery === 'pty') await this.submitCursorFirstPrompt(registered.seatId, prompt);
+      if (delivery === 'pty') await this.beginCursorFirstPrompt(registered.seatId, prompt);
       const seat: SeatRecord = {
         seatId: registered.seatId,
         roomInstanceId: registered.roomInstanceId,
@@ -764,39 +999,92 @@ export class WakeDaemon {
   }
 
   /**
-   * First Cursor launch on an embedded PTY. The prompt is not on argv, so this
-   * types it and sends CR — the same submit the second wake already uses.
+   * First Cursor launch on an embedded PTY. The prompt is not on argv.
+   * `firstSubmitWaitMs <= 0` types immediately (tests). Otherwise startAgent
+   * returns without waiting: a background watch types this same prompt once,
+   * and one CR, when the visible screen is an idle composer.
+   * Secondary @ wakes stay on tryInjectWake and are not handled here.
    */
-  private async submitCursorFirstPrompt(seatId: string, prompt: string): Promise<void> {
-    const write = this.options.writeSeatStdin;
-    if (!write || !prompt) {
-      this.logLine(`[host] cursor first-submit seatId=${seatId} enter=0 reason=no_writer`);
+  private async beginCursorFirstPrompt(seatId: string, prompt: string): Promise<void> {
+    const waitMs = this.options.firstSubmitWaitMs;
+    if (waitMs !== undefined && waitMs <= 0) {
+      await this.typeCursorFirstPrompt(seatId, prompt, 'immediate');
       return;
     }
-    const ready = await this.waitForCursorBanner(seatId);
+    if (this.cursorFirstSubmitJobs.has(seatId)) return;
+    const job = this.watchCursorFirstPrompt(seatId, prompt);
+    this.cursorFirstSubmitJobs.set(seatId, job);
+    void job.finally(() => {
+      if (this.cursorFirstSubmitJobs.get(seatId) === job) this.cursorFirstSubmitJobs.delete(seatId);
+    });
+  }
+
+  /**
+   * Poll the visible screen until it can take the first prompt. Never drops
+   * the prompt because a splash sat on screen for a long time, and never
+   * types before that screen exists — an early CR is swallowed by the TUI.
+   */
+  private async watchCursorFirstPrompt(seatId: string, prompt: string): Promise<void> {
+    const pollMs = Math.max(1, this.options.firstSubmitPollMs ?? 50);
+    while (!this.stopped && !this.stoppedByUser.has(seatId)) {
+      if (this.cursorFirstPromptSent.has(seatId)) return;
+      try {
+        const raw = this.options.readSeatOutput?.(seatId) ?? '';
+        const size = this.options.readSeatTermSize?.(seatId);
+        if (decideCursorFirstEnter(raw, size) === 'submit') {
+          const finished = await this.typeCursorFirstPrompt(seatId, prompt, 'banner');
+          if (finished) return;
+        }
+      } catch (error) {
+        this.noteCursorFirstSubmit(seatId, `[host] cursor first-submit seatId=${seatId} reason=watch_failed detail=${messageOf(error) || 'unknown'}`);
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, pollMs));
+    }
+  }
+
+  /**
+   * Type the saved first prompt and send one CR. Does not type until the
+   * caller has decided the composer is ready (or the immediate test fixture).
+   * A refused prompt write is retried by the watcher. After the text is
+   * accepted, it is not typed again and Enter is not repeated. Unsent text
+   * is not deleted — the draft only exists because we already decided to submit.
+   */
+  private async typeCursorFirstPrompt(
+    seatId: string,
+    prompt: string,
+    ready: 'banner' | 'immediate',
+  ): Promise<boolean> {
+    if (this.cursorFirstPromptSent.has(seatId)) return true;
+    const write = this.options.writeSeatStdin;
+    if (!write || !prompt) {
+      this.cursorFirstPromptSent.add(seatId);
+      this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} enter=0 reason=no_writer`);
+      return true;
+    }
     let written = false;
     try { written = write(seatId, prompt); } catch { written = false; }
     if (!written) {
-      this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} enter=0 reason=write_refused`);
-      return;
+      this.noteCursorFirstSubmit(seatId, `[host] cursor first-submit seatId=${seatId} ready=${ready} mode=inject promptChars=${prompt.length} enter=0 reason=write_refused`);
+      return false;
     }
+    this.cursorFirstPromptSent.add(seatId);
     const enterDelayMs = this.options.injectEnterDelayMs ?? 250;
     if (enterDelayMs > 0) await new Promise<void>(resolve => setTimeout(resolve, enterDelayMs));
     let enterOk = false;
     try { enterOk = write(seatId, '\r'); } catch { enterOk = false; }
-    this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} mode=inject promptChars=${prompt.length} enter=${enterOk ? 1 : 0}`);
+    if (!enterOk) {
+      this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} mode=inject promptChars=${prompt.length} enter=0 reason=enter_refused`);
+      return true;
+    }
+    this.logLine(`[host] cursor first-submit seatId=${seatId} ready=${ready} mode=inject promptChars=${prompt.length} enter=1`);
+    return true;
   }
 
-  private async waitForCursorBanner(seatId: string): Promise<'banner' | 'timeout' | 'immediate'> {
-    const waitMs = this.options.firstSubmitWaitMs ?? 8_000;
-    if (waitMs <= 0) return 'immediate';
-    const read = this.options.readSeatOutput;
-    const deadline = Date.now() + waitMs;
-    while (Date.now() < deadline) {
-      if (decideCursorFirstEnter(read?.(seatId) ?? '') === 'submit') return 'banner';
-      await new Promise<void>(resolve => setTimeout(resolve, 50));
-    }
-    return 'timeout';
+  /** One-shot note so a refused write cannot flood the log while we keep the prompt. */
+  private noteCursorFirstSubmit(seatId: string, line: string): void {
+    if (this.cursorFirstSubmitNoted.has(seatId)) return;
+    this.cursorFirstSubmitNoted.add(seatId);
+    this.logLine(line);
   }
 
   /**

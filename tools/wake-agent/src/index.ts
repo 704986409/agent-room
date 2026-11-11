@@ -255,6 +255,11 @@ async function runDaemonLocked(statePath: string, mode: {
     secrets,
     terminalMode,
     readSeatOutput: seatId => getPtySession(seatId)?.scrollback() ?? '',
+    readSeatTermSize: seatId => {
+      const session = getPtySession(seatId);
+      if (!session) return undefined;
+      return { cols: session.cols, rows: session.rows };
+    },
     writeSeatStdin: (seatId, data) => {
       const session = getPtySession(seatId);
       if (!session) {

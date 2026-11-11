@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CodexCliAdapter, createCursorAdapter, type ProcessSpawner, type SpawnedProcess } from './src/adapter.js';
 import { MemoryCredentialStore } from './src/credstore.js';
-import { cursorFirstSubmit, decideCursorFirstEnter, FileRunLock, MemoryRunLock, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
+import { cursorComposerHoldsDraft, cursorFirstSubmit, cursorFirstSubmitLanded, decideCursorFirstEnter, FileRunLock, MemoryRunLock, renderVisibleScreen, WakeDaemon, seatLogPath, type WakeApi } from './src/daemon.js';
 import { createHttpWakeApi, WakeHttpError } from './src/http.js';
 import { nextWait } from './src/interval.js';
 import { reuseWakePrompt, wakePrompt } from './src/prompt.js';
@@ -1075,9 +1075,25 @@ describe('state file round trip', () => {
   });
 
   it('submits the first Cursor prompt with Enter when a PTY writer exists', async () => {
+    const evidenceSplash = 'Cursor Agent\nv2026.11.10-731fb78\nTip: resume a chat\n→ Plan, search, build anything\n';
     expect(decideCursorFirstEnter('')).toBe('wait');
-    expect(decideCursorFirstEnter('Cursor Agent\n')).toBe('submit');
+    expect(decideCursorFirstEnter('Cursor Agent\n')).toBe('wait');
+    expect(decideCursorFirstEnter('Cursor Agent\nv2026.11.10-731fb78\nTip: resume a chat\n')).toBe('wait');
+    // The painted idle screen keeps Tip: beside the official placeholder.
+    expect(decideCursorFirstEnter(evidenceSplash)).toBe('submit');
+    expect(decideCursorFirstEnter('Tip: Working with large repos\n→ Plan, search, build anything\n')).toBe('submit');
     expect(decideCursorFirstEnter('Add a follow-up')).toBe('submit');
+    expect(decideCursorFirstEnter('Add a follow-up — /plan')).toBe('submit');
+    expect(decideCursorFirstEnter('Add a follow-up\nctrl+c to stop')).toBe('wait');
+    expect(decideCursorFirstEnter('Tip: Type ? in the prompt bar\n→ Add a follow-up           ctrl+c to stop\n⠠⠜ Working\n')).toBe('wait');
+    expect(decideCursorFirstEnter('Plan, search, build anything')).toBe('submit');
+    expect(decideCursorFirstEnter('Cursor Agent\nv2026.11.10-731fb78\n→ Plan, search, build anything\n')).toBe('submit');
+    expect(decideCursorFirstEnter('  → Plan, search, build anything\r\n', { cols: 20, rows: 8 })).toBe('submit');
+    expect(cursorComposerHoldsDraft('→ 你是房间 的座位', '你是房间 的座位')).toBe(true);
+    expect(cursorComposerHoldsDraft('你是房间 的座位\n→ ', '你是房间 的座位')).toBe(false);
+    expect(cursorFirstSubmitLanded('Cursor Agent\nTip:', 'Working\nAdd a follow-up\nctrl+c to stop\n', '你是房间')).toBe(true);
+    expect(cursorFirstSubmitLanded('Cursor Agent\n', '→ 你是房间', '你是房间')).toBe(false);
+    expect(cursorFirstSubmitLanded('Tip: Working with large repos\n', 'Tip: Working with large repos\n→ 你是房间', '你是房间')).toBe(false);
     expect(cursorFirstSubmit({ terminalMode: 'embedded', hasWriter: true })).toBe('pty');
     expect(cursorFirstSubmit({ terminalMode: 'system', hasWriter: true })).toBe('stdin');
     expect(cursorFirstSubmit({ terminalMode: 'system', hasWriter: false })).toBe('stdin');
@@ -1110,9 +1126,12 @@ describe('state file round trip', () => {
       cwd: '/work', adapterId: 'cursor-agent', model: 'grok-4.7-high',
     });
     expect(seenCwd).toBe(seat.cwd);
+    expect(child.calls[0]!.args).toContain('--resume');
     expect(child.calls[0]!.args).toContain('--approve-mcps');
     expect(child.calls[0]!.args).not.toContain('--yolo');
     expect(child.calls[0]!.args).not.toContain('--force');
+    expect(child.calls[0]!.args).not.toContain('-p');
+    expect(child.calls[0]!.args).not.toContain('--print');
     expect(child.calls[0]!.args.join('\n')).not.toContain('执行唤醒监听');
     expect(writes.map(write => write.data)[0]).toContain('执行唤醒监听，动作游标=0');
     expect(writes.map(write => write.data)[1]).toBe('\r');
@@ -1127,6 +1146,251 @@ describe('state file round trip', () => {
     expect(cli.permissions.allow).toContain('Mcp(agent-room:*)');
     expect(cli.permissions.deny).toEqual([]);
     expect(JSON.stringify(cli)).not.toContain('unrestricted');
+  });
+
+  const ESC = '\x1b';
+  /** Evidence splash before the composer placeholder is painted. Tip: is visible; do not type. */
+  const evidencePre =
+    '  Cursor Agent\r\n' +
+    '  v2026.11.10-731fb78\r\n' +
+    '  Tip: Use /skills to give Cursor specialized knowledge for tasks.\r\n';
+  /** From the blank row under that splash: EL + CUU clears those lines, then CHA column 1. */
+  const eraseUp = `${ESC}[2K${ESC}[1A${ESC}[2K${ESC}[1A${ESC}[2K${ESC}[1A${ESC}[2K${ESC}[G`;
+  const idleWithTip =
+    '  Cursor Agent\r\n' +
+    '  v2026.11.10-731fb78\r\n' +
+    '  Tip: Use /config to customize Cursor settings and behavior.\r\n' +
+    '\r\n' +
+    '\r\n' +
+    '  → Plan, search, build anything\r\n';
+  const clearScreen = `${ESC}[H${ESC}[2J${ESC}[3J`;
+  const busyScreen =
+    '    Tip: Type ? in the prompt bar to show\r\n' +
+    '  in-app hints.\r\n' +
+    '\r\n' +
+    '  → Add a follow-up           ctrl+c to stop\r\n' +
+    '\r\n' +
+    '  ⠠⠜ Working\r\n';
+  const clearedIdle = clearScreen + idleWithTip;
+
+  function expectStillWaiting(writes: string[], logs: string[]): void {
+    expect(writes).toEqual([]);
+    const text = logs.join('\n');
+    expect(text).not.toContain('enter=1');
+    expect(text).not.toContain('reason=not_ready');
+  }
+
+  function expectOneFirstSubmit(writes: string[], logs: string[]): void {
+    const prompts = writes.filter(data => data.includes('执行唤醒监听，动作游标=0'));
+    expect(prompts).toHaveLength(1);
+    expect(writes.filter(data => data === '\r')).toEqual(['\r']);
+    expect(writes.some(data => data.includes('\x7f'))).toBe(false);
+    const submits = logs.filter(line => line.includes('cursor first-submit') && line.includes('enter=1'));
+    expect(submits).toHaveLength(1);
+    expect(submits[0]).toContain('ready=banner');
+    expect(logs.join('\n')).not.toContain('enter=0');
+    expect(logs.join('\n')).not.toContain('reason=not_ready');
+  }
+
+  async function pause(ms: number): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  async function startCursorPty(chunks: string[]): Promise<{
+    writes: string[];
+    logs: string[];
+    args: string[];
+    daemon: WakeDaemon;
+    elapsedMs: number;
+  }> {
+    const writes: string[] = [];
+    const logs: string[] = [];
+    const child = spawner([]);
+    const directory = await mkdtemp(join(tmpdir(), 'wake-cursor-pty-'));
+    const daemon = new WakeDaemon({
+      api: api(),
+      adapters: new Map([['cursor-agent', createCursorAdapter(child, {
+        directSpawn: true,
+        createChat: async () => '22222222-2222-4222-8222-222222222222',
+      })]]),
+      state: { seats: [] },
+      lock: new MemoryRunLock(),
+      inspect: () => ({ alive: true, cmdline: 'cursor-agent' }),
+      log: line => logs.push(line),
+      server: 'http://127.0.0.1:9',
+      roomsDir: join(directory, 'rooms'),
+      terminalMode: 'embedded',
+      injectEnterDelayMs: 0,
+      // A large budget must not block HostLocal. Readiness is the visible screen.
+      firstSubmitWaitMs: 240_000,
+      firstSubmitPollMs: 5,
+      readSeatTermSize: () => ({ cols: 80, rows: 24 }),
+      readSeatOutput: () => chunks.join(''),
+      writeSeatStdin: (_seatId, data) => {
+        writes.push(data);
+        return true;
+      },
+      joinRoom: async () => ({ seatKey: 'super-secret-key', cursor: 0, name: 'cursor-a' }),
+    });
+    const started = Date.now();
+    await daemon.startAgent({
+      server: 'http://127.0.0.1:9', code: 'ABC-DEF-GHJ', inviteCode: 'invite-1', name: 'cursor-a',
+      cwd: '/work', adapterId: 'cursor-agent', model: 'grok-4.7-high',
+    });
+    return { writes, logs, args: child.calls[0]?.args ?? [], daemon, elapsedMs: Date.now() - started };
+  }
+
+  it('reduces appended ANSI overwrites to the visible screen and ignores leftover Tip bytes', () => {
+    const painted =
+      `${ESC}[>1u${ESC}]11;?\x07${ESC}[2K${ESC}[G\r\n` +
+      '\r\n' +
+      '  Cursor Agent\r\n' +
+      '  v2026.11.10-731fb78\r\n' +
+      '  Tip: Use /skills to give Cursor specialized knowledge for tasks.\r\n' +
+      '\r\n\r\n\r\n\r\n' +
+      '  → Plan, search, build anything\r\n' +
+      `${ESC}[?25l${ESC}[?2004h${ESC}]0;Cursor Agent\x07`;
+    expect(renderVisibleScreen(painted)).toContain('Plan, search, build anything');
+    expect(renderVisibleScreen(painted)).toContain('Tip: Use /skills');
+    expect(renderVisibleScreen(painted)).not.toContain('[>1u');
+    expect(decideCursorFirstEnter(painted)).toBe('submit');
+
+    expect(decideCursorFirstEnter(evidencePre)).toBe('wait');
+    expect(renderVisibleScreen(evidencePre)).toContain('Tip: Use /skills');
+    expect(renderVisibleScreen(evidencePre)).not.toContain('Plan, search, build anything');
+
+    const overwritten = evidencePre + eraseUp + idleWithTip;
+    expect(overwritten).toContain('Tip: Use /skills');
+    expect(overwritten).toContain(`${ESC}[1A`);
+    expect(overwritten).toContain(`${ESC}[2K`);
+    const visible = renderVisibleScreen(overwritten);
+    expect(visible).toContain('Plan, search, build anything');
+    expect(visible).toContain('Tip: Use /config');
+    expect(visible).not.toContain('Tip: Use /skills');
+    expect(decideCursorFirstEnter(overwritten)).toBe('submit');
+
+    const decoy =
+      '  Tip: stale should not block\r\n' +
+      '  → Plan, search, build anything\r\n';
+    const hidden = clearScreen +
+      '  Cursor Agent\r\n' +
+      '  v2026.11.10-731fb78\r\n' +
+      '  composer not painted yet\r\n';
+    const held = evidencePre + decoy + hidden;
+    expect(held).toContain('Plan, search, build anything');
+    expect(held).toContain('Tip: stale should not block');
+    expect(renderVisibleScreen(held)).not.toContain('Plan, search, build anything');
+    expect(renderVisibleScreen(held)).not.toContain('Tip:');
+    expect(decideCursorFirstEnter(held)).toBe('wait');
+    expect(decideCursorFirstEnter(held + clearedIdle)).toBe('submit');
+    expect(renderVisibleScreen(held + clearedIdle)).toContain('Tip: Use /config');
+    expect(renderVisibleScreen(held + clearedIdle)).not.toContain('Tip: stale should not block');
+
+    expect(decideCursorFirstEnter(busyScreen)).toBe('wait');
+    expect(busyScreen + clearedIdle).toContain('Working');
+    expect(busyScreen + clearedIdle).toContain('ctrl+c to stop');
+    expect(renderVisibleScreen(busyScreen + clearedIdle)).not.toContain('Working');
+    expect(renderVisibleScreen(busyScreen + clearedIdle)).not.toContain('ctrl+c to stop');
+    expect(decideCursorFirstEnter(busyScreen + clearedIdle)).toBe('submit');
+  });
+
+  it('does not type on the evidence splash, then submits once after ESC[1A]/ESC[2K] reveals the idle composer', async () => {
+    const chunks = [evidencePre];
+    const session = await startCursorPty(chunks);
+    try {
+      expect(session.elapsedMs).toBeLessThan(4_000);
+      expect(session.args).toContain('--resume');
+      expect(session.args).toContain('--approve-mcps');
+      expect(session.args).not.toContain('--yolo');
+      expect(session.args).not.toContain('--force');
+      expect(session.args).not.toContain('-p');
+      expect(session.args).not.toContain('--print');
+      expect(session.args.join('\n')).not.toContain('执行唤醒监听');
+      expect(session.args.join('\n')).not.toContain('unrestricted');
+      await pause(200);
+      expectStillWaiting(session.writes, session.logs);
+
+      chunks.push(eraseUp + idleWithTip);
+      expect(decideCursorFirstEnter(chunks.join(''))).toBe('submit');
+      const typed = await (async () => {
+        const start = Date.now();
+        while (!session.writes.some(data => data === '\r')) {
+          if (Date.now() - start > 2_000) return false;
+          await pause(5);
+        }
+        return true;
+      })();
+      expect(typed).toBe(true);
+      expectOneFirstSubmit(session.writes, session.logs);
+      const prompt = session.writes.find(data => data.includes('执行唤醒监听，动作游标=0'))!;
+      chunks.push(clearScreen + idleWithTip);
+      await pause(80);
+      expectOneFirstSubmit(session.writes, session.logs);
+      expect(session.writes.filter(data => data.includes('执行唤醒监听，动作游标=0'))).toEqual([prompt]);
+    } finally {
+      session.daemon.stop();
+    }
+  });
+
+  it('does not drop the first prompt while the visible screen stays unready, and does not block startAgent', async () => {
+    const chunks = [evidencePre];
+    const decoy =
+      '  Tip: stale should not block\r\n' +
+      '  → Plan, search, build anything\r\n';
+    const hidden = clearScreen +
+      '  Cursor Agent\r\n' +
+      '  v2026.11.10-731fb78\r\n' +
+      '  composer not painted yet\r\n';
+    const session = await startCursorPty(chunks);
+    try {
+      expect(session.elapsedMs).toBeLessThan(4_000);
+      await pause(200);
+      expectStillWaiting(session.writes, session.logs);
+
+      // Placeholder and Tip: are now in the raw tail, but ESC[2J removed them from the grid.
+      chunks.push(decoy + hidden);
+      expect(chunks.join('')).toContain('Plan, search, build anything');
+      expect(decideCursorFirstEnter(chunks.join(''))).toBe('wait');
+      await pause(200);
+      expectStillWaiting(session.writes, session.logs);
+
+      chunks.push(clearedIdle);
+      expect(decideCursorFirstEnter(chunks.join(''))).toBe('submit');
+      const start = Date.now();
+      while (!session.writes.some(data => data === '\r')) {
+        if (Date.now() - start > 2_000) break;
+        await pause(5);
+      }
+      expectOneFirstSubmit(session.writes, session.logs);
+      await pause(80);
+      expectOneFirstSubmit(session.writes, session.logs);
+    } finally {
+      session.daemon.stop();
+    }
+  });
+
+  it('does not type over a visible Working or follow-up stop screen, then submits that same prompt once', async () => {
+    const chunks = [busyScreen];
+    const session = await startCursorPty(chunks);
+    try {
+      expect(session.elapsedMs).toBeLessThan(4_000);
+      await pause(200);
+      expect(decideCursorFirstEnter(chunks.join(''))).toBe('wait');
+      expectStillWaiting(session.writes, session.logs);
+
+      chunks.push(clearedIdle);
+      expect(chunks.join('')).toContain('Working');
+      expect(chunks.join('')).toContain('ctrl+c to stop');
+      expect(decideCursorFirstEnter(chunks.join(''))).toBe('submit');
+      const start = Date.now();
+      while (!session.writes.some(data => data === '\r')) {
+        if (Date.now() - start > 2_000) break;
+        await pause(5);
+      }
+      expectOneFirstSubmit(session.writes, session.logs);
+    } finally {
+      session.daemon.stop();
+    }
   });
 
   it('system console first Cursor launch types via stdin instead of an argv draft', async () => {
