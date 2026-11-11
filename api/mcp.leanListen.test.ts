@@ -155,4 +155,48 @@ describe('lean room_listen results', () => {
     expect(rest.messages.map((message: { text: string }) => message.text)).toEqual(['page-20', 'page-21', 'page-22', 'page-23', 'page-24']);
     expect(rest.messages[0].cursor).toBe(20);
   });
+
+  it('stamps absolute cursors on a non-blocking history read', async () => {
+    listMessages.mockResolvedValue([
+      { id: 5, type: 'msg', name: 'Other', text: 'hello', client: 'cc', time: 1 },
+    ]);
+    const res = await listen({ since: 4, timeoutMs: 0 });
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0]).toMatchObject({ name: 'Other', text: 'hello', cursor: 4 });
+    expect(res.cursor).toBe(5);
+    expect(res.more).toBeUndefined();
+    expect(res.nextAction).toMatchObject({
+      tool: 'room_listen',
+      arguments: { since: 5 },
+    });
+  });
+
+  it('pages a non-blocking history read and continues with timeoutMs 0', async () => {
+    const all = Array.from({ length: 25 }, (_, index) => ({
+      id: index + 1, type: 'msg', name: 'Other', text: `page-${index}`, client: 'cc', time: index,
+    }));
+    listMessages.mockImplementation((_client: unknown, _code: unknown, since: number) => ({
+      messages: all.slice(since),
+      cursor: all.length,
+      oldestRetained: 0,
+    }));
+    const first = await listen({ since: 0, timeoutMs: 0 });
+    expect(first.more).toBe(true);
+    expect(first.cursor).toBe(20);
+    expect(first.messages).toHaveLength(20);
+    expect(first.messages[0]).toMatchObject({ text: 'page-0', name: 'Other', cursor: 0 });
+    expect(first.messages[19]).toMatchObject({ text: 'page-19', cursor: 19 });
+    expect(first.messages.map((message: { text: string }) => message.text)).not.toContain('page-20');
+    expect(first.nextAction).toMatchObject({
+      tool: 'room_listen',
+      arguments: { since: 20 },
+    });
+    const rest = await listen({ since: 20, timeoutMs: 0 });
+    expect(rest.more).toBeUndefined();
+    expect(rest.cursor).toBe(25);
+    expect(rest.messages).toHaveLength(5);
+    expect(rest.messages.map((message: { text: string }) => message.text)).toEqual(['page-20', 'page-21', 'page-22', 'page-23', 'page-24']);
+    expect(rest.messages[0]).toMatchObject({ name: 'Other', cursor: 20 });
+    expect(rest.messages[4].cursor).toBe(24);
+  });
 });

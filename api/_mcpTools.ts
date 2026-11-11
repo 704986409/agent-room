@@ -440,7 +440,15 @@ async function dispatch(
             fetched => (Array.isArray(fetched) ? fetched : fetched?.messages) ?? listed.messages,
             () => listed.messages,
           );
-        const messages = listed.messages.map(slimMessage);
+        // Page against the list end cursor. A settled cursor is the managed
+        // read position and stays the top-level cursor only when this page is
+        // the tail; a longer history continues from paged.cursor.
+        const paged = pageListenMessages(since, listed.messages, listed.cursor);
+        const messages = paged.messages.map((message, index) => ({
+          ...slimMessage(message),
+          cursor: paged.start + index,
+        }));
+        if (paged.more) cursor = paged.cursor;
         let catchUpRoom: Room | undefined;
         try { catchUpRoom = await getRoom(client, a.code); } catch { /* lean */ }
         const readInbox = await boardInbox(client, profile, a.code, selfName ?? '', false, catchUpRoom?.replyMode);
@@ -491,6 +499,7 @@ async function dispatch(
           cursor,
           ...listenStatusFields(),
           nextAction: readOverlaid.nextAction,
+          ...(paged.more ? { more: true } : {}),
           ...contextFields(all),
           ...(readInbox.hint ? { yourTasks: readInbox } : {}),
           hint: readOverlaid.hint,
