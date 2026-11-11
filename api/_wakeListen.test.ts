@@ -76,6 +76,53 @@ describe('managed room_listen and room_sleep', () => {
     expect(event?.receipt).toMatchObject({ receiptKind: 'managed_read', wakeRunId: 'wr' });
   });
 
+  it('does not ack or reply for a later-page mention on the first timeoutMs 0 page', async () => {
+    const redis = new WakeTestRedis();
+    const mention = '@codex-a work';
+    const messages: Message[] = Array.from({ length: 25 }, (_, index) => (
+      index === 22
+        ? message(1000 + index, mention)
+        : { id: 1000 + index, type: 'msg', name: 'Other', initials: 'OT', color: '#333', role: '', text: `page-${index}`, client: 'cc', time: index }
+    ));
+    seed(redis, messages);
+    await pending(redis, 22, 1022);
+    const client = { store: redis, post: async () => { throw new Error('no board'); } } as unknown as RemoteRoomClient;
+    const managed = { seatKey: KEY, wakeRunId: 'wr' };
+    const body = (res: { content: { text?: string }[] }) => JSON.parse(res.content[0]!.text as string);
+
+    const first = await callTool(client, 'core', 'room_listen', {
+      code: CODE, name: 'codex-a', since: 0, timeoutMs: 0, managed,
+    });
+    expect(first.isError).toBeFalsy();
+    const page1 = body(first);
+    expect(page1.more).toBe(true);
+    expect(page1.cursor).toBe(20);
+    expect(page1.messages).toHaveLength(20);
+    expect(page1.messages[0]).toMatchObject({ text: 'page-0', name: 'Other', cursor: 0 });
+    expect(page1.messages[19]).toMatchObject({ text: 'page-19', cursor: 19 });
+    expect(page1.messages.map((item: { text: string }) => item.text)).not.toContain(mention);
+    expect(page1.nextAction.tool).toBe('room_listen');
+    expect(page1.nextAction.arguments.since).toBe(page1.cursor);
+    expect(page1.nextAction.arguments.since).toBe(20);
+    expect((await new RedisWakeStore(redis).get('wk:ri_1:22:st_a'))?.state).toBe('PENDING');
+
+    const second = await callTool(client, 'core', 'room_listen', {
+      code: CODE, name: 'codex-a', since: page1.cursor, timeoutMs: 0, managed,
+    });
+    expect(second.isError).toBeFalsy();
+    const page2 = body(second);
+    expect(page2.more).toBeUndefined();
+    expect(page2.cursor).toBe(25);
+    expect(page2.messages).toHaveLength(5);
+    expect(page2.messages[0]).toMatchObject({ text: 'page-20', name: 'Other', cursor: 20 });
+    expect(page2.messages[2]).toMatchObject({ text: mention, name: 'host', cursor: 22 });
+    expect(page2.messages[4].cursor).toBe(24);
+    expect(page2.nextAction.tool).toBe('room_send');
+    const acked = await new RedisWakeStore(redis).get('wk:ri_1:22:st_a');
+    expect(acked?.state).toBe('SUCCEEDED');
+    expect(acked?.receipt).toMatchObject({ receiptKind: 'managed_read', wakeRunId: 'wr' });
+  });
+
   it('mints a listenEpoch for an authenticated long poll and still ignores a skipped trigger', async () => {
     const redis = new WakeTestRedis();
     const messages = [message(11, '@codex-a work')];

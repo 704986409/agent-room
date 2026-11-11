@@ -411,7 +411,6 @@ async function dispatch(
             hint: `Transient listMessages failure — retry. ${NEXT_LISTEN(a.code, since)}`,
           }, [], structured);
         }
-        let cursor = listed.cursor;
         const managedRead = parseManaged(a.managed);
         if (!managedRead && managedObjectMissingSeatKey(a.managed)) {
           return ok({
@@ -425,35 +424,36 @@ async function dispatch(
               + 'Otherwise pass a non-empty managed.seatKey — tool-arg seatKey is not posting a secret to the room.',
           }, [], structured);
         }
-        if (managedRead && selfName) {
-          try {
-            const settled = await settleManagedRead(client.store, {
-              code: a.code, name: selfName, managed: managedRead, since,
-              messages: listed.messages, timeoutMs: 0,
-            });
-            if (settled) cursor = settled.cursor;
-          } catch { /* ordinary read; an unacked trigger stays until lease retry */ }
-        }
         const all = since === 0
           ? listed.messages
           : await Promise.resolve(listMessages(client, a.code, 0)).then(
             fetched => (Array.isArray(fetched) ? fetched : fetched?.messages) ?? listed.messages,
             () => listed.messages,
           );
-        // Page against the list end cursor. A settled cursor is the managed
-        // read position and stays the top-level cursor only when this page is
-        // the tail; a longer history continues from paged.cursor.
+        // Page first, then confirm only this page — same delivered set as a hold.
+        // A settled cursor is the list end and stays the top-level cursor only
+        // when this page is the tail; a longer history continues from paged.cursor.
         const paged = pageListenMessages(since, listed.messages, listed.cursor);
+        let managedCursor: number | undefined;
+        if (managedRead && selfName) {
+          try {
+            const settled = await settleManagedRead(client.store, {
+              code: a.code, name: selfName, managed: managedRead, since,
+              messages: paged.messages, timeoutMs: 0,
+            });
+            if (settled) managedCursor = settled.cursor;
+          } catch { /* ordinary read; an unacked trigger stays until lease retry */ }
+        }
         const messages = paged.messages.map((message, index) => ({
           ...slimMessage(message),
           cursor: paged.start + index,
         }));
-        if (paged.more) cursor = paged.cursor;
+        const cursor = paged.more ? paged.cursor : (managedCursor ?? listed.cursor);
         let catchUpRoom: Room | undefined;
         try { catchUpRoom = await getRoom(client, a.code); } catch { /* lean */ }
         const readInbox = await boardInbox(client, profile, a.code, selfName ?? '', false, catchUpRoom?.replyMode);
         const readMustWork = inboxRequiresWork(readInbox);
-        const readAddressed = messagesAddressCaller(listed.messages, selfName, catchUpRoom);
+        const readAddressed = messagesAddressCaller(paged.messages, selfName, catchUpRoom);
         const managedSeatKey = managedRead?.seatKey;
         // Managed catch-up: never teach timeoutMs:0 forever. Empty + no work →
         // nudge a single default hold (omit timeoutMs); sleep only after that hold.
